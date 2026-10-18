@@ -29,6 +29,8 @@
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/renderer_vulkan/vr/vr_fixes.h" // VR
+#include "video_core/renderer_vulkan/vr/vr_stereo.h" // VR
 
 namespace Vulkan {
 
@@ -629,6 +631,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         // Fill color blending information
         if (regs.blend_control[cb].enable && !col_buf.info.blend_bypass) {
             key.blend_controls[cb] = regs.blend_control[cb];
+            Vr::Stereo::AdjustBlend(key.blend_controls[cb], col_buf.Address()); // VR: the HUD layer's coverage
         }
 
         // Apply swizzle to target mask
@@ -815,6 +818,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     if (Shader::Gcn::ApplyDepthSizeFixSpirv(spv)) {
         LOG_WARNING(Render_Vulkan, "Depth conversion shader {:#x} patched", info.pgm_hash);
     }
+    Vr::Fixes::PatchShader(info.pgm_hash, spv); // VR: Driveclub's 1080p constants at other render sizes
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;

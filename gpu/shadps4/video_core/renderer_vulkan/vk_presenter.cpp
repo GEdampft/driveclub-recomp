@@ -22,6 +22,8 @@
 #include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
+#include "video_core/renderer_vulkan/vr/vr_openxr.h" // VR
+#include "video_core/renderer_vulkan/vr/vr_stereo.h" // VR
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/texture_cache/image.h"
 
@@ -562,6 +564,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                     vk::ImageLayout::eTransferSrcOptimal, image.info.size.width,
                     image.info.size.height, "display", frame_dump_index);
         }
+        Vr::Stereo::OnDisplayBuffer(runtime, cmdbuf, image); // VR: the HUD with its alpha
         image_view = *image.FindView(view_info).image_view;
         image_size = vk::Extent2D{image.info.size.width, image.info.size.height};
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -1126,6 +1129,8 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
                          vk::ImageLayout::eTransferDstOptimal,
                          MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height),
                          vk::Filter::eLinear);
+        if (last) Vr::RecordFrame(cmdbuf, frame->image, frame->width, frame->height, swapchain_image, extent.width, // VR
+                        extent.height);
         // bbport: the settings menu / FPS counter over the frame, at display resolution.
         BbOverlay::NotePresent();
         const bool overlay = BbOverlay::Visible();
@@ -1197,6 +1202,7 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
     }
+    Vr::SubmitFrame(scheduler.GetWorkSemaphore()->Handle(), scheduler.CurrentTick() - 1); // VR: published
     g_last_shown = std::chrono::steady_clock::now();
     return true;
 }

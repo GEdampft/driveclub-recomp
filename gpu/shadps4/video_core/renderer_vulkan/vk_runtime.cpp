@@ -18,6 +18,7 @@
 
 #include <vulkan/vulkan_format_traits.hpp>
 #include <vk_mem_alloc.h>
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR
 
 namespace Vulkan {
 
@@ -382,6 +383,7 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
         FlushBarriers();
     }
 
+    Vr::Multiview::StereoCopies(*src, *dst, regions); // VR: the right eye's layer
     scheduler.Record([src_image = src->GetImage(), dst_image = dst->GetImage(),
                       regions](vk::CommandBuffer cmdbuf) {
         cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
@@ -498,10 +500,12 @@ void Runtime::CopyMip(VideoCore::Image* src, VideoCore::Image* dst, u32 mip, u32
         FlushBarriers();
     }
 
+    boost::container::small_vector<vk::ImageCopy, 2> copies{image_copy}; // VR: the right eye's layer
+    Vr::Multiview::StereoCopies(*src, *dst, copies);
     scheduler.Record([src_image = src->GetImage(), dst_image = dst->GetImage(),
-                      image_copy](vk::CommandBuffer cmdbuf) {
+                      copies](vk::CommandBuffer cmdbuf) {
         cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
-                         vk::ImageLayout::eTransferDstOptimal, image_copy);
+                         vk::ImageLayout::eTransferDstOptimal, copies);
     });
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
@@ -578,10 +582,12 @@ void Runtime::CopyDepthStencil(VideoCore::Image* src, VideoCore::Image* dst,
         .extent = {dst->info.size.width, dst->info.size.height, 1},
     };
 
+    boost::container::small_vector<vk::ImageCopy, 2> copies{region}; // VR: the right eye's layer
+    Vr::Multiview::StereoCopies(*src, *dst, copies);
     scheduler.Record([src_image = src->GetImage(), dst_image = dst->GetImage(),
-                      region](vk::CommandBuffer cmdbuf) {
+                      copies](vk::CommandBuffer cmdbuf) {
         cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
-                         vk::ImageLayout::eTransferDstOptimal, region);
+                         vk::ImageLayout::eTransferDstOptimal, copies);
     });
 
     dst->flags |= VideoCore::ImageFlagBits::GpuModified;

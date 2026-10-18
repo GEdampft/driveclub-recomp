@@ -221,6 +221,8 @@ struct PushData {
     static constexpr u32 BufOffsetIndex = UdRegsIndex + NUM_USER_DATA_REGS / 4;
     static constexpr u32 MotionParamIndex = BufOffsetIndex + NUM_BUFFERS / 16 + 1;
     static constexpr u32 SceneSizeIndex = MotionParamIndex + 1;
+    static constexpr u32 VrShiftIndex = SceneSizeIndex + 1; // VR
+    static constexpr u32 VrEyeIndex = VrShiftIndex + 1;     // VR
 
     float xoffset;
     float yoffset;
@@ -230,13 +232,16 @@ struct PushData {
     std::array<u8, NUM_BUFFERS> buf_offsets;
     u32 motion_param; ///< bbport: object motion parameter index (0: off)
     u32 scene_size; ///< reduced width | height << 16; zero means native pixel coordinates
+    std::array<float, 2> vr_shift{}; ///< VR: clip x shift per view (multiview, emit_spirv_vr.h)
+    u32 vr_eye = 0;                  ///< VR: the eye a compute dispatch writes
+    u32 vr_pad = 0;
 
     void AddOffset(u32 binding, u32 offset) {
         ASSERT(offset < 256 && binding < buf_offsets.size());
         buf_offsets[binding] = offset;
     }
 };
-static_assert(sizeof(PushData) <= 128,
+static_assert(sizeof(PushData) <= 144, // VR: past the guaranteed 128 bytes (every desktop GPU has 256)
               "PushData size is greater than minimum size guaranteed by Vulkan spec");
 
 } // namespace Shader

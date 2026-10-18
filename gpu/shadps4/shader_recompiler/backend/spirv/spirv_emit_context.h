@@ -252,6 +252,8 @@ public:
     Id vertex_index{};
     Id instance_id{};
     Id push_data_block{};
+    Id vr_view_index{}; ///< VR: gl_ViewIndex (emit_spirv_vr.h)
+    Id vr_multiview{};  ///< VR: specialisation constant 200, the multiview twin
     // bbport: object motion vectors (runtime_info.h, MotionVectors).
     Id motion_out_cur{};
     Id motion_out_prev{};
@@ -317,6 +319,7 @@ public:
         Id sampled_type;
         Id image_type;
         AmdGpu::ImageType view_type;
+        bool vr_array = false; ///< VR: a plain 2D image declared as a 2D array (emit_spirv_vr.h)
         bool is_integer = false;
         bool is_storage = false;
         MipStorageFallbackMode mip_fallback_mode{};

@@ -25,6 +25,9 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vr/vr_dev.h" // VR
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR
+#include "video_core/renderer_vulkan/vr/vr_stereo.h" // VR
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -1155,6 +1158,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         BbStats::PhaseTimer timer{BbStats::phase_ns[2]};
         PrepareRenderState(pipeline);
     }
+    Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
+                       pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
         upscaler->OnDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
@@ -1317,8 +1322,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
+    const vk::Pipeline vr_handle = Vr::Multiview::Variant(handle, state.view_mask); // VR
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, vr_handle);
         if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
         } else {
@@ -1437,6 +1443,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     motion_draw = false;
     motion_geometry = 0;
     PrepareRenderState(pipeline);
+    Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
+                       pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
         upscaler->OnDraw(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
@@ -1491,8 +1499,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     const u64 args_offset = base;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
     const u64 counts_offset = count_address != 0 ? count_offset : 0;
+    const vk::Pipeline vr_handle = Vr::Multiview::Variant(handle, state.view_mask); // VR
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
-        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, vr_handle);
         if (is_indexed) {
             if (counts) {
                 cmdbuf.drawIndexedIndirectCount(args, args_offset, counts, counts_offset, max_count,
@@ -1557,6 +1566,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     if (upscaler->Enabled()) {
         upscaler->OnDispatch(cs.pgm_hash);
     }
+    Vr::Dev::OnDispatch(cs, cs_program.dim_x, cs_program.dim_y); // VR: development dumps
     if (ExecuteShaderHLE(cs, Regs(), cs_program, *this)) {
         return;
     }
@@ -1645,6 +1655,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
     });
+    Vr::Multiview::SecondEye(scheduler, pipeline->GetLayout(), push_data, handle, dim_x, dim_y, dim_z); // VR
     DebugState.IncDispatch();
 
     // The game's temporal anti-aliasing pass: FSR or DLSS replaces its result.
@@ -1714,6 +1725,7 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatchIndirect(args, args_offset);
     });
+    Vr::Multiview::SecondEye(scheduler, pipeline->GetLayout(), push_data, handle, 0, 0, 0, args, args_offset); // VR
     DebugState.IncDispatch();
 
     ResetBindings(true);
@@ -2801,6 +2813,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             image.usage.storage |= is_storage;
             image.usage.texture |= !is_storage;
+            Vr::Multiview::NoteImage(image, is_storage); // VR
             if (FrameCapture::Active()) {
                 FrameCapture::Sampled(image.info, is_storage);
             }
@@ -3342,6 +3355,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         state.height = proxy.height;
         target_scale = {float(size.width) / 1920.0f, float(size.height) / 1080.0f};
     }
+    state.view_mask = Vr::Multiview::PassViewMask(texture_cache, cb_descs, state.num_color_attachments, db_desc); // VR
     if (FrameCapture::Active()) {
         std::array<const VideoCore::ImageInfo*, AmdGpu::NUM_COLOR_BUFFERS> colors{};
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {

@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR (dcport-vr): one eye's image from the centre view (the game's scene without the HUD) and its depth.
+//
+// The eye is the centre camera moved sideways by b along the camera's x axis. For a perspective projection that move
+// shifts a point's NDC x by -P00 * b / distance (no other change), so each pixel moves along its row by
+// dx = K * depth, with depth the reversed-infinite value near / distance and K = -side * b * P00 * (width / 2) / near.
+//
+// SPLAT=1: each source pixel writes its key into the eye's row at x + dx: (depth, 20 bits) << 12 | (dx + 2048), with
+//          atomicMax, so the nearest surface wins.
+// SPLAT=0: each eye pixel reads its key and fetches the source pixel; a pixel no surface landed on (disocclusion)
+//          takes the farther of its nearest left and right neighbours' offsets (the background continues into it).
+// MIRROR=1: the desktop window's picture: the HUD (premultiplied) over the left eye.
+#version 450
+
+layout(local_size_x = 16, local_size_y = 8) in;
+
+layout(push_constant) uniform Constants {
+    ivec2 size;     // eye image = scene image size
+    ivec2 depth_size;
+    float k;        // pixels of shift per unit of reversed depth
+    float pad[3];
+};
+
+#if MIRROR
+layout(binding = 0, rgba8) uniform readonly image2D eye;
+layout(binding = 1, rgba8) uniform readonly image2D hud;
+layout(binding = 2, rgba8) uniform writeonly image2D mirror;
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+    const vec4 h = imageLoad(hud, p);
+    // The images hold the display buffer's bytes (BGRA order); the window's blit converts by channel name.
+    imageStore(mirror, p, vec4((h.rgb + (1.0 - h.a) * imageLoad(eye, p).rgb).bgr, 1.0));
+}
+#elif SPLAT
+layout(binding = 0) uniform sampler2D depth_tex;
+layout(binding = 1, r32ui) uniform uimage2D keys;
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+    const vec2 uv = (vec2(p) + 0.5) / vec2(size);
+    const float d = clamp(textureLod(depth_tex, uv, 0.0).r, 0.0, 1.0);
+    const int dx = clamp(int(round(k * d)), -2047, 2047);
+    const int x = p.x + dx;
+    if (x < 0 || x >= size.x) {
+        return;
+    }
+    const uint key = (uint(d * 1048575.0) << 12) | uint(dx + 2048);
+    imageAtomicMax(keys, ivec2(x, p.y), key);
+}
+#else
+layout(binding = 0, rgba8) uniform readonly image2D scene;
+layout(binding = 1, r32ui) uniform readonly uimage2D keys;
+layout(binding = 2, rgba8) uniform writeonly image2D eye;
+
+const int Search = 96;
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+    uint key = imageLoad(keys, p).r;
+    if (key == 0u) {
+        // A hole: the farther (smaller depth) of the nearest surfaces on each side continues into it.
+        uint left = 0u, right = 0u;
+        for (int i = 1; i <= Search && left == 0u; ++i) {
+            if (p.x - i >= 0) left = imageLoad(keys, ivec2(p.x - i, p.y)).r;
+        }
+        for (int i = 1; i <= Search && right == 0u; ++i) {
+            if (p.x + i < size.x) right = imageLoad(keys, ivec2(p.x + i, p.y)).r;
+        }
+        key = left == 0u ? right : right == 0u ? left : min(left, right);
+    }
+    vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
+    if (key != 0u) {
+        const int dx = int(key & 4095u) - 2048;
+        const int x = clamp(p.x - dx, 0, size.x - 1);
+        color = imageLoad(scene, ivec2(x, p.y));
+        color.a = 1.0;
+    }
+    imageStore(eye, p, color);
+}
+#endif

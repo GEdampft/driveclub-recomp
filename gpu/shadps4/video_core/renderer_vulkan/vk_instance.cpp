@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/buffer_cache/buffer.h"
+#include "video_core/renderer_vulkan/vr/vr_openxr.h" // VR
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
@@ -452,10 +453,10 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    static constexpr std::array queue_priorities = {1.0f};
+    static constexpr std::array queue_priorities = {1.0f, 1.0f}; // VR: a second queue for the headset
     const vk::DeviceQueueCreateInfo queue_info = {
         .queueFamilyIndex = queue_family_index,
-        .queueCount = static_cast<u32>(queue_priorities.size()),
+        .queueCount = Vr::QueueCount(physical_device, queue_family_index), // VR
         .pQueuePriorities = queue_priorities.data(),
     };
 
@@ -480,6 +481,7 @@ bool Instance::CreateDevice() {
             }
         }
     }
+    Vr::AppendDeviceExtensions(*instance, physical_device, enabled_extensions); // VR: OpenXR's device extensions
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
             .queueCreateInfoCount = 1u,
@@ -523,6 +525,9 @@ bool Instance::CreateDevice() {
         },
         vk::PhysicalDeviceVulkan11Features{
             .storageBuffer16BitAccess = vk11_features.storageBuffer16BitAccess,
+            .multiview = vk11_features.multiview, // VR: stereo (vr_multiview.h)
+            .multiviewGeometryShader = vk11_features.multiviewGeometryShader,         // VR
+            .multiviewTessellationShader = vk11_features.multiviewTessellationShader, // VR
             .shaderDrawParameters = vk11_features.shaderDrawParameters,
         },
         vk::PhysicalDeviceVulkan12Features{
@@ -711,6 +716,7 @@ bool Instance::CreateDevice() {
     }
 
     graphics_queue = device->getQueue(queue_family_index, 0);
+    Vr::OnDeviceCreated(*instance, physical_device, *device, queue_family_index); // VR: the OpenXR session
     present_queue = device->getQueue(queue_family_index, 0);
 
     if (calibrated_timestamps) {

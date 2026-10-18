@@ -10,6 +10,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -437,6 +438,7 @@ GraphicsPipeline::GraphicsPipeline(
         return;
     }
     pipeline = std::move(pipe);
+    Vr::Multiview::OnPipelineCreated(device, pipeline_cache, pipeline_info, pipeline_rendering_ci, *pipeline); // VR
     SetObjectName(device, *pipeline, "Graphics Pipeline {}", debug_str);
 }
 

@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/div_ceil.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "shader_recompiler/backend/spirv/emit_spirv_vr.h" // VR
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/ir/attribute.h"
 #include "shader_recompiler/ir/microinstruction.h"
@@ -181,6 +182,7 @@ void EmitContext::DefineInterfaces() {
     DefinePushDataBlock();
     DefineInputs();
     DefineOutputs();
+    Vr::Define(*this); // VR: multiview
 }
 
 const VectorIds& GetAttributeType(EmitContext& ctx, AmdGpu::NumberFormat fmt) {
@@ -775,7 +777,8 @@ void EmitContext::DefineOutputs() {
 void EmitContext::DefinePushDataBlock() {
     // Create push constants block for instance steps rates
     const Id struct_type{Name(TypeStruct(F32[1], F32[1], F32[1], F32[1], U32[4], U32[4], U32[4],
-                                         U32[4], U32[4], U32[4], U32[2], U32[1], U32[1]),
+                                         U32[4], U32[4], U32[4], U32[2], U32[1], U32[1],
+                                         F32[2], U32[1]), // VR: vr_shift, vr_eye
                               "AuxData")};
     Decorate(struct_type, spv::Decoration::Block);
     MemberName(struct_type, PushData::XOffsetIndex, "xoffset");
@@ -804,6 +807,10 @@ void EmitContext::DefinePushDataBlock() {
     MemberDecorate(struct_type, PushData::MotionParamIndex, spv::Decoration::Offset, 120U);
     MemberName(struct_type, PushData::SceneSizeIndex, "scene_size");
     MemberDecorate(struct_type, PushData::SceneSizeIndex, spv::Decoration::Offset, 124U);
+    MemberName(struct_type, PushData::VrShiftIndex, "vr_shift");                         // VR
+    MemberDecorate(struct_type, PushData::VrShiftIndex, spv::Decoration::Offset, 128U);  // VR
+    MemberName(struct_type, PushData::VrEyeIndex, "vr_eye");                             // VR
+    MemberDecorate(struct_type, PushData::VrEyeIndex, spv::Decoration::Offset, 136U);    // VR
     push_data_block = DefineVar(struct_type, spv::StorageClass::PushConstant);
     Name(push_data_block, "push_data");
     interfaces.push_back(push_data_block);
@@ -995,7 +1002,8 @@ Id ImageType(EmitContext& ctx, const ImageResource& desc, Id sampled_type) {
     case AmdGpu::ImageType::Color1DArray:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim1D, false, true, false, sampled, format);
     case AmdGpu::ImageType::Color2D:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, false, false, sampled, format);
+        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, Vr::ArrayedImage(type), false, sampled, // VR
+                             format);
     case AmdGpu::ImageType::Color2DArray:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, true, false, sampled, format);
     case AmdGpu::ImageType::Color2DMsaa:
@@ -1037,6 +1045,7 @@ void EmitContext::DefineImagesAndSamplers() {
             .sampled_type = is_storage ? sampled_type : TypeSampledImage(image_type),
             .image_type = image_type,
             .view_type = sharp.GetViewType(image_desc.is_array),
+            .vr_array = Vr::ArrayedImage(sharp.GetViewType(image_desc.is_array)), // VR
             .is_integer = is_integer,
             .is_storage = is_storage,
             .mip_fallback_mode = mip_fallback_mode,

@@ -57,6 +57,8 @@ struct RenderState {
     u16 height;
     u16 num_layers;
     u16 num_color_attachments;
+    u16 view_mask = 0;   ///< VR: multiview (vr_multiview.h)
+    u16 vr_pad[3] = {};
 
     bool operator==(const RenderState& other) const noexcept {
         return std::memcmp(this, &other, sizeof(RenderState)) == 0;

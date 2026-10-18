@@ -10,6 +10,10 @@ if (NOT CMAKE_BUILD_TYPE)
 endif()
 # Frame pointers keep the loader's thread dumps (watchdog, SIGUSR2 sampling) walkable.
 add_compile_options(-fno-omit-frame-pointer)
+if(MINGW) # VR fork (build): headers newer libc++ no longer includes transitively (libcxx_compat.h)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/libcxx_compat.h>")
+    add_compile_options(-Wno-unknown-warning-option -Wno-error=unused-but-set-global) # new in clang 23, -Werror code
+endif()
 
 # bbport: link-time optimization (BB_LTO, default on) and profile-guided optimization
 # (BB_PGO: off, generate = instrumented build writing into BB_PGO_DIR, use = build with that
@@ -133,6 +137,9 @@ add_host_shader(depth_resample.frag depth_resample_frag)
 add_host_shader(depth_resample.frag depth_stencil_resample_frag HAS_STENCIL=1)
 add_host_shader(depth_resample.frag depth_stencil_bits_frag STENCIL_BITS=1)
 add_host_shader(camera_motion.comp camera_motion_debug_comp DEBUG_OVERLAY=1)
+add_host_shader(../renderer_vulkan/vr/vr_stereo.comp vr_stereo_splat_comp SPLAT=1) # VR
+add_host_shader(../renderer_vulkan/vr/vr_stereo.comp vr_stereo_resolve_comp SPLAT=0) # VR
+add_host_shader(../renderer_vulkan/vr/vr_stereo.comp vr_stereo_mirror_comp SPLAT=0 MIRROR=1) # VR
 foreach(BPP IN ITEMS 8 16 32 64 96 128)
     add_host_shader(tiling.comp tiling_micro_${BPP}_comp BITS_PER_PIXEL=${BPP} IS_MACRO_TILED=0)
     add_host_shader(tiling.comp tiling_macro_${BPP}_comp BITS_PER_PIXEL=${BPP} IS_MACRO_TILED=1)

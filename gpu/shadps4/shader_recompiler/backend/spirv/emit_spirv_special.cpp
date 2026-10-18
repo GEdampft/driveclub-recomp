@@ -5,6 +5,7 @@
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/ir/debug_print.h"
 #include "shader_recompiler/ir/microinstruction.h"
+#include "shader_recompiler/backend/spirv/emit_spirv_vr.h" // VR
 
 namespace Shader::Backend::SPIRV {
 
@@ -187,6 +188,7 @@ static void EmitFragmentMotion(EmitContext& ctx) {
 }
 
 void EmitEpilogue(EmitContext& ctx) {
+    Vr::Epilogue(ctx); // VR: the eye's clip shift
     if (Sirit::ValidId(ctx.motion_out_cur)) {
         EmitVertexMotion(ctx);
     }
@@ -218,6 +220,7 @@ void EmitDiscardCond(EmitContext& ctx, Id condition) {
 }
 
 void EmitEmitVertex(EmitContext& ctx) {
+    Vr::BeforeEmitVertex(ctx); // VR: the eye's clip shift
     ctx.OpEmitVertex();
 }
 

@@ -228,6 +228,15 @@ int mirror_saved = 0;  // "Mirror and reflection updates" choice, from launcher.
 int aniso_saved = 0;   // "Anisotropic filtering" choice, from launcher.ini
 std::wstring g_name = L"Player";  // in-game player name, from "name=" in launcher.ini
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
+int g_vr = -1;  // VR fork: the "VR headset" row (Off or a size per eye)
+
+// VR fork: the game in stereo on the OpenXR runtime (SteamVR). The VR patch sets a square render and output size per
+// eye, so the resolution, widescreen and upscaling rows are left out; anti-aliasing and frame generation stay off.
+bool VrOn() { return g_vr >= 0 && g_c[g_vr].sel > 0; }
+int VrEye() {
+  static const int kEye[] = {0, 2160, 2560, 2880, 3200, 3584, 3840, 4320};
+  return VrOn() ? kEye[g_c[g_vr].sel] : 0;
+}
 bool unlocked_saved = false;  // "Unlocked" frame rate choice, from launcher.ini  // indices of the render resolution and widescreen choices
 
 void BuildModel() {
@@ -322,6 +331,15 @@ void BuildModel() {
   g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0});
   g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0,
                      L"Community patches for DriveClub version 1.28."});
+  // VR fork: the headset row.
+  g_vr = seg(L"VR headset (OpenXR)",
+             L"Plays in stereo on your PC VR headset through the active OpenXR runtime (SteamVR): start SteamVR first. "
+             L"The size is per eye; above 2880 the game gets its 8K memory budget. It replaces the resolution rows, keeps "
+             L"anti-aliasing and frame generation off and turns motion blur off. F8 recentres the seat.",
+             {L"Off", L"2160", L"2560", L"2880", L"3200", L"3584", L"3840", L"4320"},
+             {"", "VR 2160x2160 per eye", "VR 2560x2560 per eye", "VR 2880x2880 per eye", "VR 3200x3200 per eye",
+              "VR 3584x3584 per eye", "VR 3840x3840 per eye", "VR 4320x4320 per eye"}, 0);
+  g_cards.push_back({L"VR", {g_vr}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -417,7 +435,17 @@ bool full_screen_now() {
 
 // Upscaling: with FSR 3.1 or DLAA chosen, the render size follows from the output size.
 bool UpscaleActive() {
-  return g_up >= 0 && g_aa >= 0 && g_c[g_up].sel > 0 && g_c[g_aa].sel > 0;
+  return !VrOn() && g_up >= 0 && g_aa >= 0 && g_c[g_up].sel > 0 && g_c[g_aa].sel > 0;
+}
+
+bool VrReplaces(const Ctl& c) {  // VR fork: rows the VR patch set stands in for
+  if (!VrOn()) return false;
+  const Ctl* const rows[] = {g_outres >= 0 ? &g_c[g_outres] : nullptr, g_inres >= 0 ? &g_c[g_inres] : nullptr,
+                             g_wide >= 0 ? &g_c[g_wide] : nullptr, g_fps >= 0 ? &g_c[g_fps] : nullptr};
+  for (const Ctl* r : rows) {
+    if (r == &c) return true;
+  }
+  return c.kind == Kind::Toggle && c.patches[0] == "FOV fix for wide resolutions";
 }
 
 void UpscaleSize(int& rw, int& rh, const char*& name) {
@@ -452,7 +480,8 @@ int RenderMemoryTier() {
   return r == 2 ? 1 : 0;
 }
 
-int MemoryTier() { return (std::max)(RenderMemoryTier(), OutputMemoryTier()); }
+// VR fork: up to 2880x2880 (4K's pixels) the 4K budget, above it the 8K one.
+int MemoryTier() { return VrOn() ? (VrEye() > 2880 ? 3 : 2) : (std::max)(RenderMemoryTier(), OutputMemoryTier()); }
 
 // Output / render choices per preset: indices into the "Output resolution" and "Render resolution" rows.
 void ApplyPreset(int preset) {
@@ -485,7 +514,9 @@ void SaveSettings() {
     game << "show_fps=" << (fps_on ? 1 : 0) << "\r\n";
   }
   std::ofstream out(SelectionPath().c_str(), std::ios::binary | std::ios::trunc);
+  if (VrOn()) out << "60 FPS with deltatime\nDisable motion blur and depth of field\nVR lens dirt off\n";  // VR fork
   for (const auto& c : g_c) {
+    if (VrReplaces(c)) continue;  // VR fork
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
     } else if (c.sel > 0 && c.patches[c.sel] == "@unlocked") {
@@ -1142,6 +1173,22 @@ std::wstring StartGame() {
   const int tier = MemoryTier();
   SetEnvironmentVariableW(L"BB_DMEM_MB", tier == 3 ? L"17056" : tier == 2 ? L"10056" : tier == 1 ? L"8056" : L"5056");
   SetEnvironmentVariableW(L"BB_CONFIG", (user + L"\\driveclub.ini").c_str());
+  if (VrOn()) {
+    // VR fork: both eyes rendered (multiview); the headset's own thread shows the newest frame at the headset's rate,
+    // so the game runs unpaced (the deltatime patch keeps its speed right).
+    SetEnvironmentVariableW(L"BB_VR", L"1");
+    SetEnvironmentVariableW(L"BB_VR_STEREO", L"mv");
+    SetEnvironmentVariableW(L"BB_VR_EYE_RES", std::to_wstring(VrEye()).c_str());
+    SetEnvironmentVariableW(L"BB_AA", L"off");
+    SetEnvironmentVariableW(L"BB_AA_SCALE", L"native");
+    SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
+    SetEnvironmentVariableW(L"BB_FULLSCREEN", L"0");
+    SetEnvironmentVariableW(L"BB_VBLANK_HZ", L"240");
+    SetEnvironmentVariableW(L"BB_FPS_LIMIT", L"240");
+    // No GPU readbacks: the game never waits for the GPU to copy its targets back (they scale with the eye size;
+    // 4320 per eye: 53 -> 67 FPS), and nothing it reads back shows.
+    SetEnvironmentVariableW(L"BB_READBACKS", L"0");
+  }
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdOutput = log;

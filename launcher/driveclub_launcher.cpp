@@ -22,7 +22,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
+#include <cwchar>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -70,6 +72,7 @@ struct Card {
   std::vector<int> ctls;
   int column;
   const wchar_t* note = nullptr;
+  float note_h = 0;  // the note's height at the current column width (LayoutPass)
   RectF rect{};
 };
 
@@ -670,7 +673,7 @@ void ResetDefaults() {
 // ------------------------------------------------------------------------------------------
 // layout
 // ------------------------------------------------------------------------------------------
-float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 208.f : 70.f) + g_row_extra; }
+float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : 70.f) + g_row_extra; }
 float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
@@ -696,7 +699,13 @@ void LayoutPass(float bottom_extra) {
     float h = kTitleH + kPad * 0.4f;
     for (int i : g_cards[k].ctls) h += RowHeight(g_c[i]);
     h += kPad * 0.6f;
-    if (g_cards[k].note) h += 46.f;
+    if (g_cards[k].note) {
+      // The note wraps to as many lines as the column width needs (about 6.3 units per character of the hint font).
+      const float per_line = (std::max)(1.f, std::floor((colw - 2 * kPad) / 6.3f));
+      const float lines = (std::max)(1.f, std::ceil(float(wcslen(g_cards[k].note)) / per_line));
+      g_cards[k].note_h = lines * 17.f + 4.f;
+      h += g_cards[k].note_h + 10.f;
+    }
     heights[k] = h;
     order[k] = k;
   }
@@ -888,7 +897,7 @@ void Paint(HDC hdc, int w, int h) {
     StrokeRound(g, cr, 12 * S, kCardLine);
     Text(g, card.title, fCard, RectF(cr.X + kPad * S, cr.Y + 6 * S, cr.Width - 2 * kPad * S, (kTitleH - 6) * S), kMuted);
     if (card.note) {
-      Text(g, card.note, fHint, RectF(cr.X + kPad * S, cr.Y + cr.Height - 54 * S, cr.Width - 2 * kPad * S, 44 * S), kMuted,
+      Text(g, card.note, fHint, RectF(cr.X + kPad * S, cr.Y + cr.Height - (card.note_h + 10) * S, cr.Width - 2 * kPad * S, card.note_h * S), kMuted,
            StringAlignmentNear, StringAlignmentFar, true);
     }
     for (int i : card.ctls) {
@@ -1725,7 +1734,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         float s = g_dpi;
         for (int i = 0; i < 12; ++i) {
           g_scale = s;
-          g_win_w = (std::max)(kWinW, (std::min)(kMaxW, cw / s));
+          // The layout fills the window at any scale: a window shrunk to fit its height gets wider columns,
+          // not an empty strip on the right (the window itself is at most kMaxW wide at full scale).
+          g_win_w = (std::max)(kWinW, cw / s);
           g_win_h = g_client_h / s;
           Layout();
           const float need = TotalHeight() * s;

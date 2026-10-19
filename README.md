@@ -1,5 +1,17 @@
 # DriveClub Recomp
 
+## VR
+This fork adds VR: DriveClub in stereo 3D with head tracking on a PC VR headset.
+
+- **Requires OpenXR.** Start your headset's OpenXR runtime (for example SteamVR) before the game.
+- **Current performance:** 45 or 60 FPS is recommended. OFXR Bridge frame generation is supported.
+
+In the launcher, choose a size per eye under **VR headset (OpenXR)** and press **Play**. **F8** recentres the seat.
+
+*The original flatscreen readme follows below.*
+
+---
+
 **DriveClub for PS4 (version 1.28), running natively on Windows.**
 
 <img width="1920" height="1080" alt="s009 20" src="https://github.com/user-attachments/assets/4c0fe155-eae9-4c78-aa24-4a5b154e2b9f" />

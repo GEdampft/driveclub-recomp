@@ -1,0 +1,285 @@
+/* Benchmark mode (BB_BENCHMARK, off by default): boot straight into an event, let the game's AI drive the
+ * player's car for a fixed time, write a frame-time summary to the log and exit.
+ *
+ * The game ships its own Lua autotest framework (scripts/lua/testing, scripts/autotest/lua) and starts a test
+ * script given on its command line as -luaautotest=<path>. Here the runtime writes a small test script of its
+ * own (the template below, nothing taken from the game) to <user>/benchmark, serves that folder like a mods
+ * folder, and gives the game the -luaautotest argument. The script skips the intro, starts the event with the
+ * game's Automation.Go, skips the pre-race cameras, hands the car to the AI and then opens the path
+ * "bb_benchmark/racing", which this file sees in runtime_benchmark_marker (the file does not exist; the open
+ * fails and the game carries on). From then on each flip interval is kept; after the warm-up and the run time
+ * the summary is printed and the process exits.
+ *
+ *   BB_BENCHMARK=1                       defaults below
+ *   BB_BENCHMARK=track=canada_road_circuit_02_n,car=ren_dez,seconds=60
+ * Keys: track, car, mode (TimeTrial or Race), tod (hour 0-23), weather (Clear, Cloudy, Overcast, Stormy),
+ *       laps, warmup (s after the race starts, not measured), seconds (measured), drive (ai or none),
+ *       view (camera, e.g. chase, driverhead, attach; empty = game default), timeout (s until the race must run).
+ * BB_BENCHMARK_OUT=<file> also gets the result line (default <user>/benchmark/result.txt). */
+#define _GNU_SOURCE
+#include "runtime.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <errno.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+#define SCRIPT_GUEST "scripts/autotest/lua/bb_benchmark.lua"
+#define MARKER_PREFIX "/app0/bb_benchmark/"
+
+static struct {
+    char track[64], car[64], mode[16], weather[16], view[24], drive[8];
+    int tod, laps, warmup, seconds, timeout;
+} cfg = {"canada_road_circuit_02_n", "ren_dez", "TimeTrial", "Clear", "", "ai", 12, 5, 5, 60, 240};
+
+enum { OFF, WAITING, WARMUP, MEASURING, DONE };
+static volatile int phase = OFF;
+static double t_config, t_race, t_measure, t_last_flip;
+static double *intervals;
+static size_t interval_count, interval_cap, frames;
+static char out_path[700], user_root[600];
+
+static double now_ms(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER c;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart * 1000.0 / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+#endif
+}
+
+/* Values end up in Lua source: letters, digits and '_' only. */
+static int set_word(char *dst, size_t size, const char *v, size_t n) {
+    if (n == 0 || n >= size) return 0;
+    for (size_t i = 0; i < n; ++i) if (!isalnum((unsigned char)v[i]) && v[i] != '_') return 0;
+    memcpy(dst, v, n); dst[n] = 0;
+    return 1;
+}
+static int set_int(int *dst, const char *v, size_t n, int lo, int hi) {
+    char buffer[16];
+    if (n == 0 || n >= sizeof(buffer)) return 0;
+    memcpy(buffer, v, n); buffer[n] = 0;
+    char *end; long x = strtol(buffer, &end, 10);
+    if (*end || x < lo || x > hi) return 0;
+    *dst = (int)x;
+    return 1;
+}
+static int parse(const char *s) {
+    if (!strcmp(s, "1") || !strcmp(s, "on")) return 1;
+    while (*s) {
+        while (*s == ',' || *s == ';' || *s == ' ') ++s;
+        if (!*s) break;
+        const char *eq = strchr(s, '='), *end = s + strcspn(s, ",; ");
+        if (!eq || eq > end) { fprintf(stderr, "Benchmark: '%.*s' is not key=value\n", (int)(end - s), s); return 0; }
+        size_t k = (size_t)(eq - s), n = (size_t)(end - eq - 1);
+        const char *v = eq + 1;
+        int ok = 0;
+#define KEY(name) (k == sizeof(name) - 1 && !strncmp(s, name, k))
+        if (KEY("track")) ok = set_word(cfg.track, sizeof(cfg.track), v, n);
+        else if (KEY("car")) ok = set_word(cfg.car, sizeof(cfg.car), v, n);
+        else if (KEY("mode")) ok = set_word(cfg.mode, sizeof(cfg.mode), v, n);
+        else if (KEY("weather")) ok = set_word(cfg.weather, sizeof(cfg.weather), v, n);
+        else if (KEY("view")) ok = n == 0 ? (cfg.view[0] = 0, 1) : set_word(cfg.view, sizeof(cfg.view), v, n);
+        else if (KEY("drive")) ok = set_word(cfg.drive, sizeof(cfg.drive), v, n) && (!strcmp(cfg.drive, "ai") || !strcmp(cfg.drive, "none"));
+        else if (KEY("tod")) ok = set_int(&cfg.tod, v, n, 0, 23);
+        else if (KEY("laps")) ok = set_int(&cfg.laps, v, n, 1, 99);
+        else if (KEY("warmup")) ok = set_int(&cfg.warmup, v, n, 0, 600);
+        else if (KEY("seconds")) ok = set_int(&cfg.seconds, v, n, 1, 3600);
+        else if (KEY("timeout")) ok = set_int(&cfg.timeout, v, n, 10, 3600);
+#undef KEY
+        if (!ok) { fprintf(stderr, "Benchmark: bad setting '%.*s'\n", (int)(end - s), s); return 0; }
+        s = end;
+    }
+    return 1;
+}
+
+static int make_dirs(const char *path) {
+    char buffer[700];
+    snprintf(buffer, sizeof(buffer), "%s", path);
+    for (char *p = buffer + 1; *p; ++p) {
+        if (*p != '/' && *p != '\\') continue;
+        char c = *p; *p = 0;
+        mkdir(buffer, 0755); /* parents; failures show up in the last mkdir */
+        *p = c;
+    }
+    return mkdir(buffer, 0755) == 0 || errno == EEXIST;
+}
+
+/* The test script. It runs as a coroutine of the game's autotest component: the AutoTest:Wait* helpers yield
+ * once per frame. Messages go to the game's log with a [BB_BENCHMARK] prefix. */
+static const char script_template[] =
+    "-- Written by DriveClubGame for BB_BENCHMARK (src/runtime_benchmark.c). Not game data.\n"
+    "require(\"class\")\n"
+    "require(\"autotesthelpers\")\n"
+    "require(\"driveclub_testhelpers\")\n"
+    "local track, car, mode, weather, view = \"%s\", \"%s\", \"%s\", \"%s\", \"%s\"\n"
+    "local tod, laps, ai = %d, %d, %s\n"
+    "local function say(text) print(\"[BB_BENCHMARK] \" .. text .. \"\\n\") end\n"
+    "local function mark(name) loadfile(\"bb_benchmark/\" .. name) end\n"
+    "say(\"script started\")\n"
+    "mark(\"started\")\n"
+    "-- Intro: skip the video, confirm the title page.\n"
+    "DriveClubTestHelpers:AddAutoPageResponse(function(page)\n"
+    "  say(\"page \" .. tostring(page))\n"
+    "  if page == \"boot.introvideo\" then Event.SendEvent(global, \"GUI\", \"SkipVideo\") end\n"
+    "  if page == \"boot.start\" then Event.SendEvent(global, \"GUI\", \"BOOT_SEQ_DONE\") end\n"
+    "end)\n"
+    "AutoTest:WaitForEvent(global, \"IsFrontEnd\")\n"
+    "say(\"front end reached\")\n"
+    "mark(\"frontend\")\n"
+    "AutoTest:WaitForSeconds(1)\n"
+    "say(\"starting \" .. mode .. \" on \" .. track .. \" with \" .. car)\n"
+    "if mode == \"Race\" then\n"
+    "  Automation.Go(mode, track, \"sky_mainline_v2\", laps, false, tod, weather, 1, car, 2, false, 7,\n"
+    "    \"he_ve_gt\", \"ruf_rgt\", \"mi_jcw\", \"vw_beetle_gsr\", \"fe_f12\", \"lo_ex\", \"ma_mc_st\")\n"
+    "else\n"
+    "  Automation.Go(mode, track, \"sky_mainline_v2\", laps, false, tod, weather, 1, car, 2, true, 0)\n"
+    "end\n"
+    "AutoTest:WaitForEvent(global, \"AnimLibPlaySqMsg\", function(data)\n"
+    "  return data == \"prerace\" or data == \"prerace_night\"\n"
+    "end)\n"
+    "say(\"loaded, skipping the pre-race cameras\")\n"
+    "mark(\"loaded\")\n"
+    "AutoTest:WaitForSeconds(2)\n"
+    "Event.SendEvent(global, \"Advance\")\n"
+    "AutoTest:WaitForEvent(global, \"RaceState\", function(data) return data == \"Racing\" end)\n"
+    "if ai then DriveClubTestHelpers:SwitchToAI() end\n"
+    "if view ~= \"\" then DriveClubTestHelpers:ChangeView(view) end\n"
+    "say(\"racing\")\n"
+    "mark(\"racing\")\n"
+    "while true do\n"
+    "  AutoTest:WaitForSeconds(5)\n"
+    "  if ai then Actor.GetPlayer().UnderPlayerControl = false end\n"
+    "end\n";
+
+static void *watchdog(void *unused) {
+    (void)unused;
+    for (;;) {
+        sleep(1);
+        const double t = now_ms();
+        if (phase == WAITING && t - t_config > cfg.timeout * 1000.0) {
+            printf("Benchmark: FAILED, the race did not start within %d s (see the [BB_BENCHMARK] lines)\n", cfg.timeout);
+            fflush(NULL);
+            _exit(3);
+        }
+        if ((phase == WARMUP || phase == MEASURING) && t_last_flip > 0 && t - t_last_flip > 30000.0) {
+            printf("Benchmark: FAILED, no frame for 30 s\n");
+            fflush(NULL);
+            _exit(3);
+        }
+    }
+    return NULL;
+}
+
+void runtime_benchmark_configure(const char *user) {
+    const char *s = getenv("BB_BENCHMARK");
+    if (!s || !*s || !strcmp(s, "0") || !strcmp(s, "off")) return;
+    if (!parse(s)) { fprintf(stderr, "Benchmark: BB_BENCHMARK ignored\n"); return; }
+    snprintf(user_root, sizeof(user_root), "%s/benchmark", user);
+    char dir[700], path[800];
+    snprintf(dir, sizeof(dir), "%s/scripts/autotest/lua", user_root);
+    if (!make_dirs(dir)) { fprintf(stderr, "Benchmark: cannot create %s\n", dir); return; }
+    snprintf(path, sizeof(path), "%s/bb_benchmark.lua.bin", dir);
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "Benchmark: cannot write %s\n", path); return; }
+    fprintf(f, script_template, cfg.track, cfg.car, cfg.mode, cfg.weather, cfg.view, cfg.tod, cfg.laps,
+            strcmp(cfg.drive, "ai") ? "false" : "true");
+    fclose(f);
+    runtime_file_add_mods(user_root);
+    const char *o = getenv("BB_BENCHMARK_OUT");
+    snprintf(out_path, sizeof(out_path), "%s", o && *o ? o : "");
+    if (!out_path[0]) snprintf(out_path, sizeof(out_path), "%s/result.txt", user_root);
+    interval_cap = (size_t)(cfg.seconds + 1) * 1000;
+    intervals = malloc(interval_cap * sizeof(*intervals));
+    if (!intervals) { fprintf(stderr, "Benchmark: out of memory\n"); return; }
+    t_config = now_ms();
+    phase = WAITING;
+    pthread_t thread;
+    pthread_create(&thread, NULL, watchdog, NULL);
+    pthread_detach(thread);
+    printf("Benchmark: mode=%s track=%s car=%s tod=%d weather=%s laps=%d drive=%s view=%s warmup=%d s, %d s measured\n",
+           cfg.mode, cfg.track, cfg.car, cfg.tod, cfg.weather, cfg.laps, cfg.drive, cfg.view[0] ? cfg.view : "default",
+           cfg.warmup, cfg.seconds);
+}
+
+/* The extra command-line argument for the game, or NULL. */
+const char *runtime_benchmark_guest_arg(void) {
+    return phase == OFF ? NULL : "-luaautotest=" SCRIPT_GUEST;
+}
+
+/* Called for every guest path the file system resolves; returns 1 for the script's progress markers. */
+int runtime_benchmark_marker(const char *guest) {
+    if (phase == OFF || strncmp(guest, MARKER_PREFIX, sizeof(MARKER_PREFIX) - 1)) return 0;
+    const char *name = guest + sizeof(MARKER_PREFIX) - 1;
+    const double t = now_ms();
+    printf("Benchmark: %s at %.1f s\n", name, (t - t_config) / 1000.0);
+    if (!strcmp(name, "racing") && phase == WAITING) {
+        t_race = t;
+        t_measure = t + cfg.warmup * 1000.0;
+        __atomic_store_n(&phase, WARMUP, __ATOMIC_RELEASE);
+    }
+    return 1;
+}
+
+static int cmp_desc(const void *a, const void *b) {
+    const double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? 1 : x > y ? -1 : 0;
+}
+/* Average of the slowest share of the frames, as frames per second. */
+static double low_fps(const double *sorted_desc, size_t n, double share) {
+    size_t k = (size_t)(n * share);
+    if (k < 1) k = 1;
+    if (k > n) k = n;
+    double sum = 0;
+    for (size_t i = 0; i < k; ++i) sum += sorted_desc[i];
+    return sum > 0 ? 1000.0 * k / sum : 0;
+}
+
+static void finish(double t) {
+    const double elapsed = t - t_measure;
+    const size_t n = interval_count;
+    qsort(intervals, n, sizeof(*intervals), cmp_desc);
+    const double avg = elapsed > 0 ? 1000.0 * frames / elapsed : 0;
+    const double p99 = n ? intervals[n / 100] : 0, worst = n ? intervals[0] : 0;
+    char line[600];
+    snprintf(line, sizeof(line),
+             "mode=%s track=%s car=%s tod=%d weather=%s drive=%s seconds=%.1f frames=%zu avg_fps=%.2f "
+             "low1_fps=%.2f low01_fps=%.2f p99_ms=%.2f max_ms=%.2f load_s=%.1f",
+             cfg.mode, cfg.track, cfg.car, cfg.tod, cfg.weather, cfg.drive, elapsed / 1000.0, frames, avg,
+             low_fps(intervals, n, 0.01), low_fps(intervals, n, 0.001), p99, worst, (t_race - t_config) / 1000.0);
+    printf("Benchmark: result %s\n", line);
+    FILE *f = fopen(out_path, "wb");
+    if (f) { fprintf(f, "%s\n", line); fclose(f); }
+    else printf("Benchmark: cannot write %s\n", out_path);
+    printf("Benchmark: done, exiting\n");
+    fflush(NULL);
+    _exit(0); /* like a crash stop: GPU, audio and guest threads are still running */
+}
+
+/* Called by the video-out driver after each flip. */
+void runtime_benchmark_flip(void) {
+    const int p = __atomic_load_n(&phase, __ATOMIC_ACQUIRE);
+    if (p < WARMUP || p == DONE) return;
+    const double t = now_ms();
+    if (p == WARMUP) {
+        if (t >= t_measure) { t_measure = t; t_last_flip = t; phase = MEASURING; }
+        else t_last_flip = t;
+        return;
+    }
+    if (interval_count < interval_cap) intervals[interval_count++] = t - t_last_flip;
+    ++frames;
+    t_last_flip = t;
+    if (t - t_measure >= cfg.seconds * 1000.0) { phase = DONE; finish(t); }
+}

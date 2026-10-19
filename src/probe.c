@@ -920,6 +920,7 @@ int main(int argc, char **argv) {
         runtime_file_configure(app0, user_dir ? user_dir : "user");
         runtime_file_set_base(app0_base_dir);
         for (int mi=0;mi<mods_n;++mi) runtime_file_add_mods(mods_dir[mi]);
+        runtime_benchmark_configure(user_dir ? user_dir : "user");
         char sfo[4096], id[16]="";
         snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0);
         if (sfo_value(sfo,"INSTALL_DIR_SAVEDATA",id,sizeof(id),NULL) || sfo_value(sfo,"TITLE_ID",id,sizeof(id),NULL))
@@ -1149,7 +1150,8 @@ int main(int argc, char **argv) {
     }
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
     entered_game=1;
-    struct { uint64_t argc; const char *argv[2]; } params = {1, {"/app0/eboot.bin", NULL}};
+    struct { uint64_t argc; const char *argv[3]; } params = {1, {"/app0/eboot.bin", NULL, NULL}};
+    if ((params.argv[1]=runtime_benchmark_guest_arg())) params.argc=2;
 #ifdef _WIN32
     typedef void (ABI *Entry)(void *, void (ABI *)(void));
     ((Entry)(image + entry))(&params, guest_exit);

@@ -609,7 +609,10 @@ float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
 
-bool CardHidden(size_t k) { return int(k) == g_exp_card && !ExperimentalOn(); }
+// The window's size, scale and columns are worked out without the experimental card (g_size_without_exp), so
+// showing it moves nothing else: it only adds to the VR card's column, and the page scrolls if it no longer fits.
+bool g_size_without_exp = false;
+bool CardHidden(size_t k) { return int(k) == g_exp_card && (!ExperimentalOn() || g_size_without_exp); }
 
 void LayoutPass(float bottom_extra) {
   g_cols = (std::clamp)(int((g_win_w - 2 * kMargin + kGap) / (380.f + kGap)), 2, 4);
@@ -636,11 +639,9 @@ void LayoutPass(float bottom_extra) {
     heights[k] = h;
     order[k] = k;
   }
-  // VR fork: the experimental card goes with the card before it (VR): placed as one, it lands right below.
-  const bool exp_shown = g_exp_card > 0 && !CardHidden(g_exp_card);
-  const auto unit = [&](size_t k) {
-    return heights[k] + (exp_shown && int(k) == g_exp_card - 1 ? heights[g_exp_card] + kGap : 0.f);
-  };
+  // VR fork: the columns are chosen without the experimental card, so showing it moves nothing else; it then goes
+  // right below the card before it (VR), in that card's column.
+  const auto unit = [&](size_t k) { return heights[k]; };
   std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return unit(a) > unit(b); });
   float fill[4] = {0, 0, 0, 0};
   for (size_t k : order) {
@@ -697,10 +698,14 @@ void LayoutPass(float bottom_extra) {
 // Lays the window out for its current size. Wider: the columns widen. Taller: the rows spread out a little and
 // the cards take the rest.
 void Layout() {
+  // VR fork: the row spacing comes from the layout without the experimental card (it then only adds below VR).
+  const bool shown_exp = !g_size_without_exp;
+  g_size_without_exp = true;
   g_row_extra = 0;
   LayoutPass(0.f);
   g_natural_h = g_content_h + kFooterH;
   const float extra = g_win_h - g_natural_h;
+  float left = 0.f;
   if (extra > 1.f) {
     int rows = 1;
     for (int col = 0; col < g_cols; ++col) {
@@ -712,9 +717,13 @@ void Layout() {
     }
     g_row_extra = (std::min)(extra / float(rows), 14.f);
     LayoutPass(0.f);
-    const float left = g_win_h - (g_content_h + kFooterH);
-    if (left > 1.f) LayoutPass(left);
+    left = (std::max)(0.f, g_win_h - (g_content_h + kFooterH));
   }
+  g_size_without_exp = !shown_exp;
+  LayoutPass(0.f);
+  // Room left at the bottom: the columns' last cards reach down to the window's foot.
+  const float room = g_win_h - (g_content_h + kFooterH);
+  if (left > 1.f && room > 1.f) LayoutPass(room);
 }
 
 float TotalHeight() { return g_content_h + kFooterH; }
@@ -1439,6 +1448,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         // down to 60%; below that the content scrolls.
         const float cw = float(LOWORD(l));
         float s = g_dpi;
+        g_size_without_exp = true;  // VR fork
         for (int i = 0; i < 12; ++i) {
           g_scale = s;
           g_win_w = (std::max)(kWinW, (std::min)(kMaxW, cw / s));
@@ -1448,6 +1458,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           if (need <= g_client_h + 0.5f || s <= g_dpi * 0.6f + 0.001f) break;
           s = (std::max)(g_dpi * 0.6f, s * g_client_h / need);
         }
+        g_size_without_exp = false;
+        Layout();
       }
       g_scroll = (std::min)(g_scroll, MaxScroll());
       g_oy = ContentOy();
@@ -1549,10 +1561,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         if (ctl.kind == Kind::Toggle) {
           ctl.sel = !ctl.sel;
-          if (c == g_vrexp) {  // VR fork: the experimental card appears or goes: lay the window out again
-            RECT cr;
-            GetClientRect(h, &cr);
-            SendMessageW(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(cr.right, cr.bottom));
+          if (c == g_vrexp) {  // VR fork: the experimental card appears or goes; the rest stays where it is
+            Layout();
+            // Shown below the window's foot: scrolled into view (it ends its column, at the bottom of the page).
+            g_scroll = ctl.sel ? MaxScroll() : (std::min)(g_scroll, MaxScroll());
+            g_oy = ContentOy();
           }
           if (ctl.patches[0] == "@skipgpu") {
             g_skip_gpu_check = ctl.sel != 0;
@@ -1718,6 +1731,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
       const float avail_w = float(work.right - work.left), avail_h = float(work.bottom - work.top);
       const float candidates[3] = {kWinW, 1320.f, kMaxW};
+      g_size_without_exp = true;  // VR fork
       for (float cw : candidates) {
         if (cw * g_scale > avail_w) break;
         g_win_w = cw;
@@ -1726,12 +1740,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         start_w = cw;
         if (TotalHeight() * g_scale + 48.f * g_scale <= avail_h) break;
       }
+      g_size_without_exp = false;
     }
   }
   g_win_w = start_w;
+  g_size_without_exp = true;  // VR fork: the window's height too
   Layout();
   const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;  // every edge and corner resizes
   RECT rc{0, 0, LONG(start_w * g_scale), LONG(TotalHeight() * g_scale)};
+  g_size_without_exp = false;
+  Layout();
   AdjustWindowRect(&rc, style, FALSE);
   {
     // At most 85% of the work area high and 95% wide; the layout then shrinks to fit (see WM_SIZE).

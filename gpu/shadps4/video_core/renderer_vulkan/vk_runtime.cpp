@@ -542,6 +542,11 @@ void Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
         blit_helper->ReinterpretColorAsMsDepth(
             dst->info.size.width, dst->info.size.height, dst->info.num_samples,
             src->info.pixel_format, dst->info.pixel_format, src->GetImage(), dst->GetImage());
+        if (Vr::Multiview::Stereo(*dst)) { // VR: the right eye's layer (from the source's, or its only one)
+            blit_helper->ReinterpretColorAsMsDepth(
+                dst->info.size.width, dst->info.size.height, dst->info.num_samples, src->info.pixel_format,
+                dst->info.pixel_format, src->GetImage(), dst->GetImage(), Vr::Multiview::Stereo(*src) ? 1 : 0, 1);
+        }
     } else {
         static std::atomic<u32> warned{0};
         if (warned.fetch_add(1) < 3) {  // it repeats many times a second: only the first few are logged

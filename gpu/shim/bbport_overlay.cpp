@@ -144,6 +144,55 @@ void TextEntryBox() {
     ImGui::End();
 }
 
+/// The in-game keys. Called from Render() before the visibility check: F12 hides the overlay,
+/// and everything here has to keep working while nothing of ours is drawn.
+void PollHotkeys() {
+#ifdef _WIN32
+    auto& s = BbSettings::Get();
+    const auto edge = [](const int key, bool& down) {
+        const bool now = (GetAsyncKeyState(key) & 0x8000) != 0;
+        const bool pressed = now && !down;
+        down = now;
+        return pressed;
+    };
+    static bool f12_down = false;
+    if (edge(VK_F12, f12_down)) {
+        s.show_fps = !s.show_fps;
+    }
+    // F9: anti-aliasing on and off, F10: FSR 3.1 and DLAA (for comparing).
+    static bool f9_down = false, f10_down = false;
+    static int remembered = BbSettings::AaFsr3;
+    const bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    const bool f10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+    if (s.aa_mode != BbSettings::AaOff) {
+        remembered = s.aa_mode;
+        g_aa_used = true;
+    }
+    if (f9 && !f9_down) {
+        s.aa_mode = s.aa_mode != BbSettings::AaOff ? int(BbSettings::AaOff) : remembered;
+    }
+    if (f10 && !f10_down && s.dlss_supported) { // DLSS only where this card can run it
+        remembered = remembered == BbSettings::AaDlss ? int(BbSettings::AaFsr3)
+                                                      : int(BbSettings::AaDlss);
+        if (s.aa_mode != BbSettings::AaOff) {
+            s.aa_mode = remembered;
+        }
+    }
+    f9_down = f9;
+    f10_down = f10;
+    // F8: frame generation paused and resumed (everything stays set up).
+    static bool f8_down = false;
+    const bool f8 = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+    if (s.frame_gen != BbSettings::FrameGenOff) {
+        g_fg_used = true;
+        if (f8 && !f8_down) {
+            s.frame_gen_paused = !s.frame_gen_paused;
+        }
+    }
+    f8_down = f8;
+#endif
+}
+
 void FpsCounter() {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float pad = 12.0f * base_scale;
@@ -157,46 +206,11 @@ void FpsCounter() {
                      ImGuiWindowFlags_NoFocusOnAppearing);
     {
         auto& s = BbSettings::Get();
-#ifdef _WIN32
-        {
-            // F9: anti-aliasing on and off, F10: FSR 3.1 and DLAA (for comparing).
-            static bool f9_down = false, f10_down = false;
-            static int remembered = BbSettings::AaFsr3;
-            const bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-            const bool f10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-            if (s.aa_mode != BbSettings::AaOff) {
-                remembered = s.aa_mode;
-                g_aa_used = true;
-            }
-            if (f9 && !f9_down) {
-                s.aa_mode = s.aa_mode != BbSettings::AaOff ? int(BbSettings::AaOff) : remembered;
-            }
-            if (f10 && !f10_down && s.dlss_supported) {  // DLSS only where this card can run it
-                remembered = remembered == BbSettings::AaDlss ? int(BbSettings::AaFsr3)
-                                                              : int(BbSettings::AaDlss);
-                if (s.aa_mode != BbSettings::AaOff) {
-                    s.aa_mode = remembered;
-                }
-            }
-            f9_down = f9;
-            f10_down = f10;
-            // F8: frame generation paused and resumed (everything stays set up).
-            static bool f8_down = false;
-            const bool f8 = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
-            if (s.frame_gen != BbSettings::FrameGenOff) {
-                g_fg_used = true;
-                if (f8 && !f8_down) {
-                    s.frame_gen_paused = !s.frame_gen_paused;
-                }
-            }
-            f8_down = f8;
-        }
-#endif
         const float shown = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f;
         if (s.frame_gen != BbSettings::FrameGenOff && s.frame_gen_now.load() > 0 && s.game_fps > 0.0f) {
-            ImGui::Text("%.0f FPS (game %.0f)", shown, s.game_fps.load());
+            ImGui::Text("%.0f FPS (game %.0f)  (F12 off)", shown, s.game_fps.load());
         } else {
-            ImGui::Text("%.0f FPS  %.1f ms", shown, frame_ms_avg);
+            ImGui::Text("%.0f FPS  %.1f ms  (F12 off)", shown, frame_ms_avg);
         }
         if (s.frame_gen != BbSettings::FrameGenOff) {
             if (s.frame_gen_paused) {
@@ -395,7 +409,12 @@ void SetTextEntry(bool active, const std::string& prompt, const std::string& tex
     text_entry_text = text;
 }
 
-void NotePresent() {}
+void NotePresent() {
+    // Called every present whether or not anything of ours is drawn, so this is the only place
+    // the keys can be polled from: Render() is gated on Visible(), which is false once F12 has
+    // hidden the readout, and the poll would stop with it.
+    PollHotkeys();
+}
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     // Present interval for the FPS readout (measured also while nothing is drawn).

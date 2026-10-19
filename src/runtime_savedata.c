@@ -243,6 +243,16 @@ static ABI int32_t save_icon(const MountPoint *point, const Icon *icon) {
     pthread_mutex_unlock(&lock);
     return r;
 }
+/* sceSaveDataGetMountInfo: how many blocks the mounted save data has and how many are free. The game asks before
+ * it writes a replay; an unwritten answer read as "no free space". Same size as the directory search reports. */
+static ABI int32_t save_mount_info(const void *mount_point, SearchInfo *info) {
+    if (!initialized) return ERR_NOT_INITIALIZED;
+    if (!mount_point || !info) return ERR_PARAMETER;
+    memset(info,0,sizeof(*info));
+    info->blocks=32768;
+    info->free_blocks=16384;
+    return 0;
+}
 static ABI int32_t save_delete(const Delete *d) {
     if (!initialized) return ERR_NOT_INITIALIZED;
     if (!d || !d->dir || !valid_name(d->dir->data,sizeof(d->dir->data))) return ERR_PARAMETER;
@@ -351,7 +361,7 @@ static const RuntimeExport exports[]={
     {"sceSaveDataInitialize3",save_initialize}, {"sceSaveDataTerminate",save_terminate},
     {"sceSaveDataMount",save_mount}, {"sceSaveDataMount2",save_mount2}, {"sceSaveDataUmount",save_umount},
     {"sceSaveDataSetParam",save_set_param}, {"sceSaveDataSaveIcon",save_icon}, {"sceSaveDataDelete",save_delete},
-    {"sceSaveDataDirNameSearch",save_search},
+    {"sceSaveDataDirNameSearch",save_search}, {"sceSaveDataGetMountInfo",save_mount_info},
     {"sceSaveDataSetupSaveDataMemory",memory_setup}, {"sceSaveDataGetSaveDataMemory",memory_get},
     {"sceSaveDataSetSaveDataMemory",memory_set},
 };

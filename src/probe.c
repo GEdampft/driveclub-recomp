@@ -721,6 +721,8 @@ static DWORD WINAPI hang_watchdog(LPVOID unused) {
         reported_this_freeze = 1;
         ++reports;
         bbgpu_print_recent_passes();
+        runtime_diag_print(stdout); /* before any thread is suspended: it takes a lock */
+        runtime_rwlock_dump(stdout);
         printf("Hang: no frame presented for %llu s (uptime %llu s); threads:", (unsigned long long)((now - last_change) / 1000),
                (unsigned long long)((now - start_tick) / 1000));
         fputc(10, stdout);
@@ -742,15 +744,31 @@ static DWORD WINAPI hang_watchdog(LPVOID unused) {
                     char where[MAX_PATH + 64];
                     describe_address(where, sizeof where, (uintptr_t)context.Rip);
                     printf("  thread %lu at %s; stack:", te.th32ThreadID, where);
-                    uintptr_t words[128];
+                    uintptr_t words[1024];
                     SIZE_T got = 0;
                     int shown = 0;
                     if (ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)context.Rsp, words, sizeof words, &got)) {
-                        for (SIZE_T i = 0; i < got / sizeof words[0] && shown < 10; ++i) {
+                        for (SIZE_T i = 0; i < got / sizeof words[0] && shown < 24; ++i) {
                             const uintptr_t off = words[i] - (uintptr_t)image;
                             if (image && words[i] > (uintptr_t)image && (off < 0x1560000 || (off >= 0x2820000 && off < 0x3400000))) {
                                 printf(" +0x%llx", (unsigned long long)off);
                                 ++shown;
+                            }
+                        }
+                        /* Return addresses inside the runtime itself (renderer and runtime threads): look them up with the
+                         * release's executable. */
+                        static uintptr_t host_base = 0, host_size = 0;
+                        if (!host_base) {
+                            host_base = (uintptr_t)GetModuleHandleA(NULL);
+                            const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)host_base;
+                            const IMAGE_NT_HEADERS64 *nt = (const IMAGE_NT_HEADERS64 *)(host_base + dos->e_lfanew);
+                            host_size = nt->OptionalHeader.SizeOfImage;
+                        }
+                        int host_shown = 0;
+                        for (SIZE_T i = 0; i < got / sizeof words[0] && host_shown < 14; ++i) {
+                            if (words[i] >= host_base && words[i] < host_base + host_size) {
+                                printf("%s host+0x%llx", host_shown ? "" : "  |", (unsigned long long)(words[i] - host_base));
+                                ++host_shown;
                             }
                         }
                     }

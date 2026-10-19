@@ -350,6 +350,16 @@ static int64_t do_read(int fd,void *buffer,uint64_t size) {
     ssize_t n=host_read(h,buffer,size);
     { static unsigned dat_reads; if (n>=0 && !strncmp(files[fd].path,"/app0/game",10) && (dat_reads++<60 || dat_reads%2000==0))
         printf("Runtime: read %s size %llu -> %lld (#%u)\n",files[fd].path,(unsigned long long)size,(long long)n,dat_reads); }
+    if (n==0 && size>0 && !strncmp(files[fd].path,"/app0/game",10)) {
+        /* A volume of the game archive that ends early (an incomplete copy of the dump): the game keeps asking. */
+        static char warned[4][64]; static unsigned warned_count;
+        int seen=0;
+        for (unsigned i=0;i<warned_count && i<4;++i) if (!strcmp(warned[i],files[fd].path)) seen=1;
+        if (!seen && warned_count<4) {
+            snprintf(warned[warned_count++],sizeof warned[0],"%s",files[fd].path);
+            printf("Runtime: WARNING %s ends earlier than the game expects: the file is incomplete or damaged. Copy the game files again.\n",files[fd].path);
+        }
+    }
     if (n<0) { if (audio_trace()) printf("Audio trace: read(fd %d, %llu) failed, errno %d\n",fd,(unsigned long long)size,errno); return -errno; }
     __atomic_add_fetch(&reads,1,__ATOMIC_RELAXED); __atomic_add_fetch(&bytes_read,(uint64_t)n,__ATOMIC_RELAXED);
     return n;

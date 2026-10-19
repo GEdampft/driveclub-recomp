@@ -168,6 +168,9 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
     } else {
         buffer_ci.flags |=
             vk::BufferCreateFlagBits::eSparseBinding | vk::BufferCreateFlagBits::eSparseResidency;
+        if (sparse_aliased_enabled) {
+            buffer_ci.flags |= vk::BufferCreateFlagBits::eSparseAliased;
+        }
         buffer = Vulkan::Check(device.createBuffer(buffer_ci));
     }
 

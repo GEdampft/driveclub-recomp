@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <span>
 #include <unordered_map>
 
@@ -251,19 +252,22 @@ public:
     }
 
     /// Returns true if the subgroup size can be set to match guest subgroup size
-    /// bbport: in every stage the game's shaders use. AMD reports 64-wide subgroups but lets the
-    /// size be required only for compute: requiring 64 in the graphics stages was invalid, and the
-    /// shaders were compiled for 64 lanes but ran at the driver's own width (random colored fog
-    /// and characters). Those cards use the 32-wide path, which
-    /// NVIDIA runs: compute pinned to 32 and the recompiler lowering wave64 code for 32 lanes.
-    /// Vertex is not required: RADV lets the size be required in fragment and compute but not in
-    /// vertex (requiredSubgroupSizeStages 0xf0), and on the 32-wide path it draws colored blocks
-    /// and noisy edges. Vertex shaders keep the driver's width there (CanRequireSubgroupSize).
+    /// bbport: the 64-wide path needs a driver that lets compute require 64 lanes (AMD, the
+    /// compute-lowering to 32 lanes drew colored stripes and blocks there). Graphics stages are
+    /// pinned only where the driver allows it (CanRequireSubgroupSize): RADV allows fragment and
+    /// compute but not vertex (requiredSubgroupSizeStages 0xf0), the Windows AMD driver only
+    /// compute (0x20). NVIDIA and Intel report at most 32 lanes and use the lowered path.
+    /// BB_SUBGROUP=32 forces the lowered 32-wide path, 64 the native one.
     bool IsSubgroupSize64Supported() const {
-        constexpr auto stages = vk::ShaderStageFlagBits::eFragment |
-                                vk::ShaderStageFlagBits::eCompute;
+        static const int forced = [] {
+            const char* env = std::getenv("BB_SUBGROUP");
+            return env ? std::atoi(env) : 0;
+        }();
+        if (forced == 32) {
+            return false;
+        }
         return vk13_features.subgroupSizeControl && vk13_props.maxSubgroupSize >= 64 &&
-               (vk13_props.requiredSubgroupSizeStages & stages) == stages;
+               bool(vk13_props.requiredSubgroupSizeStages & vk::ShaderStageFlagBits::eCompute);
     }
 
     /// True when compute shaders must be pinned to 32-wide subgroups: the device could run them

@@ -1022,8 +1022,20 @@ std::wstring Preflight() {
   // The archive of the game is spread over many volume files.
   {
     unsigned used = 0;
-    std::vector<unsigned> missing;
-    const std::string problem = DatxCheckVolumes(g_folder[0].path, g_folder[1].path, used, missing);
+    std::vector<unsigned> missing, truncated;
+    const std::string problem = DatxCheckVolumes(g_folder[0].path, g_folder[1].path, used, missing, &truncated);
+    if (problem.empty() && !truncated.empty()) {
+      std::string list;
+      for (size_t i = 0; i < truncated.size() && i < 8; ++i) {
+        char name[24];
+        std::snprintf(name, sizeof name, "game%03u.dat", truncated[i]);
+        list += (list.empty() ? "" : ", ") + std::string(name);
+      }
+      LauncherLog("archive check: " + std::to_string(truncated.size()) + " volumes are shorter than the archive says (" + list + ")");
+      return L"These game files are incomplete: " + std::wstring(list.begin(), list.end()) +
+             (truncated.size() > 8 ? L" and more" : L"") +
+             L". The copy of the game was cut short. Copy the game files again, then start the game.";
+    }
     if (!problem.empty()) {
       LauncherLog("archive check: " + problem);
     } else if (!missing.empty()) {

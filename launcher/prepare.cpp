@@ -719,6 +719,7 @@ struct PatchLine {
 struct PatchEntry {
   std::string name, note;
   bool default_on = false;
+  bool always = false; // internal fix, applied whatever the launcher selects
   std::vector<PatchLine> lines;
 };
 
@@ -768,6 +769,9 @@ std::vector<PatchEntry> ParsePatches(const std::string& xml) {
       std::string on = Attr(tag, "isEnabled");
       for (auto& c : on) c = char(std::tolower(static_cast<unsigned char>(c)));
       e.default_on = on == "true";
+      std::string always = Attr(tag, "Always");
+      for (auto& c : always) c = char(std::tolower(static_cast<unsigned char>(c)));
+      e.always = always == "true";
       out.push_back(std::move(e));
     } else if (tag.rfind("Line", 0) == 0 && !out.empty()) {
       out.back().lines.push_back({Attr(tag, "Type"), Attr(tag, "Address"), Attr(tag, "Value"), Attr(tag, "OriginalHash")});
@@ -826,7 +830,7 @@ Bytes CompilePatches(const std::vector<PatchEntry>& list, const std::set<std::st
                      uint64_t image_size) {
   std::vector<std::pair<uint64_t, Bytes>> writes;
   for (const auto& e : list) {
-    const bool on = chosen ? chosen->count(e.name) != 0 : e.default_on;
+    const bool on = e.always || (chosen ? chosen->count(e.name) != 0 : e.default_on);
     if (!on) continue;
     std::vector<std::pair<uint64_t, Bytes>> mine;
     bool skip = false;

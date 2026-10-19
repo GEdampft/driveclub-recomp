@@ -52,7 +52,7 @@ Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.
 | D-pad | Arrow keys |
 | Look around | I J K L or the mouse |
 
-F7 turns mouse look on or off. F9 and F10 are the anti-aliasing keys above. The bindings are in `data\user\input_config\default.ini` and can be changed there.
+F7 turns mouse look on or off. F9 and F10 are the anti-aliasing keys above. F12 hides and shows the FPS counter. The bindings are in `data\user\input_config\default.ini` and can be changed there.
 
 ## Settings
 The window that opens when you start `DriveClub.exe` has every setting. Press **Play** to save them; they are kept for later starts.

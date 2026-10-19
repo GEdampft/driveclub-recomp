@@ -215,6 +215,14 @@ void BufferCache::ExtendWriteFault(VAddr device_addr) {
 static constexpr u64 READBACK_WINDOW_SIZE = 512_KB;
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks) {
+    // Development (BB_READBACK_LOG=1): each CPU access that needs GPU data, the first 200000.
+    static const bool log_reads = std::getenv("BB_READBACK_LOG") != nullptr;
+    static std::atomic<int> logged{0};
+    if (log_reads && logged.fetch_add(1) < 200000) {
+        std::printf("Readback: %#llx +%#llx %s\n", (unsigned long long)device_addr, (unsigned long long)size,
+                    is_write ? "write" : "read");
+        std::fflush(stdout);
+    }
     // The faulting thread waits for the download instead of the GPU command thread: that thread
     // keeps recording the frame while the copy runs.
     static const bool offload_enabled = [] {

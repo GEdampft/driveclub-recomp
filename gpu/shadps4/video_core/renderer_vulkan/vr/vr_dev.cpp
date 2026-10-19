@@ -255,7 +255,7 @@ void Poll() {
     }
     std::string shot;
     if (Take("TSHOT", &shot)) {
-        Stereo::ShootTarget(std::strtoull(shot.c_str(), nullptr, 16));
+        Stereo::ShootTarget(shot.rfind("display", 0) == 0 ? 1 : std::strtoull(shot.c_str(), nullptr, 16));
     }
     if (Take("EYES")) {
         Stereo::DumpEyes();

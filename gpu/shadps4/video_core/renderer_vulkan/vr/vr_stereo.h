@@ -43,7 +43,8 @@ void Init(VkPhysicalDevice physical_device, VkDevice device);
 /// Development (BB_VR_FS_IMAGES=<vs hex>, or the FSIMG trigger): the images draws with that vertex shader sample in
 /// their pixel shader.
 void LogFragmentImages(const Shader::Info& vs, const Shader::Info* fs, u32 depth_control = 0,
-                       u32 stencil_control = 0, u32 stencil_ref_front = 0);
+                       u32 stencil_control = 0, u32 stencil_ref_front = 0, u32 indices = 0,
+                       u32 instances = 0);
 void WatchFragmentImages(u64 vs_hash);
 
 /// Development (SKIP trigger: shader hashes in hex, separated by spaces or commas; an empty file clears it): draws

@@ -1165,7 +1165,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     Vr::Stereo::LogFragmentImages(pipeline->GetStage(Shader::SwStage::Vertex), // VR: development
                                   pipeline->GetStages()[u32(Shader::SwStage::Fragment)],
                                   std::bit_cast<u32>(Regs().depth_control), std::bit_cast<u32>(Regs().stencil_control),
-                                  std::bit_cast<u32>(Regs().stencil_ref_front));
+                                  std::bit_cast<u32>(Regs().stencil_ref_front), Regs().num_indices,
+                                  Regs().num_instances.NumInstances());
     Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
                        pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
@@ -1460,7 +1461,8 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     Vr::Stereo::LogFragmentImages(pipeline->GetStage(Shader::SwStage::Vertex), // VR: development
                                   pipeline->GetStages()[u32(Shader::SwStage::Fragment)],
                                   std::bit_cast<u32>(Regs().depth_control), std::bit_cast<u32>(Regs().stencil_control),
-                                  std::bit_cast<u32>(Regs().stencil_ref_front));
+                                  std::bit_cast<u32>(Regs().stencil_ref_front), Regs().num_indices,
+                                  Regs().num_instances.NumInstances());
     Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
                        pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {

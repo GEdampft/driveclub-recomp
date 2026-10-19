@@ -28,7 +28,11 @@
 namespace VideoCore {
 namespace {
 
-constexpr u64 MaxSmallWrite = 1024;
+// Development: BB_READBACK_SMALL_MAX=<KB> raises the size limit.
+const u64 MaxSmallWrite = [] {
+    const char* env = std::getenv("BB_READBACK_SMALL_MAX");
+    return env ? std::strtoull(env, nullptr, 10) * 1024 : u64(1024);
+}();
 
 struct Range {
     VAddr addr;
@@ -57,6 +61,39 @@ bool Enabled() {
 } // namespace
 
 void BufferCache::NoteSmallGpuWrite(VAddr device_addr, u64 size) {
+    // Development (BB_READBACK_SMALL_PAGES=<hex page>,...): GPU-written ranges touching those 4 KB pages, once each.
+    static const std::vector<VAddr> watch_pages = [] {
+        std::vector<VAddr> pages;
+        if (const char* env = std::getenv("BB_READBACK_SMALL_PAGES")) {
+            for (const char* s = env; *s;) {
+                char* end = nullptr;
+                const VAddr v = std::strtoull(s, &end, 16);
+                if (end == s) {
+                    ++s;
+                    continue;
+                }
+                pages.push_back(v & ~VAddr{0xfff});
+                s = end;
+            }
+        }
+        return pages;
+    }();
+    if (!watch_pages.empty() && size) {
+        static std::mutex seen_mutex;
+        static std::vector<std::pair<VAddr, u64>> seen;
+        for (const VAddr page : watch_pages) {
+            if (device_addr < page + 0x1000 && page < device_addr + size) {
+                std::scoped_lock lk{seen_mutex};
+                if (std::find(seen.begin(), seen.end(), std::pair{device_addr, size}) == seen.end() && seen.size() < 400) {
+                    seen.emplace_back(device_addr, size);
+                    std::printf("Small GPU write in a watched page: %#llx +%#llx\n", (unsigned long long)device_addr,
+                                (unsigned long long)size);
+                    std::fflush(stdout);
+                }
+                break;
+            }
+        }
+    }
     if (size == 0 || size > MaxSmallWrite || !Enabled()) {
         return;
     }

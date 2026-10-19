@@ -1227,10 +1227,9 @@ std::wstring StartGame() {
       SetEnvironmentVariableW(L"BB_VBLANK_HZ", hz);
       SetEnvironmentVariableW(L"BB_FPS_LIMIT", hz);
     }
-    // No GPU readbacks. The game keeps CPU objects in the same 4 KB pages as small values the GPU writes (counters,
-    // labels), so with readbacks every frame's CPU access to them waited for the GPU to finish all its queued work
-    // (4320 per eye: 65 -> 80 FPS without). Nothing it reads back shows.
-    if (GetEnvironmentVariableW(L"BB_READBACKS", nullptr, 0) == 0) SetEnvironmentVariableW(L"BB_READBACKS", L"0");
+    // GPU readbacks stay precise in VR, as flat. Without them (BB_READBACKS=0: 4320 per eye 65 -> 80 FPS) the game
+    // missed GPU results it reads: the crowd stood in mid-air, the windscreen drops flickered, and at dawn the picture
+    // went black (small_writeback.cpp covers that one). BB_READBACKS=0 set before starting still selects it.
   }
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;

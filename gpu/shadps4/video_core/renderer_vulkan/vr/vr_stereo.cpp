@@ -472,7 +472,7 @@ void ShootTarget(u64 guest_address) {
     g_shoot_last_vs = 0;
     g_shoot_count = 0;
     g_shoot_address = guest_address;
-    g_shoot_left = 3000;
+    g_shoot_left = guest_address == 1 ? 200000 : 3000; // 1: the display buffers, over many frames
 }
 
 namespace {
@@ -557,14 +557,15 @@ void WatchFragmentImages(u64 vs_hash) {
 }
 
 void LogFragmentImages(const Shader::Info& vs, const Shader::Info* fs, u32 depth_control, u32 stencil_control,
-                       u32 stencil_ref_front) {
+                       u32 stencil_ref_front, u32 indices, u32 instances) {
     const u64 vs_hash = vs.pgm_hash;
     const u64 watch = g_fs_watch.load(std::memory_order_relaxed);
     if (!watch || vs_hash != watch || !fs || fs->images.empty() || g_fs_watch_left.fetch_sub(1) <= 0) {
         return;
     }
-    std::printf("VR fs images: vs %#llx fs %#llx depth %#x stencil %#x ref %#x:", (unsigned long long)vs_hash,
-                (unsigned long long)fs->pgm_hash, depth_control, stencil_control, stencil_ref_front);
+    std::printf("VR fs images: vs %#llx fs %#llx indices %u instances %u depth %#x stencil %#x ref %#x:",
+                (unsigned long long)vs_hash, (unsigned long long)fs->pgm_hash, indices, instances,
+                depth_control, stencil_control, stencil_ref_front);
     for (const auto& res : fs->images) {
         const auto image = res.GetSharp(*fs);
         std::printf(" [%#llx %ux%u dfmt %u nfmt %u]", (unsigned long long)image.Address(), u32(image.width) + 1,
@@ -636,7 +637,9 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
         }
         auto& image = texture_cache.GetImage(color_id);
         const auto f = image.info.pixel_format;
-        if (image.info.guest_address == g_shoot_address.load() && vs_hash != g_shoot_last_vs &&
+        // TSHOT "display": any display buffer (the frames alternate between them), over many frames.
+        const bool shoot_display = g_shoot_address.load() == 1 && FrameCapture::IsDisplayBuffer(image.info.guest_address);
+        if ((image.info.guest_address == g_shoot_address.load() || shoot_display) && vs_hash != g_shoot_last_vs &&
             (f == vk::Format::eR8G8B8A8Unorm || f == vk::Format::eR8G8B8A8Srgb || f == vk::Format::eB8G8R8A8Unorm ||
              f == vk::Format::eB8G8R8A8Srgb || f == vk::Format::eB10G11R11UfloatPack32 ||
              f == vk::Format::eR16G16B16A16Sfloat) && g_shoot_count < 40) {

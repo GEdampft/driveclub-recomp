@@ -13,9 +13,14 @@
  *   BB_BENCHMARK=1                       defaults below
  *   BB_BENCHMARK=track=canada_road_circuit_02_n,car=ren_dez,seconds=60
  * Keys: track, car, mode (TimeTrial or Race), tod (hour 0-23), weather (Clear, Cloudy, Overcast, Stormy),
+ *       rain (the game's precipitation preset, '_' for each space: Heavy_Precipitation, Dry_To_Wet, Wet_Track,
+ *       ...; short names Heavy, Mid, Light, VeryLight, Wet, Damp, DryToWet; empty = dry),
  *       laps, warmup (s after the race starts, not measured), seconds (measured), drive (ai or none),
  *       view (camera, e.g. chase, driverhead, attach; empty = game default), timeout (s until the race must run).
- * BB_BENCHMARK_OUT=<file> also gets the result line (default <user>/benchmark/result.txt). */
+ * BB_BENCHMARK_OUT=<file> also gets the result line (default <user>/benchmark/result.txt).
+ * BB_BENCHMARK_LUA=<host file>: Lua run inside the script (in a pcall) with `stage` set to "frontend", "loaded",
+ * "racing" and "tick" (every 5 s while racing); say(text) there goes to the log. A debugging aid: the game's
+ * own print output does not reach the log, so script messages go through a marker open (say:<text>). */
 #define _GNU_SOURCE
 #include "runtime.h"
 #include <stdio.h>
@@ -35,9 +40,9 @@
 #define MARKER_PREFIX "/app0/bb_benchmark/"
 
 static struct {
-    char track[64], car[64], mode[16], weather[16], view[24], drive[8];
+    char track[64], car[64], mode[16], weather[16], view[24], drive[8], rain[48];
     int tod, laps, warmup, seconds, timeout;
-} cfg = {"canada_road_circuit_02_n", "ren_dez", "TimeTrial", "Clear", "", "ai", 12, 5, 5, 60, 240};
+} cfg = {"canada_road_circuit_02_n", "ren_dez", "TimeTrial", "Clear", "", "ai", "", 12, 5, 5, 60, 240};
 
 enum { OFF, WAITING, WARMUP, MEASURING, DONE };
 static volatile int phase = OFF;
@@ -76,6 +81,26 @@ static int set_int(int *dst, const char *v, size_t n, int lo, int hi) {
     *dst = (int)x;
     return 1;
 }
+/* The precipitation preset: a short name, or the game's preset name with '_' for each space. The game's names
+ * (eboot strings next to the precipitation icons): Light Precipitation, Heavy Precipitation, Mid Precipitation,
+ * Very Light Precipitation, Dry To Wet, Wet To Dry, Wet Track, Damp Track, Light Constant, ... */
+static int set_rain(const char *v, size_t n) {
+    static const char *const alias[][2] = {
+        {"Heavy", "Heavy Precipitation"}, {"Mid", "Mid Precipitation"}, {"Light", "Light Precipitation"},
+        {"VeryLight", "Very Light Precipitation"}, {"Wet", "Wet Track"}, {"Damp", "Damp Track"},
+        {"DryToWet", "Dry To Wet"}};
+    if (!set_word(cfg.rain, sizeof(cfg.rain), v, n)) return 0;
+    for (size_t i = 0; i < sizeof(alias) / sizeof(alias[0]); ++i) {
+        if (!strcmp(cfg.rain, alias[i][0])) {
+            snprintf(cfg.rain, sizeof(cfg.rain), "%s", alias[i][1]);
+            return 1;
+        }
+    }
+    for (char *c = cfg.rain; *c; ++c) if (*c == '_') *c = ' ';
+    return 1;
+}
+static char *probe_lua; /* BB_BENCHMARK_LUA contents */
+
 static int parse(const char *s) {
     if (!strcmp(s, "1") || !strcmp(s, "on")) return 1;
     while (*s) {
@@ -91,6 +116,7 @@ static int parse(const char *s) {
         else if (KEY("car")) ok = set_word(cfg.car, sizeof(cfg.car), v, n);
         else if (KEY("mode")) ok = set_word(cfg.mode, sizeof(cfg.mode), v, n);
         else if (KEY("weather")) ok = set_word(cfg.weather, sizeof(cfg.weather), v, n);
+        else if (KEY("rain")) ok = n == 0 ? (cfg.rain[0] = 0, 1) : set_rain(v, n);
         else if (KEY("view")) ok = n == 0 ? (cfg.view[0] = 0, 1) : set_word(cfg.view, sizeof(cfg.view), v, n);
         else if (KEY("drive")) ok = set_word(cfg.drive, sizeof(cfg.drive), v, n) && (!strcmp(cfg.drive, "ai") || !strcmp(cfg.drive, "none"));
         else if (KEY("tod")) ok = set_int(&cfg.tod, v, n, 0, 23);
@@ -124,10 +150,21 @@ static const char script_template[] =
     "require(\"class\")\n"
     "require(\"autotesthelpers\")\n"
     "require(\"driveclub_testhelpers\")\n"
-    "local track, car, mode, weather, view = \"%s\", \"%s\", \"%s\", \"%s\", \"%s\"\n"
+    "local track, car, mode, weather, view, rain = \"%s\", \"%s\", \"%s\", \"%s\", \"%s\", \"%s\"\n"
     "local tod, laps, ai = %d, %d, %s\n"
-    "local function say(text) print(\"[BB_BENCHMARK] \" .. text .. \"\\n\") end\n"
     "local function mark(name) loadfile(\"bb_benchmark/\" .. name) end\n"
+    "-- The game's print does not reach the log: messages also go through a marker open the runtime prints.\n"
+    "local function say(text)\n"
+    "  text = tostring(text)\n"
+    "  print(\"[BB_BENCHMARK] \" .. text .. \"\\n\")\n"
+    "  mark(\"say:\" .. (string.gsub(string.sub(text, 1, 400), \"[^%%w%%s%%.:=_,%%-%%(%%)%%[%%]]\", \"?\")))\n"
+    "end\n"
+    "local function probe(stage)\n"
+    "  local ok, err = pcall(function()\n"
+    "%s\n"
+    "  end)\n"
+    "  if not ok then say(\"probe error at \" .. stage .. \": \" .. tostring(err)) end\n"
+    "end\n"
     "say(\"script started\")\n"
     "mark(\"started\")\n"
     "-- Intro: skip the video, confirm the title page.\n"
@@ -139,28 +176,46 @@ static const char script_template[] =
     "AutoTest:WaitForEvent(global, \"IsFrontEnd\")\n"
     "say(\"front end reached\")\n"
     "mark(\"frontend\")\n"
+    "probe(\"frontend\")\n"
     "AutoTest:WaitForSeconds(1)\n"
     "say(\"starting \" .. mode .. \" on \" .. track .. \" with \" .. car)\n"
+    "-- Precipitation (game values such as Dry, Light, Mid, Heavy): set before and after Go, which may reset it.\n"
+    "local function set_rain() if rain ~= \"\" then GameConfig.data.precipitationType = rain end end\n"
+    "set_rain()\n"
     "if mode == \"Race\" then\n"
     "  Automation.Go(mode, track, \"sky_mainline_v2\", laps, false, tod, weather, 1, car, 2, false, 7,\n"
     "    \"he_ve_gt\", \"ruf_rgt\", \"mi_jcw\", \"vw_beetle_gsr\", \"fe_f12\", \"lo_ex\", \"ma_mc_st\")\n"
     "else\n"
     "  Automation.Go(mode, track, \"sky_mainline_v2\", laps, false, tod, weather, 1, car, 2, true, 0)\n"
     "end\n"
+    "set_rain()\n"
+    "if rain ~= \"\" then mark(\"setrain\") end\n"
+    "say(\"precipitation \" .. tostring(GameConfig:GetPrecipitationType()))\n"
     "AutoTest:WaitForEvent(global, \"AnimLibPlaySqMsg\", function(data)\n"
     "  return data == \"prerace\" or data == \"prerace_night\"\n"
     "end)\n"
     "say(\"loaded, skipping the pre-race cameras\")\n"
+    "-- The engine applies precipitation when these events fire; it reads GameConfig's precipitationType.\n"
+    "if rain ~= \"\" then\n"
+    "  set_rain()\n"
+    "  mark(\"setrain\")\n"
+    "  Event.SendEvent(global, \"SetPrecipitationFromGameConfig\")\n"
+    "  Event.SendEvent(global, \"SetInitialPrecipitationState\")\n"
+    "end\n"
     "mark(\"loaded\")\n"
+    "probe(\"loaded\")\n"
     "AutoTest:WaitForSeconds(2)\n"
     "Event.SendEvent(global, \"Advance\")\n"
     "AutoTest:WaitForEvent(global, \"RaceState\", function(data) return data == \"Racing\" end)\n"
     "if ai then DriveClubTestHelpers:SwitchToAI() end\n"
+    "if rain ~= \"\" then Event.SendEvent(global, \"StartDrivingPrecipitation\") end\n"
     "if view ~= \"\" then DriveClubTestHelpers:ChangeView(view) end\n"
     "say(\"racing\")\n"
     "mark(\"racing\")\n"
+    "probe(\"racing\")\n"
     "while true do\n"
     "  AutoTest:WaitForSeconds(5)\n"
+    "  probe(\"tick\")\n"
     "  if ai then Actor.GetPlayer().UnderPlayerControl = false end\n"
     "end\n";
 
@@ -194,8 +249,22 @@ void runtime_benchmark_configure(const char *user) {
     snprintf(path, sizeof(path), "%s/bb_benchmark.lua.bin", dir);
     FILE *f = fopen(path, "wb");
     if (!f) { fprintf(stderr, "Benchmark: cannot write %s\n", path); return; }
-    fprintf(f, script_template, cfg.track, cfg.car, cfg.mode, cfg.weather, cfg.view, cfg.tod, cfg.laps,
-            strcmp(cfg.drive, "ai") ? "false" : "true");
+    const char *lua = getenv("BB_BENCHMARK_LUA");
+    if (lua && *lua) {
+        FILE *pf = fopen(lua, "rb");
+        if (pf) {
+            fseek(pf, 0, SEEK_END);
+            const long size = ftell(pf);
+            fseek(pf, 0, SEEK_SET);
+            probe_lua = size >= 0 ? calloc(1, (size_t)size + 1) : NULL;
+            if (probe_lua && fread(probe_lua, 1, (size_t)size, pf) != (size_t)size) probe_lua[0] = 0;
+            fclose(pf);
+        } else {
+            fprintf(stderr, "Benchmark: cannot read BB_BENCHMARK_LUA %s\n", lua);
+        }
+    }
+    fprintf(f, script_template, cfg.track, cfg.car, cfg.mode, cfg.weather, cfg.view, cfg.rain, cfg.tod, cfg.laps,
+            strcmp(cfg.drive, "ai") ? "false" : "true", probe_lua ? probe_lua : "");
     fclose(f);
     runtime_file_add_mods(user_root);
     const char *o = getenv("BB_BENCHMARK_OUT");
@@ -209,9 +278,10 @@ void runtime_benchmark_configure(const char *user) {
     pthread_t thread;
     pthread_create(&thread, NULL, watchdog, NULL);
     pthread_detach(thread);
-    printf("Benchmark: mode=%s track=%s car=%s tod=%d weather=%s laps=%d drive=%s view=%s warmup=%d s, %d s measured\n",
-           cfg.mode, cfg.track, cfg.car, cfg.tod, cfg.weather, cfg.laps, cfg.drive, cfg.view[0] ? cfg.view : "default",
-           cfg.warmup, cfg.seconds);
+    printf("Benchmark: mode=%s track=%s car=%s tod=%d weather=%s rain=%s laps=%d drive=%s view=%s warmup=%d s, "
+           "%d s measured%s\n",
+           cfg.mode, cfg.track, cfg.car, cfg.tod, cfg.weather, cfg.rain[0] ? cfg.rain : "default", cfg.laps,
+           cfg.drive, cfg.view[0] ? cfg.view : "default", cfg.warmup, cfg.seconds, probe_lua ? ", Lua probe" : "");
 }
 
 /* The extra command-line argument for the game, or NULL. */
@@ -219,11 +289,47 @@ const char *runtime_benchmark_guest_arg(void) {
     return phase == OFF ? NULL : "-luaautotest=" SCRIPT_GUEST;
 }
 
+/* Precipitation: the game's race config is C++ data (GameConfig.dataInCPP is true; GameConfig.data in Lua is a
+ * copy made from it), so the script cannot set it. The config's precipitation preset is a std::string; the
+ * script opens the marker "setrain" right after Automation.Go and again once loaded, and this assigns cfg.rain
+ * to it with the game's own string assign, on the game's thread (eboot 1.28 offsets, from Ghidra):
+ *   G      = *(image + 0x1911100)
+ *   base   = *(*(G + 0x970) + 0xf8);  config = base[0x780] == 0 ? base + 0x3b8 : base + 8   (FUN_0013d550)
+ *   config + 0x210 weather name, config + 0x238 precipitation name (FUN_00016e40 reads both)
+ *   FUN_00e978b0(string object, const char *) assigns; the object starts 8 bytes before the text
+ *   (allocator word, text or heap pointer, size at +0x18, capacity at +0x20). */
+typedef void *(ABI *guest_string_assign)(void *object, const char *text);
+static const char *guest_string(const unsigned char *object) {
+    const unsigned long long cap = *(const unsigned long long *)(object + 0x20);
+    return cap > 15 ? *(const char *const *)(object + 8) : (const char *)(object + 8);
+}
+static void set_guest_rain(void) {
+    if (!cfg.rain[0] || !runtime_image_base) return;
+    const unsigned char *g = *(unsigned char *const *)(runtime_image_base + 0x1911100);
+    const unsigned char *p = g ? *(unsigned char *const *)(g + 0x970) : NULL;
+    unsigned char *base = p ? *(unsigned char *const *)(p + 0xf8) : NULL;
+    if (!base) { printf("Benchmark: rain: no race config yet\n"); return; }
+    unsigned char *config = base[0x780] == 0 ? base + 0x3b8 : base + 8;
+    const char *before = guest_string(config + 0x230);
+    printf("Benchmark: rain: config weather '%.40s', precipitation '%.40s'", guest_string(config + 0x208), before);
+    ((guest_string_assign)(runtime_image_base + 0xe978b0))(config + 0x230, cfg.rain);
+    printf(" -> '%.40s'\n", guest_string(config + 0x230));
+    fflush(stdout);
+}
+
 /* Called for every guest path the file system resolves; returns 1 for the script's progress markers. */
 int runtime_benchmark_marker(const char *guest) {
     if (phase == OFF || strncmp(guest, MARKER_PREFIX, sizeof(MARKER_PREFIX) - 1)) return 0;
     const char *name = guest + sizeof(MARKER_PREFIX) - 1;
     const double t = now_ms();
+    if (!strncmp(name, "say:", 4)) {
+        printf("Benchmark: [lua %.1f s] %s\n", (t - t_config) / 1000.0, name + 4);
+        return 1;
+    }
+    if (!strcmp(name, "setrain")) {
+        set_guest_rain();
+        return 1;
+    }
     printf("Benchmark: %s at %.1f s\n", name, (t - t_config) / 1000.0);
     if (!strcmp(name, "racing") && phase == WAITING) {
         t_race = t;

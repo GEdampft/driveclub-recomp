@@ -245,10 +245,52 @@ bool g_captured_this_frame = false;
 u32 g_display_draws = 0; // draws into a display buffer since the last draw elsewhere
 bool g_scene_taken = false; // this display-buffer run's scene copy was made
 
+// Development (BB_VR_LOG_DISPLAY_SEQ=1): each display-buffer run's draws (vs hashes, repeats counted, * = the scene
+// copy), logged when it differs from the last run's.
+struct DisplaySeq {
+    bool on = std::getenv("BB_VR_LOG_DISPLAY_SEQ") != nullptr;
+    std::string seq, last;
+    u64 last_vs = 0;
+    u32 repeats = 0, runs = 0;
+    void Flush() {
+        if (repeats > 1) {
+            seq += "x" + std::to_string(repeats);
+        }
+        repeats = 0;
+    }
+    void Draw(u64 vs, bool capture) {
+        if (vs != last_vs || capture) {
+            Flush();
+            char text[24];
+            std::snprintf(text, sizeof(text), " %s%llx", capture ? "*" : "", (unsigned long long)vs);
+            seq += text;
+            last_vs = vs;
+        }
+        ++repeats;
+    }
+    void End() {
+        if (seq.empty()) {
+            return;
+        }
+        Flush();
+        ++runs;
+        if (seq != last) {
+            std::printf("VR display seq (run %u):%s\n", runs, seq.c_str());
+            std::fflush(stdout);
+            last = seq;
+        }
+        seq.clear();
+        last_vs = 0;
+    }
+};
+DisplaySeq g_display_seq;
+
 // Screen-space scene layers drawn into the display buffer after the composite, before the HUD: they stay in the scene
-// (per eye) rather than the flat HUD layer. vs 0x44606ffd: the rain drops and wiper streaks on the windscreen.
+// (per eye) rather than the flat HUD layer. vs 0x44606ffd: the rain drops and wiper streaks on the windscreen;
+// vs 0xdc8e480a: perspective geometry drawn after the composite in some frames, before the drops (the copy was taken
+// there, so the drops went into the HUD layer in those frames: they flickered).
 bool SceneOverlay(u64 vs_hash) {
-    return vs_hash == 0x44606ffd;
+    return vs_hash == 0x44606ffd || vs_hash == 0xdc8e480a;
 }
 VideoCore::ImageId g_frame_depth{}; // this frame's main G-buffer depth (taken by the scene copy)
 bool g_frame_pose_valid = false; // this frame's rendered pose (OnFrameCamera), taken by the scene copy
@@ -535,13 +577,20 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
     auto& color = texture_cache.GetImage(color_id);
     // Driveclub draws its frame's composite into the display buffer, then every HUD element over it.
     if (!FrameCapture::IsDisplayBuffer(color.info.guest_address)) {
+        if (g_display_seq.on && g_display_draws) {
+            g_display_seq.End();
+        }
         g_display_draws = 0;
         g_scene_taken = false;
         return;
     }
     const bool multiview = Multiview::Stereo(color);
     // The scene is copied before the first HUD draw: the composite and any scene overlays stay in it.
-    if (++g_display_draws < 2 || g_scene_taken || SceneOverlay(vs_hash) || !depth_id) {
+    const bool capture = !(++g_display_draws < 2 || g_scene_taken || SceneOverlay(vs_hash) || !depth_id);
+    if (g_display_seq.on) {
+        g_display_seq.Draw(vs_hash, capture);
+    }
+    if (!capture) {
         return; // no 3D this frame (2D menus): the whole frame for the flat screen
     }
     g_scene_taken = true;

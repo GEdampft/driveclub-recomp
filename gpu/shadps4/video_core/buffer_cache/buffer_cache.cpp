@@ -18,6 +18,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/readback_hybrid.h" // VR fork
 #include "video_core/buffer_cache/memory_tracker.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -304,6 +305,7 @@ u64 BufferCache::CollectDownloads(const Buffer* arena, VAddr device_addr, u64 si
         };
         gpu_modified_ranges.ForEachInRange(address, size, add_download);
         gpu_modified_ranges.Subtract(address, size);
+        ReadbackHybrid::NoteGpuWritten(address, size, false); // VR fork
     });
     return total_size_bytes;
 }
@@ -554,6 +556,7 @@ bool BufferCache::IsReadbackPending(VAddr addr, u64 size) const {
 void BufferCache::MergeReadbackReturns() {
     for (const auto& [addr, size] : readback_returns) {
         gpu_modified_ranges.Add(addr, size);
+        ReadbackHybrid::NoteGpuWritten(addr, size, true); // VR fork
     }
     readback_returns.clear();
 }
@@ -680,6 +683,9 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const auto* arena = GetArena(first_block, last_block);
     EnsureResident(arena, first_block, last_block);
     const u64 uploaded_before = BbStats::buffer_upload_bytes.load(std::memory_order_relaxed);
+    if (is_written) {
+        ReadbackHybrid::NoteGpuWritten(device_addr, size, true); // VR fork: before its pages are protected
+    }
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
     if (stats) {
         auto& region = Stats().regions[RegionKey(device_addr)];

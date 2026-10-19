@@ -96,6 +96,16 @@ public:
         if constexpr (type == Type::CPU && enable) {
             CountWriteFaults(start_page, end_page);
         }
+        if constexpr (type == Type::GPU) { // VR fork: pages with only small GPU writes (BB_READBACK_HYBRID)
+            if (enable && t_small_gpu_write) {
+                RegionBits added;
+                added.SetRange(start_page, end_page);
+                added &= ~gpu;
+                small_gpu |= added;
+            } else {
+                small_gpu.UnsetRange(start_page, end_page);
+            }
+        }
         if constexpr (type == Type::GPU && enable) {
             for (size_t chunk = start_page / GPU_SEQ_PAGES; chunk <= (end_page - 1) / GPU_SEQ_PAGES; ++chunk) {
                 ++gpu_write_seq[chunk];
@@ -166,6 +176,9 @@ public:
                 KeepHotPagesModified(start_page, end_page);
                 UpdateProtection<true, false>();
             } else if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled) {
+                if constexpr (type == Type::GPU) {
+                    small_gpu.UnsetRange(start_page, end_page); // VR fork
+                }
                 UpdateProtection<false, true>();
             }
         }
@@ -193,6 +206,16 @@ public:
 
         const RegionBits& bits = GetRegionBits<type>();
         return bits.AnyInRange(start_page, end_page);
+    }
+
+    /// VR fork: GPU modified pages in the range other than those written only by small ranges (BB_READBACK_HYBRID).
+    [[nodiscard]] bool IsRegionReadGuarded(u64 offset, u64 size) noexcept {
+        const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
+        const size_t end_page = Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
+        if (start_page >= NUM_PAGES_PER_REGION || end_page <= start_page) {
+            return false;
+        }
+        return (gpu & ~small_gpu).AnyInRange(start_page, end_page);
     }
 
     /// Changes whenever a GPU write is marked in the range (one counter per 64 pages).
@@ -225,12 +248,14 @@ private:
     template <bool track, bool is_read>
     void UpdateProtection() {
         RENDERER_TRACE;
-        RegionBits mask = is_read ? (~gpu ^ readable) : (cpu ^ writeable);
+        // VR fork: pages with only small GPU writes are not read-protected (BB_READBACK_HYBRID).
+        const RegionBits read_guarded = gpu & ~small_gpu;
+        RegionBits mask = is_read ? (~read_guarded ^ readable) : (cpu ^ writeable);
         if (mask.None()) {
             return;
         }
         if constexpr (is_read) {
-            readable = ~gpu;
+            readable = ~read_guarded;
         } else {
             writeable = cpu;
         }
@@ -306,6 +331,12 @@ private:
     VAddr cpu_addr = 0;
     RegionBits cpu;
     RegionBits gpu;
+    RegionBits small_gpu; ///< VR fork: GPU modified pages written only by small ranges (BB_READBACK_HYBRID)
+
+public:
+    inline static thread_local bool t_small_gpu_write = false; ///< VR fork: set by MemoryTracker around a marking
+
+private:
     /// Advanced by every GPU mark of a chunk of pages, including marks of pages already GPU modified.
     std::array<u64, NUM_PAGES_PER_REGION / GPU_SEQ_PAGES + 1> gpu_write_seq{};
     RegionBits writeable;

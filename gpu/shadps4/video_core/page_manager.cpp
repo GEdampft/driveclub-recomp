@@ -12,6 +12,7 @@
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "core/signals.h"
+#include "video_core/buffer_cache/readback_hybrid.h" // VR fork
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
@@ -121,6 +122,9 @@ struct PageManager::Impl {
             BbStats::Timer timer{BbStats::t_write_faults};
             return rasterizer->OnWriteFault(addr, is_gpu_thread);
         } else {
+            if (!is_gpu_thread) {
+                ReadbackHybrid::LearnFault(addr, false); // VR fork
+            }
             BbStats::read_faults.fetch_add(1, std::memory_order_relaxed);
             if (is_gpu_thread && BbStats::enabled) {
                 BbStats::NoteGpuReadFault(Common::FaultInstructionPointer(context));

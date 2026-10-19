@@ -4035,7 +4035,9 @@ void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& s
 }
 
 void Rasterizer::NoteFrameStart() {
-    if (auto* profiler = GpuProfiler::Get()) {
+    // The profiler's frame starts at the first display draw of a frame (the composite), not at each HUD draw:
+    // a new slice per draw waited on timestamps not yet submitted (the game hung with BB_GPU_PROFILE=1).
+    if (auto* profiler = GpuProfiler::Get(); profiler && fg_display_draws == 1) {
         profiler->BeginFrame();
     }
     const u64 frame = BbStats::gpu_frames.fetch_add(1, std::memory_order_relaxed) + 1;

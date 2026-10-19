@@ -21,6 +21,7 @@
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/readback_hybrid.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -53,7 +54,8 @@ std::deque<Job> g_jobs;
 bool Enabled() {
     static const bool enabled = [] {
         const char* env = std::getenv("BB_READBACK_SMALL");
-        return EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled && !(env && env[0] == '0');
+        return (EmulatorSettings.GetReadbacksMode() == GpuReadbacksMode::Disabled || ReadbackHybrid::Enabled()) &&
+               !(env && env[0] == '0');
     }();
     return enabled;
 }
@@ -94,7 +96,24 @@ void BufferCache::NoteSmallGpuWrite(VAddr device_addr, u64 size) {
             }
         }
     }
-    if (size == 0 || size > MaxSmallWrite || !Enabled()) {
+    if (size == 0 || !Enabled()) {
+        return;
+    }
+    if (size > MaxSmallWrite) {
+        // readback_hybrid.h: a larger range's first and last pages when learned fast (not protected): their GPU bytes.
+        if (!ReadbackHybrid::Enabled()) {
+            return;
+        }
+        const VAddr end = device_addr + size;
+        const VAddr first_end = std::min(end, (device_addr | 4095) + 1);
+        const VAddr last_begin = std::max(first_end, (end - 1) & ~VAddr(4095));
+        std::scoped_lock lk{g_mutex};
+        if (ReadbackHybrid::IsFastPage(device_addr)) {
+            g_noted.push_back({device_addr, first_end - device_addr});
+        }
+        if (last_begin < end && ReadbackHybrid::IsFastPage(last_begin)) {
+            g_noted.push_back({last_begin, end - last_begin});
+        }
         return;
     }
     std::scoped_lock lk{g_mutex};

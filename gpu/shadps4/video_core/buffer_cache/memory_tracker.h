@@ -13,6 +13,7 @@
 #include "common/debug.h"
 #include "common/types.h"
 #include "core/emulator_settings.h"
+#include "video_core/buffer_cache/readback_hybrid.h" // VR fork
 #include "video_core/buffer_cache/region_manager.h"
 
 namespace VideoCore {
@@ -108,8 +109,10 @@ public:
                     // modified. If we need to flush the flush function is going to perform CPU
                     // state change.
                     std::scoped_lock lk{manager->lock};
+                    // VR fork: fast pages (readback_hybrid.h) take the write as with readbacks off.
                     if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled &&
-                        manager->template IsRegionModified<Type::GPU>(offset, size)) {
+                        (ReadbackHybrid::Enabled() ? manager->IsRegionReadGuarded(offset, size)
+                                                   : manager->template IsRegionModified<Type::GPU>(offset, size))) {
                         return true;
                     }
                     manager->template ChangeRegionState<Type::CPU, true>(
@@ -117,6 +120,7 @@ public:
                     return false;
                 }();
                 if (should_flush) {
+                    ReadbackHybrid::LearnFault(manager->GetCpuAddr() + offset, true); // VR fork
                     on_flush();
                 }
             });
@@ -147,10 +151,29 @@ public:
         if (!is_written) {
             return;
         }
+        // VR fork (readback_hybrid.h): a small range's pages, and a larger range's first and last pages once learned
+        // fast, are marked as fast (not protected).
+        const bool hybrid = ReadbackHybrid::Enabled();
+        const bool small = hybrid && query_size <= ReadbackHybrid::SmallWrite;
         IteratePages<false>(query_cpu_range, query_size,
-                            [&func, is_written](RegionManager* manager, u64 offset, size_t size) {
-                                manager->template ChangeRegionState<Type::GPU, true>(
-                                    manager->GetCpuAddr() + offset, size);
+                            [&](RegionManager* manager, u64 offset, size_t size) {
+                                const VAddr begin = manager->GetCpuAddr() + offset, end = begin + size;
+                                const auto mark = [&](VAddr from, VAddr to, bool fast) {
+                                    if (from < to) {
+                                        RegionManager::t_small_gpu_write = fast;
+                                        manager->template ChangeRegionState<Type::GPU, true>(from, to - from);
+                                    }
+                                };
+                                if (!hybrid || small) {
+                                    mark(begin, end, small);
+                                } else {
+                                    const VAddr first_end = std::min(end, (begin | 4095) + 1);
+                                    const VAddr last_begin = std::max(first_end, (end - 1) & ~VAddr(4095));
+                                    mark(begin, first_end, ReadbackHybrid::IsFastPage(begin));
+                                    mark(first_end, last_begin, false);
+                                    mark(last_begin, end, ReadbackHybrid::IsFastPage(last_begin));
+                                }
+                                RegionManager::t_small_gpu_write = false;
                                 manager->lock.unlock();
                             });
     }

@@ -349,14 +349,14 @@ void BuildModel() {
                       L"Fixed tick uses the engine's own 60 Hz mode (works with every feature, speed follows the frame rate).",
                       {L"30 FPS", L"60 FPS", L"60 FPS (fixed tick)", L"Unlocked"},
                       {"", "60 FPS with deltatime", "60 FPS with fixed tickrate", "@unlocked"}, 1));
-  const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the picture on screen.",
+  const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the game's finished picture (with the menus and HUD). It is then scaled to fill your screen, so the window and the signal to your display always stay at your screen's own size.",
                          {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"5K", L"8K"},
                          {"", "720p [1280x720] Output resolution", "1440p [2560x1440] Output resolution",
                           "1800p [3200x1800] Output resolution", "4K [3840x2160] Output resolution",
                           "5K [5120x2880] Output resolution", "8K [7680x4320] Output resolution"},
                          0));
   const int inres = (g_inres = int(g_c.size()), seg(L"Render resolution",
-                        L"What the game draws internally. Sizes above 1080p use more memory; the needed memory patch is added for you.",
+                        L"The size the game draws the 3D scene at, before it is scaled to the output resolution: lower is faster, higher is sharper. The game's dynamic resolution can lower it further under load. Sizes above 1080p use more memory; the needed memory patch is added for you.",
                         {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"8K"},
                         {"", "720p [1280x720] Internal resolution", "1440p [2560x1440] Internal resolution [DEPTH BUG]",
                          "1800p [3200x1800] Internal resolution [DEPTH BUG]", "4K [3840x2160] Internal resolution [DEPTH BUG]",

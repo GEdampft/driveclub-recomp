@@ -399,6 +399,7 @@ bool g_eye_dispatch = false; // the dispatch being recorded writes a per-eye buf
 thread_local struct {
     u64 address, size, adjust;
     bool valid;
+    bool eye_write; // written by a per-eye compute: the right eye's copy starts from the buffer as it is now
 } t_eye_binding{};
 
 bool EyeCompute(u64 hash) {
@@ -426,8 +427,9 @@ bool EyeCompute(u64 hash) {
 }
 
 void NoteBuffer(u64 address, u64 size, bool written, u64 adjust) {
-    t_eye_binding = {address, size, adjust, true};
+    t_eye_binding = {address, size, adjust, true, false};
     if (g_enabled && written && size && EyeCompute(g_dispatch_hash)) {
+        t_eye_binding.eye_write = true;
         std::scoped_lock lock{g_eye_mutex};
         const bool known = std::any_of(g_eye_buffers.begin(), g_eye_buffers.end(), [&](const EyeBuffer& e) {
             return address >= e.base && address + size <= e.base + e.size;
@@ -490,6 +492,30 @@ std::optional<vk::DescriptorBufferInfo> EyeBufferInfo(const Instance& instance, 
         }
         second.buffer = e.shadow->Handle();
         second.offset = binding.address - e.shadow_base - binding.adjust;
+        if (binding.eye_write) {
+            // What the game put in the buffer before this dispatch (counters reset, data from the CPU) reaches only
+            // the left eye's: the right eye's copy is seeded with it, else it drifted (lit particles broken in the
+            // right eye).
+            const vk::BufferCopy copy{first.offset + binding.adjust, second.offset + binding.adjust, binding.size};
+            runtime.GetScheduler().EndRendering();
+            runtime.GetScheduler().Record([src = first.buffer, dst = second.buffer, copy](vk::CommandBuffer cmdbuf) {
+                const vk::MemoryBarrier2 before{
+                    .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                    .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+                    .dstAccessMask = vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite,
+                };
+                cmdbuf.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &before});
+                cmdbuf.copyBuffer(src, dst, copy);
+                const vk::MemoryBarrier2 after{
+                    .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+                    .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                    .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+                };
+                cmdbuf.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &after});
+            });
+        }
         break;
     }
     return second;

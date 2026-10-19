@@ -657,7 +657,7 @@ void ResetDefaults() {
 // ------------------------------------------------------------------------------------------
 // layout
 // ------------------------------------------------------------------------------------------
-float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 96.f : 70.f) + g_row_extra; }
+float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 184.f : 70.f) + g_row_extra; }
 float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
@@ -707,7 +707,7 @@ void LayoutPass(float bottom_extra) {
       const float rh = RowHeight(c);
       c.row = RectF(card.rect.X + kPad, cy, colw - 2 * kPad, rh);
       c.ctl = c.kind == Kind::Toggle   ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
-              : c.kind == Kind::Action ? RectF(c.row.X + c.row.Width - 150.f, cy + 30.f, 150.f, 44.f)
+              : c.kind == Kind::Action ? RectF(c.row.X, cy + 8.f, c.row.Width, 44.f)
                                        : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
       cy += rh;
     }
@@ -898,26 +898,21 @@ void Paint(HDC hdc, int w, int h) {
         const PointF tri[3] = {PointF(ax - 5 * S, ay), PointF(ax + 5 * S, ay), PointF(ax, ay + 6 * S)};
         g.FillPolygon(&arrow, tri, 3);
       } else if (c.kind == Kind::Action) {
-        // The benchmark: the last result on the left, Run on the right.
-        Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width - 170 * S, 22 * S), kText);
-        const RectF res(row.X, row.Y + 26 * S, row.Width - 170 * S, row.Height - 26 * S);
+        // The benchmark: Run, then the last result.
+        Text(g, c.label, fLabel, RectF(row.X, row.Y + 64 * S, row.Width, 22 * S), kText);
+        const RectF res(row.X, row.Y + 88 * S, row.Width, row.Height - 88 * S);
         if (g_bench_running) {
-          Text(g, L"Running... the game closes by itself when the benchmark is done.", fHint, res, kText,
+          Text(g, L"Running. The game closes by itself when it is done.", fHint, res, kText,
                StringAlignmentNear, StringAlignmentNear, true);
         } else if (g_bench_result.ok) {
           Font fBig(&fam, 24 * S, FontStyleBold, UnitPixel);
-          StringFormat measure(StringFormat::GenericTypographic());
-          measure.SetFormatFlags(StringFormatFlagsNoWrap);
-          RectF box;
           const std::wstring big = g_bench_result.fps + L" FPS";
-          g.MeasureString(big.c_str(), -1, &fBig, PointF(0, 0), &measure, &box);
-          Text(g, big, fBig, RectF(res.X, res.Y, box.Width + 4 * S, 32 * S), kWhite);
-          Text(g, g_bench_result.lows, fSeg, RectF(res.X + box.Width + 14 * S, res.Y + 2 * S, res.Width - box.Width - 14 * S, 30 * S),
-               kText);
-          Text(g, g_bench_result.about, fHint, RectF(res.X, res.Y + 34 * S, res.Width, res.Height - 34 * S), kMuted,
+          Text(g, big, fBig, RectF(res.X, res.Y, res.Width, 32 * S), kWhite);
+          Text(g, g_bench_result.lows, fSeg, RectF(res.X, res.Y + 32 * S, res.Width, 20 * S), kText);
+          Text(g, g_bench_result.about, fHint, RectF(res.X, res.Y + 56 * S, res.Width, res.Height - 56 * S), kMuted,
                StringAlignmentNear, StringAlignmentNear, true);
         } else {
-          Text(g, L"No result yet. Choose the event above and press Run.", fHint, res, kMuted, StringAlignmentNear,
+          Text(g, L"No result yet.", fHint, res, kMuted, StringAlignmentNear,
                StringAlignmentNear, true);
         }
         const bool disabled = g_busy || !FoldersOk() || GpuBlocked();

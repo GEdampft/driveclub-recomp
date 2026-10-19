@@ -243,6 +243,13 @@ namespace {
 VideoCore::ImageId g_hud_target{};
 bool g_captured_this_frame = false;
 u32 g_display_draws = 0; // draws into a display buffer since the last draw elsewhere
+bool g_scene_taken = false; // this display-buffer run's scene copy was made
+
+// Screen-space scene layers drawn into the display buffer after the composite, before the HUD: they stay in the scene
+// (per eye) rather than the flat HUD layer. vs 0x44606ffd: the rain drops and wiper streaks on the windscreen.
+bool SceneOverlay(u64 vs_hash) {
+    return vs_hash == 0x44606ffd;
+}
 VideoCore::ImageId g_frame_depth{}; // this frame's main G-buffer depth (taken by the scene copy)
 bool g_frame_pose_valid = false; // this frame's rendered pose (OnFrameCamera), taken by the scene copy
 float g_frame_layer_pose[7], g_frame_tangents[4];
@@ -292,10 +299,10 @@ void FreeReadback(Readback& r) {
     r = {};
 }
 void CopyToReadback(VkCommandBuffer cmd, VkImage image, VkImageLayout layout, const Readback& r, VkDeviceSize offset,
-                    u32 w, u32 h) {
+                    u32 w, u32 h, u32 layer = 0) {
     VkBufferImageCopy region{};
     region.bufferOffset = offset;
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
     region.imageExtent = {w, h, 1};
     VKD.vkCmdCopyImageToBuffer(cmd, image, layout, r.buffer, 1, &region);
 }
@@ -326,8 +333,10 @@ void SaveImage(Scheduler& scheduler, Runtime& runtime, VideoCore::Image& image, 
                     vk::AccessFlagBits2::eTransferRead);
     runtime.FlushBarriers();
     scheduler.EndRendering();
+    // Development: BB_VR_TSHOT_LAYER=1 dumps the right eye's layer of a two-layer target.
+    static const bool right = std::getenv("BB_VR_TSHOT_LAYER") && std::getenv("BB_VR_TSHOT_LAYER")[0] == '1';
     CopyToReadback(VkCommandBuffer(scheduler.CommandBuffer()), VkImage(image.GetImage()),
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r, 0, w, h);
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r, 0, w, h, right && Multiview::Stereo(image) ? 1 : 0);
     scheduler.Finish();
     WriteReadback(r, 0, w, h, name);
     FreeReadback(r);
@@ -527,12 +536,15 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
     // Driveclub draws its frame's composite into the display buffer, then every HUD element over it.
     if (!FrameCapture::IsDisplayBuffer(color.info.guest_address)) {
         g_display_draws = 0;
+        g_scene_taken = false;
         return;
     }
     const bool multiview = Multiview::Stereo(color);
-    if (++g_display_draws != 2 || !depth_id) { // no 3D this frame (2D menus): the whole frame for the flat screen
-        return;
+    // The scene is copied before the first HUD draw: the composite and any scene overlays stay in it.
+    if (++g_display_draws < 2 || g_scene_taken || SceneOverlay(vs_hash) || !depth_id) {
+        return; // no 3D this frame (2D menus): the whole frame for the flat screen
     }
+    g_scene_taken = true;
     const vk::Format format = color.info.pixel_format;
     if (format != vk::Format::eR8G8B8A8Unorm && format != vk::Format::eR8G8B8A8Srgb &&
         format != vk::Format::eB8G8R8A8Unorm && format != vk::Format::eB8G8R8A8Srgb) {

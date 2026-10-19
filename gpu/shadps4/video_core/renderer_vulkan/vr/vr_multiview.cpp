@@ -54,7 +54,10 @@ std::vector<AuditRes> g_audit_reads, g_audit_writes, g_audit_targets;
 bool g_audit_reads_stereo = false;
 std::string g_audit_left_reads; // left-eye-only resources the bindings read
 bool g_audit_pass_stereo = false;
+bool g_audit_main_camera = false; // the bindings hold the player camera's constants (size words = the render size)
 std::vector<AuditRes> g_left_only; // resources written for the left eye only from per-eye inputs
+std::vector<AuditRes> g_mono_targets; // one-layer images a one-eye draw rendered into (shadow maps, mirrors, masks...)
+std::string g_audit_mono_target_reads; // such images the bindings read
 std::mutex g_audit_mutex;
 
 std::string AuditName(const VideoCore::Image& image) {
@@ -66,6 +69,12 @@ std::string AuditName(const VideoCore::Image& image) {
 }
 
 void AuditRead(u64 address, u64 size, const std::string& name) {
+    for (const auto& res : g_mono_targets) {
+        if (address < res.address + res.size && res.address < address + size) {
+            g_audit_mono_target_reads += " [" + res.name + "]";
+            break;
+        }
+    }
     for (const auto& res : g_left_only) {
         if (address < res.address + res.size && res.address < address + size) {
             g_audit_left_reads += " [" + res.name + "]";
@@ -89,7 +98,10 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
     if (!compute) {
         outputs.insert(outputs.end(), g_audit_targets.begin(), g_audit_targets.end());
     }
-    const bool from_eyes = g_audit_reads_stereo || !g_audit_left_reads.empty();
+    // A one-eye draw with the player camera puts the left eye's view in its targets too (geometry drawn with the left
+    // eye's shift, e.g. the rain drops on the windscreen).
+    const bool camera_draw = !compute && g_audit_main_camera;
+    const bool from_eyes = g_audit_reads_stereo || !g_audit_left_reads.empty() || camera_draw;
     static std::unordered_map<u64, bool> seen;
     if (!per_eye && from_eyes && !outputs.empty()) {
         for (const auto& out : outputs) {
@@ -101,15 +113,36 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
             g_left_only.push_back(marked);
         }
         if (seen.emplace(hash ^ 1, true).second) {
-            std::printf("VR audit: ONE EYE %s %#llx writes%s from%s%s\n", compute ? "compute" : "draw vs",
+            std::printf("VR audit: ONE EYE %s %#llx writes%s from%s%s%s\n", compute ? "compute" : "draw vs",
                         (unsigned long long)hash, AuditList(outputs).c_str(), AuditList(g_audit_reads).c_str(),
-                        g_audit_left_reads.empty() ? "" : (" | left-eye-only:" + g_audit_left_reads).c_str());
+                        g_audit_left_reads.empty() ? "" : (" | left-eye-only:" + g_audit_left_reads).c_str(),
+                        camera_draw ? " | with the player camera" : "");
             std::fflush(stdout);
         }
     } else {
         for (const auto& out : outputs) {
             std::erase_if(g_left_only, [&](const AuditRes& r) { return r.address == out.address; });
         }
+    }
+    // One-layer render targets: a one-eye draw's targets are remembered (with the drawing shader); a both-eyes pass
+    // reading one is listed once (most are fine: shadow maps, mirrors; a screen-space layer drawn with the left eye's
+    // camera is not).
+    if (!compute) {
+        for (const auto& t : g_audit_targets) {
+            std::erase_if(g_mono_targets, [&](const AuditRes& r) { return r.address == t.address; });
+            if (!per_eye && t.name.find("1 layer") != std::string::npos) {
+                AuditRes marked = t;
+                char tag[32];
+                std::snprintf(tag, sizeof(tag), " (drawn by vs %#llx)", (unsigned long long)hash);
+                marked.name += tag;
+                g_mono_targets.push_back(marked);
+            }
+        }
+    }
+    if (per_eye && !g_audit_mono_target_reads.empty() && seen.emplace(hash ^ 4, true).second) {
+        std::printf("VR audit: BOTH EYES READ ONE-LAYER RENDER %s %#llx reads%s; writes%s\n", compute ? "compute" : "draw vs",
+                    (unsigned long long)hash, g_audit_mono_target_reads.c_str(), AuditList(outputs).c_str());
+        std::fflush(stdout);
     }
     if (per_eye && !g_audit_left_reads.empty() && seen.emplace(hash ^ 2, true).second) {
         std::printf("VR audit: BOTH EYES READ LEFT %s %#llx reads%s; writes%s; also reads%s\n",
@@ -120,6 +153,8 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
     g_audit_reads.clear();
     g_audit_writes.clear();
     g_audit_reads_stereo = false;
+    g_audit_main_camera = false;
+    g_audit_mono_target_reads.clear();
     g_audit_left_reads.clear();
 }
 u64 g_draw_hash = 0;        // the draw's vertex shader (BB_VR_MONO_COMPUTE)
@@ -367,6 +402,23 @@ void SetDispatchHash(u64 hash) {
     g_dispatch_hash = hash;
 }
 
+// The player camera's constants (512 bytes, the render size at dwords 96-97).
+bool MainCameraConstants(u64 address, u64 size) {
+    u32 w = 0, h = 0;
+    if (size != 512 || !address || !Fixes::RenderSize(w, h)) {
+        return false;
+    }
+    const auto* f = reinterpret_cast<const float*>(address);
+    return f[96] == float(w) && f[97] == float(h);
+}
+
+void NoteRingBuffer(u64 address, u64 size) {
+    if (g_audit && MainCameraConstants(address, size)) {
+        std::scoped_lock lock{g_audit_mutex};
+        g_audit_main_camera = true;
+    }
+}
+
 void AuditCopy(const char* what, const VideoCore::Image& src, const VideoCore::Image& dst) {
     if (!g_audit || (!Stereo(src) && !Stereo(dst))) {
         return;
@@ -446,6 +498,7 @@ void NoteBuffer(u64 address, u64 size, bool written, u64 adjust) {
         return;
     }
     std::scoped_lock lock{g_audit_mutex};
+    g_audit_main_camera |= !written && MainCameraConstants(address, size);
     char text[64];
     std::snprintf(text, sizeof(text), "buffer %#llx+%#llx", (unsigned long long)address, (unsigned long long)size);
     if (written) {

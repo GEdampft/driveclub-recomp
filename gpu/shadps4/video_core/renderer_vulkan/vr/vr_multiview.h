@@ -161,6 +161,10 @@ void EyeBufferWrite(const Instance& instance, Runtime& runtime, bool special, vk
     }
 }
 
+/// Development audit (BB_VR_AUDIT=1): a read-only buffer bound from the constant ring (the player camera's
+/// constants are found among them).
+void NoteRingBuffer(u64 address, u64 size);
+
 /// Development audit (BB_VR_AUDIT=1): an image copy (`what`) touching a two-layer image, once per kind.
 void AuditCopy(const char* what, const VideoCore::Image& src, const VideoCore::Image& dst);
 

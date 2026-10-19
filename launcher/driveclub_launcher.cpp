@@ -360,7 +360,7 @@ void BuildModel() {
                   L"Sharpens each eye after DLSS (AMD's contrast-adaptive sharpening: edges and texture detail, without "
                   L"halos). DLSS itself no longer sharpens. Only with a VR DLSS mode on.",
                   {L"Off", L"20%", L"40%", L"60%", L"80%", L"100%"}, {"@vrsharp", "", "", "", "", ""}, 0);
-  g_vrfast = toggle(L"VR fast mode",
+  g_vrfast = toggle(L"VR fast mode (Experimental, gfx bugs)",
                     L"About 20% more frames per second in VR. The game stops reading results back from the graphics card, "
                     L"so some effects and scenery can go wrong: rain drops on the windscreen flicker, and some scenery is "
                     L"misplaced or missing (spectators standing in mid-air).",

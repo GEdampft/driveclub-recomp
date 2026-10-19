@@ -238,7 +238,7 @@ bool vr_fast = false;  // its saved state ("vr_fast=" in launcher.ini)
 // eye, so the resolution, widescreen and upscaling rows are left out; anti-aliasing and frame generation stay off.
 bool VrOn() { return g_vr >= 0 && g_c[g_vr].sel > 0; }
 int VrEye() {
-  static const int kEye[] = {0, 2160, 2560, 2880, 3200, 3584, 3840, 4320};
+  static const int kEye[] = {0, 1080, 1600, 2160, 2560, 2880, 3200, 3584, 3840, 4320};
   return VrOn() ? kEye[g_c[g_vr].sel] : 0;
 }
 // VR fork: the "Experimental options" toggle in the VR card shows the "VR EXPERIMENTAL" card below it (VR DLSS, its
@@ -352,8 +352,8 @@ void BuildModel() {
              L"Plays in stereo on your PC VR headset through the active OpenXR runtime (SteamVR): start SteamVR first. "
              L"The size is per eye; above 2880 the game gets its 8K memory budget. It replaces the resolution rows, keeps "
              L"anti-aliasing and frame generation off and turns motion blur off. F8 recentres the seat.",
-             {L"Off", L"2160", L"2560", L"2880", L"3200", L"3584", L"3840", L"4320"},
-             {"", "VR 2160x2160 per eye", "VR 2560x2560 per eye", "VR 2880x2880 per eye", "VR 3200x3200 per eye",
+             {L"Off", L"1080", L"1600", L"2160", L"2560", L"2880", L"3200", L"3584", L"3840", L"4320"},
+             {"", "VR 1080x1080 per eye", "VR 1600x1600 per eye", "VR 2160x2160 per eye", "VR 2560x2560 per eye", "VR 2880x2880 per eye", "VR 3200x3200 per eye",
               "VR 3584x3584 per eye", "VR 3840x3840 per eye", "VR 4320x4320 per eye"}, 0);
   g_vrdlss = seg(L"VR DLSS (RTX)",
                  L"NVIDIA DLSS for each eye. DLAA keeps the eye size and smooths edges; Quality, Balanced and Performance "

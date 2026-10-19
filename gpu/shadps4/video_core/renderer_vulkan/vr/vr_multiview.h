@@ -161,6 +161,9 @@ void EyeBufferWrite(const Instance& instance, Runtime& runtime, bool special, vk
     }
 }
 
+/// Development audit (BB_VR_AUDIT=1): an image copy (`what`) touching a two-layer image, once per kind.
+void AuditCopy(const char* what, const VideoCore::Image& src, const VideoCore::Image& dst);
+
 /// Development log (BB_VR_MONO_COMPUTE): the draw's vertex shader.
 void SetDrawHash(u64 hash);
 

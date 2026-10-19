@@ -172,6 +172,13 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
         info.size.depth != 1) {
         return layers;
     }
+    // The lit scene's 1024x896 copy (vs 0xa556e185) and its blurs (B10G11R11 and R16G16B16A16F, about ten passes),
+    // which the final composite (vs 0x8d52ab95) adds to both eyes: one layer, they were made from the left eye's
+    // picture and the right eye got its glow in other places (the fire by the lake blocky and bright, BB_VR_AUDIT).
+    if (info.size.width == 1024 && info.size.height == 896 &&
+        (info.pixel_format == vk::Format::eB10G11R11UfloatPack32 || info.pixel_format == vk::Format::eR16G16B16A16Sfloat)) {
+        return 2;
+    }
     // The render size and the output size (larger when DLSS upscales) and their halvings (rounded up), down to a
     // sixteenth.
     u32 sizes[2][2]{};
@@ -358,6 +365,20 @@ void NoteImage(const VideoCore::Image& image, bool storage) {
 u64 g_dispatch_hash = 0;
 void SetDispatchHash(u64 hash) {
     g_dispatch_hash = hash;
+}
+
+void AuditCopy(const char* what, const VideoCore::Image& src, const VideoCore::Image& dst) {
+    if (!g_audit || (!Stereo(src) && !Stereo(dst))) {
+        return;
+    }
+    std::scoped_lock lock{g_audit_mutex};
+    const std::string key = std::string(what) + AuditName(src) + AuditName(dst);
+    static std::unordered_map<std::string, bool> seen;
+    if (seen.emplace(key, true).second) {
+        std::printf("VR audit: COPY %s from [%s samples %u] to [%s samples %u]\n", what, AuditName(src).c_str(),
+                    src.info.num_samples, AuditName(dst).c_str(), dst.info.num_samples);
+        std::fflush(stdout);
+    }
 }
 
 void SetDrawHash(u64 hash) {

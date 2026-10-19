@@ -35,6 +35,11 @@ std::unordered_map<VkPipeline, VkPipeline> g_twins; // pipeline -> its multiview
 
 float g_shift = 0.f;     // the eyes' clip shift (left +, right -)
 bool g_writes_stereo = false; // the bindings so far write a two-layer image
+// Development (BB_VR_MONO_COMPUTE): the bindings read a two-layer image and write one-layer storage images (their
+// sizes): such a compute runs once, for the left eye, and both eyes then use its result.
+bool g_reads_stereo = false;
+std::string g_mono_writes;
+std::string g_mono_pass; // the current pass's targets when it draws one layer (BB_VR_MONO_COMPUTE)
 bool g_second_eye = false;    // the dispatch being recorded runs again for the right eye
 
 void Log(const char* text) {
@@ -76,8 +81,10 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
                     info.num_samples, int(info.type), int(info.props.is_block), (unsigned long long)info.guest_address);
         std::fflush(stdout);
     }
-    if (!g_enabled || layers != 1 || info.num_samples != 1 || info.props.is_block ||
-        info.type != AmdGpu::ImageType::Color2D || info.size.depth != 1) {
+    // Multisampled ones too (Driveclub draws a half-size 4x MSAA pass, 1440x1440 for 2880 eyes: the lights' glows shrink
+    // without it. One layer, it was drawn for the left eye only). Their resolves take both layers (ResolveLayers).
+    if (!g_enabled || layers != 1 || info.props.is_block || info.type != AmdGpu::ImageType::Color2D ||
+        info.size.depth != 1) {
         return layers;
     }
     // The render size and the output size (larger when DLSS upscales) and their halvings (rounded up), down to a
@@ -96,6 +103,16 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
             if (info.size.width == w && info.size.height == h) {
                 return 2;
             }
+        }
+    }
+    // The bloom: 4/15 of the render size (2880 -> 768) and its halvings, within a pixel (the game's rounding). One
+    // layer, it was built from the left eye alone and the right eye got the left eye's glow (headlights, glints on
+    // the cars' paint in other places in each eye).
+    const u32 bloom_w = sizes[0][0] * 4 / 15, bloom_h = sizes[0][1] * 4 / 15;
+    for (u32 k = 0; k <= 4; ++k) {
+        const s64 w = s64(bloom_w >> k), h = s64(bloom_h >> k);
+        if (w >= 16 && std::abs(s64(info.size.width) - w) <= 1 && std::abs(s64(info.size.height) - h) <= 1) {
+            return 2;
         }
     }
     return layers;
@@ -143,6 +160,22 @@ u16 ViewMask(const VideoCore::Image* const* images, u32 count) {
         }
         std::printf("\n");
         std::fflush(stdout);
+    }
+    static const bool mono_log = std::getenv("BB_VR_MONO_COMPUTE") != nullptr;
+    if (mono_log) {
+        g_mono_pass.clear();
+        if (!(stereo && !mono)) {
+            for (u32 i = 0; i < count; ++i) {
+                if (images[i]) {
+                    g_mono_pass += " " + std::to_string(images[i]->info.size.width) + "x" +
+                                   std::to_string(images[i]->info.size.height) + " fmt " +
+                                   std::to_string(int(images[i]->info.pixel_format)) + " backing layers " +
+                                   std::to_string(images[i]->backing ? images[i]->backing->image.image_ci.arrayLayers : 0) +
+                                   " info layers " + std::to_string(images[i]->info.resources.layers) + " at " +
+                                   std::to_string(images[i]->info.guest_address & 0xffffffffull);
+                }
+            }
+        }
     }
     return stereo && !mono ? 0b11 : 0;
 }
@@ -229,6 +262,15 @@ void NoteImage(const VideoCore::Image& image, bool storage) {
     if (storage && Stereo(image)) {
         g_writes_stereo = true;
     }
+    static const bool mono_log = std::getenv("BB_VR_MONO_COMPUTE") != nullptr;
+    if (mono_log) {
+        if (!storage && Stereo(image)) {
+            g_reads_stereo = true;
+        } else if (storage && !Stereo(image)) {
+            g_mono_writes += " " + std::to_string(image.info.size.width) + "x" + std::to_string(image.info.size.height) +
+                             " fmt " + std::to_string(int(image.info.pixel_format));
+        }
+    }
 }
 
 u64 g_dispatch_hash = 0;
@@ -245,6 +287,15 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
     if (compute) {
         out.vr_shift = {0.f, 0.f};
         g_second_eye = g_writes_stereo;
+        static std::unordered_map<u64, bool> mono_seen;
+        if (g_reads_stereo && !g_writes_stereo && !g_mono_writes.empty() &&
+            mono_seen.emplace(g_dispatch_hash, true).second) {
+            std::printf("VR multiview: compute %#llx reads both eyes, writes one-layer images only:%s\n",
+                        (unsigned long long)g_dispatch_hash, g_mono_writes.c_str());
+            std::fflush(stdout);
+        }
+        g_reads_stereo = false;
+        g_mono_writes.clear();
         static const bool log = std::getenv("BB_VR_HASHES") != nullptr;
         static std::unordered_map<u64, bool> seen;
         if (log && seen.emplace(g_dispatch_hash ^ (u64(g_second_eye) << 63), true).second) {
@@ -254,7 +305,15 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
         }
     } else {
         out.vr_shift = {g_shift, -g_shift};
+        static std::unordered_map<std::string, bool> mono_draw_seen;
+        if (g_reads_stereo && !g_mono_pass.empty() && mono_draw_seen.emplace(g_mono_pass, true).second) {
+            std::printf("VR multiview: a one-layer pass samples both eyes' images (drawn for the left eye only):%s\n",
+                        g_mono_pass.c_str());
+            std::fflush(stdout);
+        }
     }
+    g_reads_stereo = false;
+    g_mono_writes.clear();
     g_writes_stereo = false;
     return out;
 }

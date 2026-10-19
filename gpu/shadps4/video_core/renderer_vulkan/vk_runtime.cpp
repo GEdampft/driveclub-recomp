@@ -612,7 +612,8 @@ void Runtime::ResolveImage(VideoCore::Image* src, VideoCore::Image* dst,
         FlushBarriers();
     }
 
-    const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, 1);
+    const auto [src_layers, dst_layers] =
+        Vr::Multiview::ResolveLayers(*src, *dst, SanitizeCopyLayers(src->info, dst->info, 1)); // VR: both eyes
     if (!needs_resolve) {
         const vk::ImageCopy region = {
             .srcSubresource{

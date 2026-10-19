@@ -119,6 +119,16 @@ void StereoCopies(const VideoCore::Image& src, const VideoCore::Image& dst, Regi
     }
 }
 
+/// Runtime::ResolveImage: the layers to resolve or copy (`layers`, the source's and the destination's): both eyes when
+/// both images have them.
+template <typename Layers>
+Layers ResolveLayers(const VideoCore::Image& src, const VideoCore::Image& dst, Layers layers) {
+    if (Enabled() && Stereo(src) && Stereo(dst) && layers.first == 1 && layers.second == 1) {
+        layers.first = layers.second = 2;
+    }
+    return layers;
+}
+
 /// After a dispatch is recorded: the right eye's dispatch when it writes a two-layer image (`indirect`: null for a
 /// direct dispatch of x, y, z groups).
 void SecondEye(Scheduler& scheduler, vk::PipelineLayout layout, const Shader::PushData& push_data, vk::Pipeline handle,

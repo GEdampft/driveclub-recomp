@@ -396,7 +396,9 @@ void TextureCache::SwapDepthForm(ImageId image_id, const ImageInfo& new_info) {
     // The insert may have moved the storage: take both images after it.
     Image& image = slot_images[image_id];
     Image& twin = slot_images[twin_id];
-    twin.info.meta_info = new_info.meta_info;
+    // The Vulkan shape matches (SameDepthForm); the guest description (tiling, bank swizzle, mip layout,
+    // metadata) is the new one in full: a reused twin kept the old guest fields.
+    twin.info = new_info;
     // When creating a depth buffer through overlap resolution don't clear it on first use.
     twin.info.meta_info.htile_clear_mask = 0;
     runtime.CopyColorAndDepth(&image, &twin);

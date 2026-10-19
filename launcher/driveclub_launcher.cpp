@@ -231,6 +231,8 @@ int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_an
 int g_vr = -1;  // VR fork: the "VR headset" row (Off or a size per eye)
 int g_vrdlss = -1, vrdlss_saved = 0;  // VR fork: the "VR DLSS" row (Off, DLAA, Quality, Balanced, Performance)
 int g_vrsharp = -1, vrsharp_saved = 0;  // VR fork: the "VR DLSS sharpness" row (Off, 20% .. 100%)
+int g_vrfast = -1;  // VR fork: the "VR fast mode" toggle (GPU readbacks off)
+bool vr_fast = false;  // its saved state ("vr_fast=" in launcher.ini)
 
 // VR fork: the game in stereo on the OpenXR runtime (SteamVR). The VR patch sets a square render and output size per
 // eye, so the resolution, widescreen and upscaling rows are left out; anti-aliasing and frame generation stay off.
@@ -358,7 +360,12 @@ void BuildModel() {
                   L"Sharpens each eye after DLSS (AMD's contrast-adaptive sharpening: edges and texture detail, without "
                   L"halos). DLSS itself no longer sharpens. Only with a VR DLSS mode on.",
                   {L"Off", L"20%", L"40%", L"60%", L"80%", L"100%"}, {"@vrsharp", "", "", "", "", ""}, 0);
-  g_cards.push_back({L"VR", {g_vr, g_vrdlss, g_vrsharp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
+  g_vrfast = toggle(L"VR fast mode",
+                    L"About 20% more frames per second in VR. The game stops reading results back from the graphics card, "
+                    L"so some effects and scenery can go wrong: rain drops on the windscreen flicker, and some scenery is "
+                    L"misplaced or missing (spectators standing in mid-air).",
+                    "@vrfast", false);
+  g_cards.push_back({L"VR", {g_vr, g_vrdlss, g_vrsharp, g_vrfast}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -397,6 +404,7 @@ void LoadSettings() {
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("vr_dlss=", 0) == 0) vrdlss_saved = atoi(line.substr(8).c_str());  // VR fork
     if (line.rfind("vr_sharpness=", 0) == 0) vrsharp_saved = atoi(line.substr(13).c_str());  // VR fork
+    if (line.rfind("vr_fast=", 0) == 0) vr_fast = line.substr(8) == "1";  // VR fork
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
   }
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
@@ -422,6 +430,10 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") {
       c.sel = unlock_dlc ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@vrfast") {  // VR fork
+      c.sel = vr_fast ? 1 : 0;
       continue;
     }
     if (!has_selection) continue;  // defaults
@@ -527,7 +539,7 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_fast=" << (g_vrfast >= 0 ? g_c[g_vrfast].sel : 0) << "\r\n";
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -1227,9 +1239,12 @@ std::wstring StartGame() {
       SetEnvironmentVariableW(L"BB_VBLANK_HZ", hz);
       SetEnvironmentVariableW(L"BB_FPS_LIMIT", hz);
     }
-    // GPU readbacks stay precise in VR, as flat. Without them (BB_READBACKS=0: 4320 per eye 65 -> 80 FPS) the game
-    // missed GPU results it reads: the crowd stood in mid-air, the windscreen drops flickered, and at dawn the picture
-    // went black (small_writeback.cpp covers that one). BB_READBACKS=0 set before starting still selects it.
+    // GPU readbacks stay precise in VR, as flat. Without them (BB_READBACKS=0: 3200 per eye 76 -> 94 game FPS) the
+    // game misses GPU results it reads: the crowd stood in mid-air, the windscreen drops flickered, and at dawn the
+    // picture went black (small_writeback.cpp covers that one). "VR fast mode" (or BB_READBACKS=0) selects it.
+    if (g_vrfast >= 0 && g_c[g_vrfast].sel && GetEnvironmentVariableW(L"BB_READBACKS", nullptr, 0) == 0) {
+      SetEnvironmentVariableW(L"BB_READBACKS", L"0");
+    }
   }
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;

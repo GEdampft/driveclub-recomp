@@ -15,7 +15,8 @@ extern "C" {
 #endif
 
 // 2: DLSS Frame Generation (the FrameGen* members; an ABI 1 bridge has DLSS only).
-#define BBPORT_DLSS_BRIDGE_ABI 2
+// 3: two DLSS features (SelectFeature; VR runs one per eye).
+#define BBPORT_DLSS_BRIDGE_ABI 3
 
 typedef void (*BbDlssLogFn)(int warning, const char* message);
 
@@ -110,6 +111,8 @@ typedef struct BbDlssApi {
     int32_t (*FrameGenEvaluate)(VkCommandBuffer command, const BbDlssgEvaluate* evaluate);
     // The caller must have waited for the GPU work that used the feature.
     void (*FrameGenRelease)(void);
+    // ABI 3. The DLSS feature slot (0 or 1) CreateFeature, Evaluate and ReleaseFeature act on; 0 until selected.
+    int32_t (*SelectFeature)(uint32_t slot);
 } BbDlssApi;
 
 typedef const BbDlssApi* (*BbDlssGetApiFn)(void);

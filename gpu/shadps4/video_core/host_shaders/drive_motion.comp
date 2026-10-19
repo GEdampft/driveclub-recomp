@@ -16,6 +16,7 @@ layout(push_constant) uniform Constants {
     vec2 size;              // render pixels
     vec2 scale;             // output scale: 1 for pixels, 1 / size for screen fractions
     float use_stencil;      // 1: the stencil view is real
+    float eye_shift;        // VR: the eye's clip x shift (its pixels are the centre view's moved by it)
 };
 
 void main() {
@@ -26,12 +27,12 @@ void main() {
     const ivec2 src = ivec2(min((vec2(pixel) + 0.5) / size * src_size, src_size - 1.0));
     const float depth = max(texelFetch(depth_tex, src, 0).r, 1e-7);
     const vec2 uv = (vec2(pixel) + 0.5) / size;
-    const vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    const vec4 clip = vec4(uv.x * 2.0 - 1.0 - eye_shift, 1.0 - uv.y * 2.0, depth, 1.0);
     // Stored by rows, read by columns: the matrix is transposed, so G * v is v * M.
     const vec4 prev = clip_to_prev_clip * clip;
     vec2 motion = vec2(0.0);
     if (prev.w > 1e-9) {
-        const vec2 prev_ndc = prev.xy / prev.w;
+        const vec2 prev_ndc = prev.xy / prev.w + vec2(eye_shift, 0.0);
         const vec2 prev_uv = vec2(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
         motion = (prev_uv - uv) * size;
     }

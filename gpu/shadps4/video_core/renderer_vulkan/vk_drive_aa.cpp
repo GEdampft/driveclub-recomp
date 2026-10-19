@@ -15,6 +15,7 @@
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/renderer_vulkan/vr/vr_dlss.h" // VR
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace Vulkan {
@@ -87,6 +88,10 @@ bool DriveAA::Upscaling() const {
 
 float DriveAA::MipBias() const {
     return Upscaling() ? -std::log2(BbSettings::AaScaleFactor(BbSettings::Get().aa_scale)) : 0.0f;
+}
+
+bool DriveAA::RedirectVr(vk::ImageView& view, vk::ImageLayout& layout, vk::ComponentMapping mapping) {
+    return Vr::Dlss::Redirect(view, layout, mapping); // VR
 }
 
 void DriveAA::NextFrame() {
@@ -292,7 +297,7 @@ void DriveAA::OnTaa(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
     if (!Active() || !color_id || !depth_id || !output_id) {
         return skip("no image");
     }
-    if (!motion.Ready()) {
+    if (!motion.Ready() && !Vr::Dlss::Active()) { // VR: the camera comes from vr_dlss.cpp
         return skip("the game camera is not known yet");
     }
     auto& color = texture_cache.GetImage(color_id);
@@ -313,6 +318,22 @@ void DriveAA::OnTaa(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
         std::puts("Anti-aliasing: DLSS is not available; using FSR 3.1");
         BbSettings::Get().aa_mode = BbSettings::AaFsr3;
         reset = true;
+        return;
+    }
+    if (Vr::Dlss::Active()) { // VR: DLSS per eye (vr_dlss.cpp)
+        const bool up = UpscalingAllowed() && BbSettings::Get().aa_scale != BbSettings::AaScaleNative;
+        const auto& s = BbSettings::Get();
+        if (!dlss || !Vr::Dlss::Record(instance, scheduler, runtime, motion, *dlss,
+                                       {&color, &depth, &output, jitter, reset,
+                                        s.sharpen ? std::min(s.sharpness.load(), 1.0f) : 0.0f, up})) {
+            reset = true;
+            return;
+        }
+        reset = false;
+        last_run = std::chrono::steady_clock::now();
+        BbSettings::Get().aa_running = true;
+        redirect_id = output_id;
+        redirect_valid = up;
         return;
     }
     const float factor = UpscalingAllowed() ? BbSettings::AaScaleFactor(BbSettings::Get().aa_scale) : 1.0f;

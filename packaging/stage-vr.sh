@@ -6,7 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export PATH="/c/msys64/clang64/bin:$PATH"
 LOADER="${1:-${OPENXR_LOADER:-/f/rpsc3/source/rpcs3/bin/openxr_loader.dll}}"
-OUT="release/vr-dev"
+OUT="${STAGE_OUT:-release/vr-dev}"
+DLSS_SDK="${DLSS_SDK:-/f/rpsc3/source/DLSS}"
 
 bash build.sh
 mkdir -p out/launcher
@@ -20,6 +21,10 @@ cp out/launcher/DriveClub.exe "$OUT/"
 cp out/DriveClubGame.exe "$OUT/runtime/"
 cp patches/DriveClub.xml "$OUT/runtime/patches/"
 cp "$LOADER" "$OUT/runtime/openxr_loader.dll"
+# DLSS (VR DLSS row): the bridge (gpu/dlss_bridge, MIT, built with MSVC into out/dlss-bridge) and NVIDIA's library.
+if [ -f out/dlss-bridge/Release/bbport_dlss.dll ] && [ -f "$DLSS_SDK/lib/Windows_x86_64/rel/nvngx_dlss.dll" ]; then
+  cp out/dlss-bridge/Release/bbport_dlss.dll "$DLSS_SDK/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$OUT/runtime/"
+fi
 echo "vr-dev" > "$OUT/version.txt"
 ldd out/DriveClubGame.exe | awk '{print $3}' | { grep -iE '/msys64/|^/clang64/' || true; } | sort -u | while read -r dll; do
   cp "$dll" "$OUT/runtime/"

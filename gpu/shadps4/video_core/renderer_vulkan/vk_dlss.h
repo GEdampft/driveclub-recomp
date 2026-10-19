@@ -45,6 +45,7 @@ public:
         vk::Format format;
         vk::ImageAspectFlags aspect;
         u32 width, height;
+        u32 layer = 0; ///< VR: the eye's layer of a stereo image (the view shows that layer only)
     };
     struct FeatureDesc {
         u32 input_width, input_height, output_width, output_height;
@@ -68,6 +69,9 @@ public:
     bool CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc);
     bool Evaluate(vk::CommandBuffer command, const Frame& frame);
     void ReleaseFeature();
+    /// VR: the feature slot (one per eye, each with its own history) the calls above act on; slot 1 needs a bridge
+    /// with two features (ABI 3). False when that slot is not available.
+    bool SelectFeature(u32 slot);
 
     // DLSS Frame Generation (nvngx_dlssg.dll, GeForce RTX 40 and newer).
 

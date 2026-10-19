@@ -80,15 +80,22 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
         info.type != AmdGpu::ImageType::Color2D || info.size.depth != 1) {
         return layers;
     }
-    u32 width = 0, height = 0;
-    if (!Fixes::RenderSize(width, height)) {
+    // The render size and the output size (larger when DLSS upscales) and their halvings (rounded up), down to a
+    // sixteenth.
+    u32 sizes[2][2]{};
+    if (!Fixes::RenderSize(sizes[0][0], sizes[0][1])) {
         return layers;
     }
-    // The render size and its halvings (rounded up), down to a sixteenth.
-    for (u32 k = 0; k <= 4; ++k) {
-        const u32 w = (width + (1u << k) - 1) >> k, h = (height + (1u << k) - 1) >> k;
-        if (info.size.width == w && info.size.height == h) {
-            return 2;
+    if (!Fixes::OutputSize(sizes[1][0], sizes[1][1])) {
+        sizes[1][0] = sizes[0][0];
+        sizes[1][1] = sizes[0][1];
+    }
+    for (const auto& size : sizes) {
+        for (u32 k = 0; k <= 4; ++k) {
+            const u32 w = (size[0] + (1u << k) - 1) >> k, h = (size[1] + (1u << k) - 1) >> k;
+            if (info.size.width == w && info.size.height == h) {
+                return 2;
+            }
         }
     }
     return layers;
@@ -203,6 +210,10 @@ vk::Pipeline Variant(vk::Pipeline pipeline, u16 view_mask) {
     }
     cache.emplace(it->first, it->second);
     return vk::Pipeline(it->second);
+}
+
+float Shift() {
+    return g_shift;
 }
 
 void SetShift(float shift) {

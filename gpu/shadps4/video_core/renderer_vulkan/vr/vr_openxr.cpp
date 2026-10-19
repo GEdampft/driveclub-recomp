@@ -139,6 +139,19 @@ struct State {
     Published pending;          // the presenter's, this presentation
     std::mutex publish_mutex;
     Published published;        // under publish_mutex
+    // The latest publications, newest first (under publish_mutex): the headset shows the newest whose GPU work is
+    // done. Stereo slots are four, so three publications are still intact; screen images three, so two.
+    std::array<Published, 3> recent{};
+    // The headset's loop, per report: time in xrWaitFrame, xrBeginFrame (with the frame lock), Show, xrEndFrame.
+    std::array<double, 4> stage_sum{}, stage_max{};
+    // Show's parts (stereo): acquire the three swapchain images, wait for a command buffer, record + submit, release.
+    std::array<double, 5> part_sum{}, part_max{};
+    // The adaptive frame cap (FramePeriod): the headset's period (ns, from xrWaitFrame) and the game's flips.
+    std::atomic<u64> display_period_ns{0};
+    std::atomic<bool> capped{false};
+    std::atomic<bool> flip_token{false}; // set by each headset frame, taken by a capped flip
+    std::chrono::steady_clock::time_point flips_since{};
+    u32 flips = 0;
     u64 shown_serial = 0;       // the headset's thread: the last publication shown
     Content content = Content::None; // the headset's thread: what the swapchains hold
 
@@ -151,6 +164,9 @@ struct State {
     };
     Chain eye_chains[2], hud_chain;
     int frames_since_stereo = 1000; // the presenter: frames since the last stereo frame
+    // The headset's thread: when the flat screen took over (a loading screen); stereo again after a long one is a new
+    // race (or menu) beginning, and the seat is recentred there.
+    std::chrono::steady_clock::time_point screen_since{};
     // Frame statistics (submitted headset frames).
     std::vector<double> intervals;
     double last_submit = 0.0;
@@ -354,8 +370,11 @@ bool MakeScreens(u32 width, u32 height) {
     if (g.screen_images[0] && g.screen_width == width && g.screen_height == height) {
         return true;
     }
+    // The headset's thread may be copying one: it waits until the new images exist (with the old ones destroyed and
+    // the new not made yet it copied from a null image, a crash in the driver).
+    std::unique_lock frame_lock{g.frame_mutex, std::defer_lock};
     if (g.screen_images[0]) {
-        std::scoped_lock frame_lock{g.frame_mutex}; // the headset's thread may be copying one
+        frame_lock.lock();
         WaitIdle();
         for (u32 i = 0; i < 3; ++i) {
             VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroyImage(g.device, g.screen_images[i], nullptr);
@@ -599,6 +618,17 @@ void NoteFrameTime() {
         "%.1f Hz); %u repeated, %u flat screen",
         new_frames / sum, headset_fps, 1.0 / p99, 100.0 * over / double(g.intervals.size()),
         100.0 * late / double(g.intervals.size()), 1.0 / period, g.repeats, g.screens);
+    const double n = double(g.intervals.size());
+    Log("headset loop ms (avg / max): wait frame %.2f / %.1f, begin %.2f / %.1f, show %.2f / %.1f, end frame %.2f / %.1f",
+        g.stage_sum[0] / n, g.stage_max[0], g.stage_sum[1] / n, g.stage_max[1], g.stage_sum[2] / n, g.stage_max[2],
+        g.stage_sum[3] / n, g.stage_max[3]);
+    Log("show parts ms (sum over the report / max): acquire %.0f / %.1f, command buffer %.0f / %.1f, record %.0f / %.1f, "
+        "submit %.0f / %.1f, release %.0f / %.1f", g.part_sum[0], g.part_max[0], g.part_sum[1], g.part_max[1],
+        g.part_sum[2], g.part_max[2], g.part_sum[4], g.part_max[4], g.part_sum[3], g.part_max[3]);
+    g.part_sum = {};
+    g.part_max = {};
+    g.stage_sum = {};
+    g.stage_max = {};
     g.intervals.clear();
     g.repeats = g.screens = 0;
 }
@@ -645,12 +675,22 @@ void Release(XrSwapchain swapchain) {
 bool Show(const State::Published& p) {
     if (p.kind == State::Content::Stereo) {
         const auto& stereo = p.stereo;
+        using Clock = std::chrono::steady_clock;
+        auto since = Clock::now();
+        const auto part = [&since](int i) {
+            const auto now = Clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(now - since).count();
+            g.part_sum[i] += ms;
+            g.part_max[i] = std::max(g.part_max[i], ms);
+            since = now;
+        };
         if (!MakeChain(g.eye_chains[0], stereo.width, stereo.height) ||
             !MakeChain(g.eye_chains[1], stereo.width, stereo.height) ||
             !MakeChain(g.hud_chain, stereo.width, stereo.height) || !AcquireChain(g.eye_chains[0]) ||
             !AcquireChain(g.eye_chains[1]) || !AcquireChain(g.hud_chain)) {
             return false;
         }
+        part(0);
         // Shift per unit of reversed depth: -side * (ipd / 2) * P00 * (width / 2) / near (vr_stereo.comp).
         const float p00 = 2.f / (p.tangents[1] - p.tangents[0]);
         const float base = 0.5f * StereoBaseline() * p00 * 0.5f * float(stereo.width) / Camera::Near();
@@ -658,13 +698,26 @@ bool Show(const State::Published& p) {
         const VkImage eyes[2] = {g.eye_chains[0].images[g.eye_chains[0].index].image,
                                  g.eye_chains[1].images[g.eye_chains[1].index].image};
         const VkCommandBuffer cmd = NextCommand();
+        part(1);
         Stereo::RecordEyes(cmd, stereo, eyes, k, g.hud_chain.images[g.hud_chain.index].image);
+        part(2);
         SubmitCommand(cmd, p);
+        part(4);
         Release(g.eye_chains[0].swapchain);
         Release(g.eye_chains[1].swapchain);
         Release(g.hud_chain.swapchain);
+        part(3);
         std::memcpy(g.frame_layer_pose, p.layer_pose, sizeof(g.frame_layer_pose));
         std::memcpy(g.frame_tangents, p.tangents, sizeof(g.frame_tangents));
+        if (g.content == State::Content::Screen) {
+            static const bool auto_recenter = !(std::getenv("BB_VR_AUTO_RECENTER") &&
+                                                std::getenv("BB_VR_AUTO_RECENTER")[0] == '0');
+            const double flat = std::chrono::duration<double>(std::chrono::steady_clock::now() - g.screen_since).count();
+            if (auto_recenter && flat >= 2.0) {
+                Log("stereo again after %.1f s of loading screen: recentring", flat);
+                g.recenter_requested = true;
+            }
+        }
         g.content = State::Content::Stereo;
         return true;
     }
@@ -696,6 +749,9 @@ bool Show(const State::Published& p) {
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
     SubmitCommand(cmd, p);
     Release(g.swapchain);
+    if (g.content != State::Content::Screen) {
+        g.screen_since = std::chrono::steady_clock::now();
+    }
     g.content = State::Content::Screen;
     return true;
 }
@@ -767,6 +823,20 @@ void EndFrame() {
 }
 
 // The headset's frame loop: paced by the runtime, independent of the game's presentation.
+// A publication whose GPU work is done (its timeline tick reached). One that is still being drawn waits for a later
+// headset frame (the last one is shown again meanwhile): its copies would wait on the game's GPU work and the runtime's
+// compositor on them, and the headset's frame would miss its refresh (GPU-bound at large eye sizes: ~10% of frames).
+// BB_VR_WAIT_FRAMES=1: the old way (development A/B).
+bool Finished(const State::Published& p) {
+    static const bool wait = std::getenv("BB_VR_WAIT_FRAMES") && std::getenv("BB_VR_WAIT_FRAMES")[0] == '1';
+    if (wait || !p.semaphore) {
+        return true;
+    }
+    u64 value = 0;
+    return VULKAN_HPP_DEFAULT_DISPATCHER.vkGetSemaphoreCounterValue(g.device, p.semaphore, &value) != VK_SUCCESS ||
+           value >= p.tick;
+}
+
 void FrameLoop() {
     while (!g.quit) {
         PollEvents();
@@ -776,10 +846,24 @@ void FrameLoop() {
         }
         g.frame_state = {XR_TYPE_FRAME_STATE};
         XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};
+        using Clock = std::chrono::steady_clock;
+        const auto stage = [](int i, Clock::time_point& since) {
+            const auto now = Clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(now - since).count();
+            g.stage_sum[i] += ms;
+            g.stage_max[i] = std::max(g.stage_max[i], ms);
+            since = now;
+        };
+        auto since = Clock::now();
         if (!Check(g.xr.WaitFrame(g.session, &wait, &g.frame_state), "xrWaitFrame")) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
+        stage(0, since);
+        if (g.frame_state.predictedDisplayPeriod > 0) {
+            g.display_period_ns.store(u64(g.frame_state.predictedDisplayPeriod), std::memory_order_relaxed);
+        }
+        g.flip_token.store(true, std::memory_order_relaxed); // one game flip per headset frame (while capped)
         std::scoped_lock frame_lock{g.frame_mutex};
         {
             QueueLock lock;
@@ -788,24 +872,35 @@ void FrameLoop() {
                 continue;
             }
         }
+        stage(1, since);
         UpdateHead();
         if (float pose[7], tangents[4]; Multiview::Enabled() && Camera::LastRendered(pose, tangents)) {
             // An eye half the eye distance to the side moves clip x by P00 x that distance (left eye: surfaces right).
             Multiview::SetShift(2.f / (tangents[1] - tangents[0]) * 0.5f * StereoBaseline());
         }
-        State::Published p;
+        std::array<State::Published, 3> recent;
         {
             std::scoped_lock lock{g.publish_mutex};
-            p = g.published;
+            recent = g.recent;
         }
         bool shown = false;
-        if (g.frame_state.shouldRender && p.kind != State::Content::None && p.serial != g.shown_serial) {
-            g.shown_serial = p.serial;
-            shown = Show(p);
+        for (size_t i = 0; i < recent.size() && g.frame_state.shouldRender; ++i) {
+            const State::Published& p = recent[i];
+            if (p.kind == State::Content::None || p.serial <= g.shown_serial ||
+                (p.kind == State::Content::Screen && i >= 2)) {
+                break; // older ones were shown, or their images may be refilled
+            }
+            if (Finished(p)) {
+                g.shown_serial = p.serial;
+                shown = Show(p);
+                break;
+            }
         }
         g.repeats += !shown;
         g.screens += shown && g.content == State::Content::Screen;
+        stage(2, since);
         EndFrame();
+        stage(3, since);
         NoteFrameTime();
     }
 }
@@ -985,7 +1080,50 @@ void Recenter() {
 }
 
 
+std::chrono::nanoseconds FramePeriod(std::chrono::nanoseconds limit) {
+    if (g.capped.load(std::memory_order_relaxed)) {
+        g.flip_token.store(false, std::memory_order_relaxed);
+    }
+    return limit;
+}
+
+bool FlipAllowed() {
+    return !g.capped.load(std::memory_order_relaxed) || g.flip_token.load(std::memory_order_relaxed);
+}
+
+// The presenter, each game flip in VR: the adaptive cap's flip rate over 2 s windows.
+void NoteFlip() {
+    static const bool enabled = !(std::getenv("BB_VR_CAP") && std::getenv("BB_VR_CAP")[0] == '0');
+    const u64 period = g.display_period_ns.load(std::memory_order_relaxed);
+    if (!enabled || !period) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (g.flips_since == std::chrono::steady_clock::time_point{}) {
+        g.flips_since = now;
+    }
+    ++g.flips;
+    const double seconds = std::chrono::duration<double>(now - g.flips_since).count();
+    if (seconds < 2.0) {
+        return;
+    }
+    const double rate = g.flips / seconds, hz = 1e9 / double(period);
+    const bool capped = g.capped.load(std::memory_order_relaxed);
+    if (!capped && rate >= 1.12 * hz) {
+        g.capped = true;
+        Log("the game holds %.0f FPS: capped at the headset's %.0f Hz", rate, hz);
+    } else if (capped && rate < 0.95 * hz) {
+        g.capped = false;
+        Log("the game makes %.0f FPS of the headset's %.0f Hz: uncapped", rate, hz);
+    }
+    g.flips = 0;
+    g.flips_since = now;
+}
+
 void SubmitFrame(VkSemaphore semaphore, u64 tick) {
+    if (g.pending.kind == State::Content::Stereo) {
+        NoteFlip();
+    }
     if (g.pending.kind == State::Content::None) {
         return;
     }
@@ -995,6 +1133,10 @@ void SubmitFrame(VkSemaphore semaphore, u64 tick) {
     g.published.semaphore = semaphore;
     g.published.tick = tick;
     g.published.serial = serial;
+    for (size_t i = g.recent.size() - 1; i > 0; --i) {
+        g.recent[i] = g.recent[i - 1];
+    }
+    g.recent[0] = g.published;
     g.pending = {};
 }
 

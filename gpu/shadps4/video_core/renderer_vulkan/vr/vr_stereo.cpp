@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,8 @@
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
 #include "video_core/renderer_vulkan/vr/vr_openxr.h"
 #include "video_core/renderer_vulkan/vr/vr_stereo.h"
+#include "video_core/renderer_vulkan/vr/vr_dlss.h"
+#include "video_core/renderer_vulkan/vr/vr_fixes.h"
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace Vulkan::Vr::Stereo {
@@ -413,6 +416,36 @@ void ShootTarget(u64 guest_address) {
     g_shoot_left = 3000;
 }
 
+namespace {
+
+// A new scene (a race starting or restarting, the menus again): the main view's camera (the render size's camera
+// constants: target size at dwords 96-97, world position at 108-110) jumps far between frames. The seat is recentred
+// then, as with F8 (BB_VR_AUTO_RECENTER=0 turns it off). A reset to track or a camera change moves it far less.
+void NoteMainCamera(const float* constants) {
+    static const bool enabled = !(std::getenv("BB_VR_AUTO_RECENTER") && std::getenv("BB_VR_AUTO_RECENTER")[0] == '0');
+    u32 width = 0, height = 0;
+    if (!enabled || !Fixes::RenderSize(width, height) || constants[96] != float(width) ||
+        constants[97] != float(height)) {
+        return;
+    }
+    static std::array<float, 3> last{};
+    static bool have = false;
+    const float* position = constants + 108;
+    if (have) {
+        const float dx = position[0] - last[0], dy = position[1] - last[1], dz = position[2] - last[2];
+        const float jump = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (jump > 100.f) {
+            std::printf("VR stereo: the camera moved %.0f m in a frame (a new scene): recentring\n", jump);
+            std::fflush(stdout);
+            Vr::Recenter();
+        }
+    }
+    last = {position[0], position[1], position[2]};
+    have = true;
+}
+
+} // namespace
+
 void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& texture_cache, const Shader::Info& vs,
             const GraphicsPipelineKey& key,
             VideoCore::ImageId color_id, VideoCore::ImageId target2_id, VideoCore::ImageId gbuffer_depth_id) {
@@ -427,6 +460,8 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
         for (u32 i = 0; i < vs.buffers.size() && g.ready && !g_frame_pose_valid; ++i) {
             const auto sharp = vs.buffers[i].GetSharp(vs);
             if (sharp.GetSize() == 512 && sharp.base_address) {
+                Dlss::OnCameraConstants(reinterpret_cast<const float*>(sharp.base_address));
+                NoteMainCamera(reinterpret_cast<const float*>(sharp.base_address));
                 OnFrameCamera(reinterpret_cast<const float*>(sharp.base_address) + 108);
             }
         }
@@ -654,7 +689,18 @@ void RecordEyes(vk::CommandBuffer command_buffer, const Frame& frame, const VkIm
         g_eye_dump_frames = 6;
         CopyToReadback(cmd, slot.scene.image, VK_IMAGE_LAYOUT_GENERAL, g_eye_dump, VkDeviceSize(w) * h * 4 * 2, w, h);
     }
-    for (int eye = 0; eye < 2; ++eye) {
+    if (slot.has_right && !dump) {
+        // Multiview: each eye's own scene straight into the headset's image (one copy per eye, bit for bit: the
+        // scene is gamma-encoded already).
+        for (int eye = 0; eye < 2; ++eye) {
+            Barrier(cmd, eyes[eye], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            Copy(cmd, eye ? slot.scene_right.image : slot.scene.image,
+                 eye ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL, eyes[eye],
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, w, h);
+            Barrier(cmd, eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        }
+    }
+    for (int eye = 0; eye < 2 && !(slot.has_right && !dump); ++eye) {
         if (!Make(g.keys[eye], VK_FORMAT_R32_UINT, w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
             !Make(g.eyes[eye], VK_FORMAT_R8G8B8A8_UNORM, w, h,
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
@@ -663,7 +709,7 @@ void RecordEyes(vk::CommandBuffer command_buffer, const Frame& frame, const VkIm
     }
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     const Push push_base{s32(w), s32(h), s32(slot.depth.width), s32(slot.depth.height), 0.f, {}};
-    for (int eye = 0; eye < 2; ++eye) {
+    for (int eye = 0; eye < 2 && !(slot.has_right && !dump); ++eye) {
         if (slot.has_right) {
             // Multiview: each eye was rendered; its scene into the eye image.
             Barrier(cmd, g.eyes[eye].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);

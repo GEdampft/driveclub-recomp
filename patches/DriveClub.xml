@@ -616,6 +616,234 @@
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
+              Name="VR render 1088x1088"
+              Note="VR (OpenXR) with DLSS: 1088x1088 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="40040000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="40040000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1264x1264"
+              Note="VR (OpenXR) with DLSS: 1264x1264 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="f0040000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="f0040000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1280x1280"
+              Note="VR (OpenXR) with DLSS: 1280x1280 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="00050000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="00050000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1440x1440"
+              Note="VR (OpenXR) with DLSS: 1440x1440 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="a0050000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="a0050000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1504x1504"
+              Note="VR (OpenXR) with DLSS: 1504x1504 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="e0050000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="e0050000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1600x1600"
+              Note="VR (OpenXR) with DLSS: 1600x1600 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="40060000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="40060000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1696x1696"
+              Note="VR (OpenXR) with DLSS: 1696x1696 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="a0060000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="a0060000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1712x1712"
+              Note="VR (OpenXR) with DLSS: 1712x1712 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="b0060000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="b0060000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1792x1792"
+              Note="VR (OpenXR) with DLSS: 1792x1792 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="00070000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="00070000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1888x1888"
+              Note="VR (OpenXR) with DLSS: 1888x1888 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="60070000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="60070000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 1920x1920"
+              Note="VR (OpenXR) with DLSS: 1920x1920 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="80070000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="80070000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2112x2112"
+              Note="VR (OpenXR) with DLSS: 2112x2112 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="40080000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="40080000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2128x2128"
+              Note="VR (OpenXR) with DLSS: 2128x2128 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="50080000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="50080000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2160x2160"
+              Note="VR (OpenXR) with DLSS: 2160x2160 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="70080000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="70080000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2256x2256"
+              Note="VR (OpenXR) with DLSS: 2256x2256 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="d0080000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="d0080000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2384x2384"
+              Note="VR (OpenXR) with DLSS: 2384x2384 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="50090000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="50090000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2544x2544"
+              Note="VR (OpenXR) with DLSS: 2544x2544 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="f0090000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="f0090000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2560x2560"
+              Note="VR (OpenXR) with DLSS: 2560x2560 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="000a0000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="000a0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR render 2880x2880"
+              Note="VR (OpenXR) with DLSS: 2880x2880 internal render resolution per eye (after a VR per-eye size, which sets the output)"
+              Author="dcport-vr"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x016d0544" Value="400b0000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="400b0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
               Name="VR lens dirt off"
               Note="VR (OpenXR): the screen-space lens dirt off (it sits on the eye, not in the world)"
               Author="dcport-vr"

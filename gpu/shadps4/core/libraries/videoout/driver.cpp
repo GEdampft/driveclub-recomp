@@ -13,6 +13,7 @@
 #endif
 #include "common/assert.h"
 #include "bbport_toggles.h"
+#include "video_core/renderer_vulkan/vr/vr_openxr.h" // VR
 
 extern "C" void BbDescribeAddress(unsigned long long rip, char* out, unsigned long size);
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
@@ -779,13 +780,13 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         // Check if it's time to take a request.
         auto& vblank_status = main_port.vblank_status;
         const auto now = std::chrono::steady_clock::now();
-        const bool flip_slot = !frame_limit || now >= next_flip;
+        const bool flip_slot = (!frame_limit || now >= next_flip) && Vulkan::Vr::FlipAllowed(); // VR
         // With a frame limit (the 60 FPS patches) the game's own 30 Hz flip rate is ignored.
         const u32 flip_rate = frame_limit ? 0u : u32(main_port.flip_rate);
         if (flip_slot && vblank_status.count % (flip_rate + 1) == 0) {
             const auto request = receive_request();
             if (request && frame_limit) {
-                next_flip = std::max(next_flip + frame_period, now - frame_period);
+                next_flip = std::max(next_flip + Vulkan::Vr::FramePeriod(frame_period), now - frame_period); // VR
             }
             if (!request) {
                 if (timer.GetTotalWait().count() < 0) { // Dont draw too fast
@@ -843,10 +844,13 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 }
                 std::this_thread::sleep_until(next_flip);
             }
+            if (!Vulkan::Vr::FlipAllowed()) {
+                break; // VR: the headset's next frame (the next vblank tick looks again)
+            }
             const auto now = std::chrono::steady_clock::now();
             const auto request = receive_request();
             if (request) {
-                next_flip = std::max(next_flip + frame_period, now - frame_period);
+                next_flip = std::max(next_flip + Vulkan::Vr::FramePeriod(frame_period), now - frame_period); // VR
                 Flip(request);
                 FRAME_END;
             }

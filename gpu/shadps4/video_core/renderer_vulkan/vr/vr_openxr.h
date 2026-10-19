@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <chrono>
+
 #include <string_view>
 #include <vector>
 
@@ -77,10 +79,21 @@ void RecordFrame(vk::CommandBuffer cmd, vk::Image frame, u32 width, u32 height, 
 /// The head's current position and yaw become the seat's origin (at the next frame).
 void Recenter();
 
+/// The present thread, each flip: its frame limit's period (`limit`, the launcher's: unpaced). While capped it is
+/// the headset that paces the game: one flip per headset frame (FlipAllowed), so the game makes no frames the headset
+/// never shows and the GPU keeps time for the headset's own work (2880 per eye: frames over a 90 Hz period 3.6% ->
+/// 0.2%). Adaptive: capped once the game flips >= 112% of the headset's rate for 2 s, released below 95% (BB_VR_CAP=0
+/// never caps). This flip takes the headset frame's token.
+std::chrono::nanoseconds FramePeriod(std::chrono::nanoseconds limit);
+
+/// The present thread: a flip may go now (uncapped, or the headset began a frame since the last flip).
+bool FlipAllowed();
+
 /// After the presenter's submit: hands the layer to the runtime (xrEndFrame).
 void SubmitFrame(VkSemaphore semaphore, u64 tick);
 
 /// Device creation: queues to make in the game's queue family (2 when VR runs: the headset's own queue).
 u32 QueueCount(VkPhysicalDevice physical_device, u32 queue_family);
+
 
 } // namespace Vulkan::Vr

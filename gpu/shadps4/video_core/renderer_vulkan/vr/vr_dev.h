@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "video_core/renderer_vulkan/vr/vr_openxr.h"
+
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
 
@@ -25,6 +27,9 @@ void CaptureDispatch(u64 hash, u32 index, u64 address, u64 size);
 
 template <typename Info>
 void OnDispatch(const Info& cs, u32 groups_x = 0, u32 groups_y = 0) {
+    if (!Vr::Active()) {
+        return; // flat play: nothing to note
+    }
     u32 image_sizes[4]{}; // the first two images: width << 16 | height
     for (u32 i = 0; i < cs.images.size() && i < 2; ++i) {
         const auto image = cs.images[i].GetSharp(cs);

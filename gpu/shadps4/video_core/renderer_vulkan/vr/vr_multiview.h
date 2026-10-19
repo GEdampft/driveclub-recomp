@@ -82,6 +82,8 @@ vk::Pipeline Variant(vk::Pipeline pipeline, u16 view_mask);
 
 /// Each frame: the eyes' clip x shift (left eye +shift, right eye -shift; P00 x half the eye distance).
 void SetShift(float shift);
+/// The left eye's clip x shift (the right eye's is its negative).
+float Shift();
 
 /// Binding: an image bound to the next draw or dispatch (storage: written).
 void NoteImage(const VideoCore::Image& image, bool storage);

@@ -31,6 +31,13 @@ int ReplaceConstant(std::vector<u32>& spirv, u32 from, u32 to) {
 
 } // namespace
 
+bool OutputSize(u32& width, u32& height) {
+    // The immediates of the eboot's output size stores (eboot 0xb54c1b / 0xb54c21, the "Output resolution" patches).
+    width = *reinterpret_cast<const u32*>(ImageBase + 0x754c1b);
+    height = *reinterpret_cast<const u32*>(ImageBase + 0x754c21);
+    return width >= 64 && height >= 64 && width <= 16384 && height <= 16384;
+}
+
 bool RenderSize(u32& width, u32& height) {
     width = *reinterpret_cast<const u32*>(ImageBase + RenderWidth);
     height = *reinterpret_cast<const u32*>(ImageBase + RenderHeight);

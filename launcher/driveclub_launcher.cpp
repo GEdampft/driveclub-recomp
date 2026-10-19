@@ -229,6 +229,7 @@ int aniso_saved = 0;   // "Anisotropic filtering" choice, from launcher.ini
 std::wstring g_name = L"Player";  // in-game player name, from "name=" in launcher.ini
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 int g_vr = -1;  // VR fork: the "VR headset" row (Off or a size per eye)
+int g_vrdlss = -1, vrdlss_saved = 0;  // VR fork: the "VR DLSS" row (Off, DLAA, Quality, Balanced, Performance)
 
 // VR fork: the game in stereo on the OpenXR runtime (SteamVR). The VR patch sets a square render and output size per
 // eye, so the resolution, widescreen and upscaling rows are left out; anti-aliasing and frame generation stay off.
@@ -236,6 +237,14 @@ bool VrOn() { return g_vr >= 0 && g_c[g_vr].sel > 0; }
 int VrEye() {
   static const int kEye[] = {0, 2160, 2560, 2880, 3200, 3584, 3840, 4320};
   return VrOn() ? kEye[g_c[g_vr].sel] : 0;
+}
+int VrDlss() { return VrOn() && g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0; }  // 0 off, 1 DLAA, 2.. upscaling
+// The render size per eye: the eye size, or below it by the DLSS mode's factor (a multiple of 16, as the
+// "VR render" patches in DriveClub.xml).
+int VrRender() {
+  static const float kFactor[] = {1.0f, 1.0f, 1.5f, 1.7f, 2.0f};
+  const int d = VrDlss();
+  return d >= 2 ? int(std::lround(VrEye() / kFactor[d] / 16.0)) * 16 : VrEye();
 }
 bool unlocked_saved = false;  // "Unlocked" frame rate choice, from launcher.ini  // indices of the render resolution and widescreen choices
 
@@ -339,7 +348,12 @@ void BuildModel() {
              {L"Off", L"2160", L"2560", L"2880", L"3200", L"3584", L"3840", L"4320"},
              {"", "VR 2160x2160 per eye", "VR 2560x2560 per eye", "VR 2880x2880 per eye", "VR 3200x3200 per eye",
               "VR 3584x3584 per eye", "VR 3840x3840 per eye", "VR 4320x4320 per eye"}, 0);
-  g_cards.push_back({L"VR", {g_vr}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
+  g_vrdlss = seg(L"VR DLSS (RTX)",
+                 L"NVIDIA DLSS for each eye. DLAA keeps the eye size and smooths edges; Quality, Balanced and Performance "
+                 L"render each eye 1.5, 1.7 or 2 times smaller and let DLSS rebuild it at the eye size: much faster at "
+                 L"high sizes. Needs a GeForce RTX card.",
+                 {L"Off", L"DLAA", L"Quality", L"Balanced", L"Performance"}, {"@vrdlss", "", "", "", ""}, 0);
+  g_cards.push_back({L"VR", {g_vr, g_vrdlss}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -376,6 +390,7 @@ void LoadSettings() {
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = line.substr(9) == "1";
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
+    if (line.rfind("vr_dlss=", 0) == 0) vrdlss_saved = atoi(line.substr(8).c_str());  // VR fork
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
   }
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
@@ -420,7 +435,8 @@ void LoadSettings() {
   if (g_up >= 0 && up_saved >= 1 && up_saved <= 3) g_c[g_up].sel = up_saved;
   if (g_aa >= 0 && aa_saved >= 1 && aa_saved <= 2) g_c[g_aa].sel = aa_saved;
   if (g_fgen >= 0 && fgen_saved >= 1 && fgen_saved <= 4) g_c[g_fgen].sel = fgen_saved;
-  if (g_fps >= 0 && unlocked_saved && g_c[g_fps].sel == 1) g_c[g_fps].sel = 3;  // Unlocked is deltatime without the cap
+  if (g_fps >= 0 && unlocked_saved && g_c[g_fps].sel == 1) g_c[g_fps].sel = 3;
+  if (g_vrdlss >= 0 && vrdlss_saved >= 1 && vrdlss_saved <= 4) g_c[g_vrdlss].sel = vrdlss_saved;  // VR fork  // Unlocked is deltatime without the cap
   DerivePreset();
 }
 
@@ -504,7 +520,7 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\n";
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -515,6 +531,7 @@ void SaveSettings() {
   }
   std::ofstream out(SelectionPath().c_str(), std::ios::binary | std::ios::trunc);
   if (VrOn()) out << "60 FPS with deltatime\nDisable motion blur and depth of field\nVR lens dirt off\n";  // VR fork
+  if (VrOn() && VrRender() != VrEye()) out << "VR render " << VrRender() << "x" << VrRender() << "\n";  // VR fork: DLSS
   for (const auto& c : g_c) {
     if (VrReplaces(c)) continue;  // VR fork
     if (c.kind == Kind::Toggle) {
@@ -1178,16 +1195,30 @@ std::wstring StartGame() {
     // so the game runs unpaced (the deltatime patch keeps its speed right).
     SetEnvironmentVariableW(L"BB_VR", L"1");
     SetEnvironmentVariableW(L"BB_VR_STEREO", L"mv");
-    SetEnvironmentVariableW(L"BB_VR_EYE_RES", std::to_wstring(VrEye()).c_str());
-    SetEnvironmentVariableW(L"BB_AA", L"off");
-    SetEnvironmentVariableW(L"BB_AA_SCALE", L"native");
+    // The shader cache follows the render size (one shader holds it).
+    SetEnvironmentVariableW(L"BB_VR_EYE_RES", std::to_wstring(VrRender()).c_str());
+    // DLSS per eye (DriveAA): DLAA at the eye size, or upscaling from the render size to it.
+    static const wchar_t* const kScale[] = {L"native", L"native", L"quality", L"balanced", L"performance"};
+    if (GetEnvironmentVariableW(L"BB_VR_AA_TEST", nullptr, 0) == 0) {
+      SetEnvironmentVariableW(L"BB_AA", VrDlss() ? L"dlss" : L"off");
+    }
+    SetEnvironmentVariableW(L"BB_AA_SCALE", kScale[VrDlss()]);
+    SetEnvironmentVariableW(L"BB_AA_UPSCALE_DEV", VrDlss() >= 2 ? L"1" : nullptr);
     SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
     SetEnvironmentVariableW(L"BB_FULLSCREEN", L"0");
-    SetEnvironmentVariableW(L"BB_VBLANK_HZ", L"240");
-    SetEnvironmentVariableW(L"BB_FPS_LIMIT", L"240");
-    // No GPU readbacks: the game never waits for the GPU to copy its targets back (they scale with the eye size;
-    // 4320 per eye: 53 -> 67 FPS), and nothing it reads back shows.
-    SetEnvironmentVariableW(L"BB_READBACKS", L"0");
+    if (GetEnvironmentVariableW(L"BB_VR_GAME_HZ", nullptr, 0) == 0) {
+      SetEnvironmentVariableW(L"BB_VBLANK_HZ", L"240");
+      SetEnvironmentVariableW(L"BB_FPS_LIMIT", L"240");
+    } else {  // development: the game's own rate (BB_VR_GAME_HZ=90: no frames the headset never shows)
+      wchar_t hz[16];
+      GetEnvironmentVariableW(L"BB_VR_GAME_HZ", hz, 16);
+      SetEnvironmentVariableW(L"BB_VBLANK_HZ", hz);
+      SetEnvironmentVariableW(L"BB_FPS_LIMIT", hz);
+    }
+    // No GPU readbacks. The game keeps CPU objects in the same 4 KB pages as small values the GPU writes (counters,
+    // labels), so with readbacks every frame's CPU access to them waited for the GPU to finish all its queued work
+    // (4320 per eye: 65 -> 80 FPS without). Nothing it reads back shows.
+    if (GetEnvironmentVariableW(L"BB_READBACKS", nullptr, 0) == 0) SetEnvironmentVariableW(L"BB_READBACKS", L"0");
   }
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;

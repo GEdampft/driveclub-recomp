@@ -26,6 +26,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vr/vr_dev.h" // VR
+#include "video_core/renderer_vulkan/vr/vr_dlss.h" // VR
 #include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR
 #include "video_core/renderer_vulkan/vr/vr_stereo.h" // VR
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
@@ -1158,6 +1159,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         BbStats::PhaseTimer timer{BbStats::phase_ns[2]};
         PrepareRenderState(pipeline);
     }
+    if (const auto lit = Vr::Dlss::AaInput(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash); lit && drive_aa->Active() && fg_depth) {
+        drive_aa->OnTaa(lit, fg_depth, lit); // VR: DLSS on the finished lit scene, before the post-processing
+    }
     Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
                        pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
@@ -1443,6 +1447,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     motion_draw = false;
     motion_geometry = 0;
     PrepareRenderState(pipeline);
+    if (const auto lit = Vr::Dlss::AaInput(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash); lit && drive_aa->Active() && fg_depth) {
+        drive_aa->OnTaa(lit, fg_depth, lit); // VR: DLSS on the finished lit scene, before the post-processing
+    }
     Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
                        pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
@@ -1658,6 +1665,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     Vr::Multiview::SecondEye(scheduler, pipeline->GetLayout(), push_data, handle, dim_x, dim_y, dim_z); // VR
     DebugState.IncDispatch();
 
+    Vr::Dlss::OnDispatch(texture_cache, cs, bound_images.data(), bound_images.size()); // VR: the lit scene
     // The game's temporal anti-aliasing pass: FSR or DLSS replaces its result.
     if (drive_aa->Active() && fg_depth) {
         const auto format = [&](u32 i) {
@@ -2757,7 +2765,7 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
                 !binding.force_general && !binding.is_target && drive_aa->Redirects(image_id)) {
                 vk::ImageView redirected;
                 vk::ImageLayout redirected_layout;
-                drive_aa->Redirect(redirected, redirected_layout);
+                drive_aa->Redirect(redirected, redirected_layout, image_view.info.mapping);
                 image.usage.texture = 1u;
                 image_infos.emplace_back(VK_NULL_HANDLE, redirected, redirected_layout);
                 set_ok = false;

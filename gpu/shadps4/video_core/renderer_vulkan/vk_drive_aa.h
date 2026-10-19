@@ -50,10 +50,15 @@ public:
     [[nodiscard]] bool Redirects(VideoCore::ImageId id) const {
         return redirect_valid && id == redirect_id;
     }
-    void Redirect(vk::ImageView& view, vk::ImageLayout& layout) const {
+    void Redirect(vk::ImageView& view, vk::ImageLayout& layout, vk::ComponentMapping mapping = {}) const {
+        if (RedirectVr(view, layout, mapping)) {
+            return; // VR: both eyes (vr_dlss.cpp)
+        }
         view = *result_view;
         layout = vk::ImageLayout::eGeneral;
     }
+
+    static bool RedirectVr(vk::ImageView& view, vk::ImageLayout& layout, vk::ComponentMapping mapping); // VR
 
     /// The display pass: the next frame's jitter.
     void NextFrame();

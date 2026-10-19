@@ -18,4 +18,7 @@ void PatchShader(u64 hash, std::vector<u32>& spirv);
 /// The game's render size (eboot 0x16d0544/0x16d0554); false if unreadable.
 bool RenderSize(u32& width, u32& height);
 
+/// The game's output size (the display buffer; above the render size when DLSS upscales). False before it is mapped.
+bool OutputSize(u32& width, u32& height);
+
 } // namespace Vulkan::Vr::Fixes

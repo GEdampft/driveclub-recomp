@@ -83,13 +83,13 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 **Skip the hardware check:** the launcher checks that your processor and graphics card can run the game (a processor with AVX, BMI1, LZCNT and MOVBE, and Vulkan 1.3). If it ever refuses hardware that works, turn this on to start anyway.
 
 ## Benchmark
-The **Benchmark** card in the launcher measures how the game runs with your settings. Choose the track, car, time of day, weather, rain and length, then press **Run benchmark**. The game starts straight into the event, the AI drives, and the game closes by itself when it is done. The launcher then shows the average frame rate and the **1% and 0.1% lows** (the average of the slowest 1% and 0.1% of frames). The result is also in `data\user\benchmark\result.txt` and `logs\launcher.log`.
+The **Benchmark** card in the launcher measures how the game runs with your settings. Choose the track, car, time of day, weather, rain and length, then press **Run benchmark**. The game starts straight into the event, the AI drives, and the game closes by itself when it is done. The launcher then shows the average frame rate and the **1% and 0.1% lows** (the average of the slowest 1% and 0.1% of frames). The result is also in `data\user\benchmark\result.txt` and `logs\launcher.log`. Under the result, the card says what the game actually ran with (render and output resolution, frame limit, anti-aliasing); point at it to see every setting.
 
 Without the window: set `BB_BENCHMARK` and start `DriveClub.exe --play`. `BB_BENCHMARK=1` uses the defaults (Fraser Valley, Ferrari 458 Italia, noon, clear, 60 s); keys can be given as `BB_BENCHMARK=track=chile_race_track_v1,car=fe_f12,tod=18`. The game exits when done (exit code 0, or 3 if the race did not start) and prints one line to its log:
 ```
 Benchmark: result mode=TimeTrial track=canada_road_circuit_02_n car=fe_458 tod=12 weather=Clear rain=dry drive=ai seconds=60.0 frames=2639 avg_fps=43.97 low1_fps=26.94 low01_fps=14.14 p99_ms=32.65 max_ms=103.85 load_s=21.9
 ```
-The keys and their values are listed at the top of [src/runtime_benchmark.c](src/runtime_benchmark.c).
+A second line, `Benchmark: ran render=... output=... fps_limit=... aa=...`, lists the settings the game ran with, read by the game itself (the render and output sizes from its own memory). The keys and their values are listed at the top of [src/runtime_benchmark.c](src/runtime_benchmark.c).
 
 ## Known issues
 - **Some reflections are too bright**, for example rain drops on the side window and the paint on cars on the stage select screen.

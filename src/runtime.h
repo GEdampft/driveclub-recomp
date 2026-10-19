@@ -67,6 +67,7 @@ void runtime_benchmark_configure(const char *user);
 const char *runtime_benchmark_guest_arg(void);
 int runtime_benchmark_marker(const char *guest);
 void runtime_benchmark_flip(void);
+void runtime_benchmark_note_mods(const char *dir);
 int runtime_file_mount(const char *guest, const char *host);
 void runtime_file_unmount(const char *guest);
 int runtime_file_translate(const char *guest, char *out, size_t size);

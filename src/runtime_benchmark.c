@@ -36,7 +36,8 @@
  *   seconds  s measured (default 60).        view     camera: chase, driverhead, attach (empty = game default).
  *   timeout  s from start until the race must run (default 240), else exit code 3.
  * The result line ("Benchmark: result mode=... avg_fps= low1_fps= low01_fps= p99_ms= max_ms= load_s=") goes to the
- * log and to <user>/benchmark/result.txt, or to BB_BENCHMARK_OUT=<file>. The lows are the average frame rate of
+ * log and to <user>/benchmark/result.txt, or to BB_BENCHMARK_OUT=<file>, followed by a "ran ..." line: the settings
+ * the game ran with, read by the game itself (ran_with()). The lows are the average frame rate of
  * the slowest 1% and 0.1% of frames. Exit code 0 = done, 3 = the race did not start or the frames stopped.
  * BB_BENCHMARK_LUA=<host file>: Lua run inside the script (in a pcall) with `stage` set to "frontend", "loaded",
  * "racing" and "tick" (every 5 s while racing); say(text) there goes to the log. A debugging aid: the game's
@@ -359,6 +360,54 @@ int runtime_benchmark_marker(const char *guest) {
     return 1;
 }
 
+/* Graphics detail and add-on content as the game was started with them: the launcher passes its edited global.rpk
+ * and the DLC unlock as --mods folders (probe.c reports each one here). The graphics folder holds stamp.txt:
+ * "graphics-1 <stamps> car N opponents N scenery N reflections N dynres N". */
+static int detail_car, detail_opponents, detail_scenery, detail_reflections, detail_dynres = 1, dlc_unlocked;
+void runtime_benchmark_note_mods(const char *dir) {
+    char path[700], text[256] = "";
+    const size_t n = strlen(dir);
+    if (n >= 6 && !strcmp(dir + n - 6, "unlock")) dlc_unlocked = 1;
+    snprintf(path, sizeof(path), "%s/stamp.txt", dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    const size_t got = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[got] = 0;
+    const char *at = strncmp(text, "graphics-", 9) ? NULL : strstr(text, " car ");
+    if (at) sscanf(at, " car %d opponents %d scenery %d reflections %d dynres %d", &detail_car, &detail_opponents,
+                   &detail_scenery, &detail_reflections, &detail_dynres);
+}
+
+/* A u32 of the running game image (the resolution patches' targets), or 0. */
+static unsigned image_u32(uint64_t offset) {
+    unsigned v = 0;
+    if (runtime_image_base && offset + 4 <= runtime_image_size) memcpy(&v, (const void *)(runtime_image_base + offset), 4);
+    return v;
+}
+
+/* What the game ran with, read here rather than taken from the launcher's choices: "ran key=value ...". */
+static void ran_with(char *out, size_t size) {
+    /* The render and output sizes in eboot 1.28: the values the "Internal resolution" and "Output resolution"
+     * patches write (patches/DriveClub.xml addresses minus the 0x400000 patch base). */
+    const unsigned rw = image_u32(0x12d0544), rh = image_u32(0x12d0554), ow = image_u32(0x754c1b), oh = image_u32(0x754c21);
+    char render[32] = "unknown", output[32] = "unknown";
+    if (rw >= 320 && rw <= 16384 && rh >= 200 && rh <= 16384) snprintf(render, sizeof(render), "%ux%u", rw, rh);
+    if (ow >= 320 && ow <= 16384 && oh >= 200 && oh <= 16384) snprintf(output, sizeof(output), "%ux%u", ow, oh);
+    const char *cap = getenv("BB_FPS_CAP"), *limit = getenv("BB_FPS_LIMIT");
+    const char *fps = cap && *cap ? cap : limit && *limit ? limit : "none";
+#define ENV(name, fallback) (getenv(name) && *getenv(name) ? getenv(name) : (fallback))
+    snprintf(out, size,
+             "ran render=%s output=%s fps_limit=%s vblank_hz=%s present=%s aa=%s aa_scale=%s frame_gen=%s frame_gen_x=%s "
+             "aniso=%s mirror_rate=%s car_detail=%d opponent_detail=%d scenery_detail=%d hq_reflections=%d dynamic_res=%d "
+             "dlc=%d fullscreen=%s",
+             render, output, fps, ENV("BB_VBLANK_HZ", "60"), ENV("BB_PRESENT_MODE", "default"), ENV("BB_AA", "off"),
+             ENV("BB_AA_SCALE", "native"), ENV("BB_FRAME_GEN", "off"), ENV("BB_FRAME_GEN_MULTIPLIER", "2"),
+             ENV("BB_ANISO", "auto"), ENV("BB_MIRROR_RATE", "1"), detail_car, detail_opponents, detail_scenery,
+             detail_reflections, detail_dynres, dlc_unlocked, ENV("BB_FULLSCREEN", "0"));
+#undef ENV
+}
+
 static int cmp_desc(const void *a, const void *b) {
     const double x = *(const double *)a, y = *(const double *)b;
     return x < y ? 1 : x > y ? -1 : 0;
@@ -387,9 +436,12 @@ static void finish(double t) {
              "low1_fps=%.2f low01_fps=%.2f p99_ms=%.2f max_ms=%.2f load_s=%.1f",
              cfg.mode, cfg.track, cfg.car, cfg.tod, cfg.weather, rain, cfg.drive, elapsed / 1000.0, frames, avg,
              low_fps(intervals, n, 0.01), low_fps(intervals, n, 0.001), p99, worst, (t_race - t_config) / 1000.0);
+    char ran[700];
+    ran_with(ran, sizeof(ran));
     printf("Benchmark: result %s\n", line);
+    printf("Benchmark: %s\n", ran);
     FILE *f = fopen(out_path, "wb");
-    if (f) { fprintf(f, "%s\n", line); fclose(f); }
+    if (f) { fprintf(f, "%s\n%s\n", line, ran); fclose(f); }
     else printf("Benchmark: cannot write %s\n", out_path);
     printf("Benchmark: done, exiting\n");
     fflush(NULL);

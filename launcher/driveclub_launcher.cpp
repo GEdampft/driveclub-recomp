@@ -309,6 +309,19 @@ struct BenchResult {
 };
 BenchResult g_bench_result;
 bool g_bench_running = false;
+bool g_bench_ran_hover = false;  // the pointer is over the result: the panel with every setting the game ran with is shown
+std::wstring g_bench_ran_short;               // one line: what the game actually ran with (render -> output, frame limit, ...)
+std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported (result.txt line "ran ...")
+
+// The game options the launcher sets for every start that were already set when it started: the player's own
+// overrides (BB_FPS_LIMIT=40, ...). Only these are left alone; the launcher's own values are replaced each time.
+std::vector<std::wstring> g_user_env;
+void SnapshotUserEnv() {
+  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER"}) {
+    if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
+  }
+}
+bool UserEnv(const wchar_t* name) { return std::find(g_user_env.begin(), g_user_env.end(), name) != g_user_env.end(); }
 
 void BuildModel() {
   g_folder[0].label = L"Update folder (version 1.28)";
@@ -657,7 +670,7 @@ void ResetDefaults() {
 // ------------------------------------------------------------------------------------------
 // layout
 // ------------------------------------------------------------------------------------------
-float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 184.f : 70.f) + g_row_extra; }
+float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 208.f : 70.f) + g_row_extra; }
 float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
@@ -909,8 +922,11 @@ void Paint(HDC hdc, int w, int h) {
           const std::wstring big = g_bench_result.fps + L" FPS";
           Text(g, big, fBig, RectF(res.X, res.Y, res.Width, 32 * S), kWhite);
           Text(g, g_bench_result.lows, fSeg, RectF(res.X, res.Y + 32 * S, res.Width, 20 * S), kText);
-          Text(g, g_bench_result.about, fHint, RectF(res.X, res.Y + 56 * S, res.Width, res.Height - 56 * S), kMuted,
+          Text(g, g_bench_result.about, fHint, RectF(res.X, res.Y + 56 * S, res.Width, 38 * S), kMuted,
                StringAlignmentNear, StringAlignmentNear, true);
+          if (!g_bench_ran_short.empty())
+            Text(g, g_bench_ran_short, fHint, RectF(res.X, res.Y + 96 * S, res.Width, res.Height - 96 * S),
+                 g_bench_ran_hover ? kText : kMuted, StringAlignmentNear, StringAlignmentNear, true);
         } else {
           Text(g, L"No result yet.", fHint, res, kMuted, StringAlignmentNear,
                StringAlignmentNear, true);
@@ -997,6 +1013,21 @@ void Paint(HDC hdc, int w, int h) {
     Text(g, kBtnText[i], fBtn, br, disabled ? kMuted : kWhite, StringAlignmentCenter);
   }
   g_oy = ContentOy();
+  // The benchmark result under the pointer: every setting the game ran with, in a panel over the page.
+  if (g_bench_ran_hover && g_brun >= 0 && !g_bench_running && g_bench_result.ok && !g_bench_ran_lines.empty()) {
+    const RectF row = Scaled(g_c[g_brun].row);
+    const float line_h = 19 * S, pad = 12 * S;
+    const float ph = pad * 2 + line_h * float(g_bench_ran_lines.size()), pw = row.Width;
+    float py = row.Y + 88 * S - ph - 8 * S;  // above the result, where the page has room
+    if (py < 8 * S) py = row.Y + row.Height + 4 * S;
+    if (py + ph > float(h) - 8 * S) py = (std::max)(8 * S, float(h) - 8 * S - ph);
+    const RectF panel(row.X, py, pw, ph);
+    FillRound(g, panel, 10 * S, Color(250, 30, 34, 42));
+    for (size_t i = 0; i < g_bench_ran_lines.size(); ++i) {
+      Text(g, g_bench_ran_lines[i], i == 0 ? fCard : fHint,
+           RectF(panel.X + pad, panel.Y + pad + line_h * float(i), panel.Width - 2 * pad, line_h), i == 0 ? kWhite : kText);
+    }
+  }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1274,22 +1305,26 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     const bool unlocked = g_fps >= 0 && g_c[g_fps].sel == 3;
     SetEnvironmentVariableW(L"BB_FPS_LIMIT", unlocked ? L"1000" : delta ? L"60" : nullptr);
   }
-  if (g_lang >= 0 && GetEnvironmentVariableW(L"BB_LANGUAGE", nullptr, 0) == 0) {
+  // A value set before the launcher started is the player's override and is kept. Checking the environment
+  // itself is not enough: the launcher sets these for every start, so a second start (Play, or Run benchmark
+  // again) would keep the first start's values and ignore every choice changed since.
+  if (g_lang >= 0 && !UserEnv(L"BB_LANGUAGE")) {
     SetEnvironmentVariableW(L"BB_LANGUAGE", std::to_wstring(g_lang_id).c_str());
   }
-  if (g_up >= 0 && GetEnvironmentVariableW(L"BB_AA_SCALE", nullptr, 0) == 0) {
+  if (g_up >= 0 && !UserEnv(L"BB_AA_SCALE")) {
     const int u = UpscaleActive() ? g_c[g_up].sel : 0;
     SetEnvironmentVariableW(L"BB_AA_SCALE", u == 0 ? L"native" : u == 1 ? L"quality" : u == 2 ? L"balanced" : L"performance");
   }
-  if (g_aa >= 0 && GetEnvironmentVariableW(L"BB_AA", nullptr, 0) == 0) {
+  if (g_aa >= 0 && !UserEnv(L"BB_AA")) {
     const int a = g_c[g_aa].sel;
     SetEnvironmentVariableW(L"BB_AA", a == 0 ? L"off" : a == 1 ? L"fsr3" : L"dlss");
   }
-  if (g_fgen < 0 && GetEnvironmentVariableW(L"BB_FRAME_GEN", nullptr, 0) == 0) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
-  if (g_fgen >= 0 && GetEnvironmentVariableW(L"BB_FRAME_GEN", nullptr, 0) == 0) {
+  if (g_fgen < 0 && !UserEnv(L"BB_FRAME_GEN")) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
+  if (g_fgen >= 0 && !UserEnv(L"BB_FRAME_GEN")) {
     const int f = g_c[g_fgen].sel;
     SetEnvironmentVariableW(L"BB_FRAME_GEN", f == 0 ? L"off" : f == 1 ? L"fsr3" : L"dlss");
-    if (f >= 2) SetEnvironmentVariableW(L"BB_FRAME_GEN_MULTIPLIER", f == 2 ? L"2" : f == 3 ? L"3" : L"4");
+    if (!UserEnv(L"BB_FRAME_GEN_MULTIPLIER"))
+      SetEnvironmentVariableW(L"BB_FRAME_GEN_MULTIPLIER", f == 2 ? L"2" : f == 3 ? L"3" : f == 4 ? L"4" : nullptr);
   }
   if (g_aniso >= 0 && g_c[g_aniso].sel >= 1) {
     static const wchar_t* const kAniso[] = {L"", L"0", L"2", L"4", L"8", L"16"};
@@ -1441,6 +1476,43 @@ void LoadBenchResult() {
     about += when;
   }
   g_bench_result.about = about;
+
+  // The second line: what the game itself ran with ("ran key=value ...", runtime_benchmark.c ran_with()).
+  g_bench_ran_short.clear();
+  g_bench_ran_lines.clear();
+  if (lines.size() < 2 || lines[1].rfind("ran ", 0) != 0) return;
+  auto ran = [&](const char* key) -> std::string {
+    const std::string& l = lines[1];
+    const std::string k = std::string(" ") + key + "=";
+    const size_t p = l.find(k);
+    if (p == std::string::npos) return "";
+    const size_t b = p + k.size(), e = l.find(' ', b);
+    return l.substr(b, e == std::string::npos ? std::string::npos : e - b);
+  };
+  const std::string fps = ran("fps_limit"), aa = ran("aa"), scale = ran("aa_scale"), fgen = ran("frame_gen");
+  const int limit = std::atoi(fps.c_str());
+  const std::wstring cap = fps == "none" || limit >= 1000 ? L"no frame cap" : Widen(fps) + L" FPS cap";
+  const std::wstring aa_name = aa == "dlss" ? L"DLAA" : aa == "fsr3" ? L"FSR 3.1" : L"game AA";
+  const std::wstring up_name = scale.empty() || scale == "native" ? L"" : L" (" + Widen(scale) + L" upscaling)";
+  const std::wstring fg_name = fgen.empty() || fgen == "off" ? L"off" : Widen(fgen) + L" " + Widen(ran("frame_gen_x")) + L"x";
+  const bool live = ran("mirror_rate") != "0";
+  auto onoff = [&](const char* key) { return ran(key) == "1" ? std::wstring(L"on") : std::wstring(L"off"); };
+  std::wstring aniso = Widen(ran("aniso"));
+  if (aniso != L"auto") aniso += L"x";
+  g_bench_ran_short = L"Ran at " + Widen(ran("render")) + L" \x2192 " + Widen(ran("output")) + L", " + cap + L", " + aa_name +
+                      L". Point here for every setting.";
+  g_bench_ran_lines = {
+      L"What the game ran with (read by the game itself)",
+      L"Render resolution (the 3D scene): " + Widen(ran("render")),
+      L"Output resolution (the finished picture): " + Widen(ran("output")),
+      L"The window is always your screen's size; dynamic resolution can lower the render size further under load.",
+      L"Frame limit: " + cap + L", vblank " + Widen(ran("vblank_hz")) + L" Hz, present mode " + Widen(ran("present")),
+      L"Anti-aliasing: " + aa_name + up_name + L", frame generation " + fg_name,
+      L"Texture filtering: " + aniso + L", mirrors and reflections: " + (live ? L"live" : L"static"),
+      L"Your car full detail: " + onoff("car_detail") + L", other cars full detail: " + onoff("opponent_detail"),
+      L"More scenery detail: " + onoff("scenery_detail") + L", high-quality reflections: " + onoff("hq_reflections"),
+      L"Dynamic resolution: " + onoff("dynamic_res") + L", add-on content: " + (ran("dlc") == "1" ? L"unlocked" : L"not unlocked"),
+  };
 }
 
 // The game's own reason when it stopped the benchmark ("Benchmark: FAILED, ..." in its log), or "".
@@ -1718,6 +1790,16 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       int seg;
       const int c = HitControl(x, y, &seg), b = HitButton(x, y), br = HitBrowse(x, y);
+      // Over the benchmark's result (its row below the Run button): the panel of settings the game ran with.
+      bool ran_hover = false;
+      if (c >= 0 && c == g_brun && seg != 0) {
+        const RectF row = Scaled(g_c[c].row);
+        ran_hover = y >= row.Y + 88 * g_scale;
+      }
+      if (ran_hover != g_bench_ran_hover) {
+        g_bench_ran_hover = ran_hover;
+        InvalidateRect(h, nullptr, FALSE);
+      }
       if (c != g_hover_ctl || seg != g_hover_seg || b != g_hover_btn || br != g_hover_browse) {
         g_hover_ctl = c;
         g_hover_seg = seg;
@@ -1731,6 +1813,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_MOUSELEAVE:
       g_hover_ctl = g_hover_seg = g_hover_btn = g_hover_browse = -1;
+      g_bench_ran_hover = false;
       InvalidateRect(h, nullptr, FALSE);
       return 0;
     case WM_LBUTTONDOWN: {
@@ -1850,6 +1933,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   SetProcessDPIAware();
   CoInitialize(nullptr);
+  SnapshotUserEnv();
   wchar_t selfbuf[MAX_PATH * 2];
   GetModuleFileNameW(nullptr, selfbuf, MAX_PATH * 2);
   g_home = Dir(selfbuf);

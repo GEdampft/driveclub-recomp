@@ -919,7 +919,7 @@ int main(int argc, char **argv) {
     if (app0) {
         runtime_file_configure(app0, user_dir ? user_dir : "user");
         runtime_file_set_base(app0_base_dir);
-        for (int mi=0;mi<mods_n;++mi) runtime_file_add_mods(mods_dir[mi]);
+        for (int mi=0;mi<mods_n;++mi) { runtime_file_add_mods(mods_dir[mi]); runtime_benchmark_note_mods(mods_dir[mi]); }
         runtime_benchmark_configure(user_dir ? user_dir : "user");
         char sfo[4096], id[16]="";
         snprintf(sfo,sizeof(sfo),"%s/sce_sys/param.sfo",app0);

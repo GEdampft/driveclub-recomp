@@ -40,6 +40,8 @@ bool g_writes_stereo = false; // the bindings so far write a two-layer image
 bool g_reads_stereo = false;
 std::string g_mono_writes;
 std::string g_mono_pass; // the current pass's targets when it draws one layer (BB_VR_MONO_COMPUTE)
+std::string g_stereo_reads; // the two-layer images the bindings sample (BB_VR_MONO_COMPUTE)
+u64 g_draw_hash = 0;        // the draw's vertex shader (BB_VR_MONO_COMPUTE)
 bool g_second_eye = false;    // the dispatch being recorded runs again for the right eye
 
 void Log(const char* text) {
@@ -105,15 +107,15 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
             }
         }
     }
-    // The bloom: 4/15 of the render size (2880 -> 768) and its halvings, within a pixel (the game's rounding). One
-    // layer, it was built from the left eye alone and the right eye got the left eye's glow (headlights, glints on
-    // the cars' paint in other places in each eye).
-    const u32 bloom_w = sizes[0][0] * 4 / 15, bloom_h = sizes[0][1] * 4 / 15;
-    for (u32 k = 0; k <= 4; ++k) {
-        const s64 w = s64(bloom_w >> k), h = s64(bloom_h >> k);
-        if (w >= 16 && std::abs(s64(info.size.width) - w) <= 1 && std::abs(s64(info.size.height) - h) <= 1) {
-            return 2;
-        }
+    // The bloom: 4/15 of the render size (2880 -> 768, within a pixel: the game's rounding), one image with its mips
+    // (formats R16G16B16A16 float and B10G11R11). One layer, it was built from the left eye alone and the right eye got
+    // the left eye's glow (headlights, glints on the cars' paint in other places in each eye). Only that size: with
+    // DLSS Quality it is 512, and its halvings were the game's own textures (64x64, 128x128...).
+    const s64 bloom_w = s64(sizes[0][0] * 4 / 15), bloom_h = s64(sizes[0][1] * 4 / 15);
+    if (std::abs(s64(info.size.width) - bloom_w) <= 1 && std::abs(s64(info.size.height) - bloom_h) <= 1 &&
+        (info.pixel_format == vk::Format::eR16G16B16A16Sfloat ||
+         info.pixel_format == vk::Format::eB10G11R11UfloatPack32)) {
+        return 2;
     }
     return layers;
 }
@@ -266,6 +268,10 @@ void NoteImage(const VideoCore::Image& image, bool storage) {
     if (mono_log) {
         if (!storage && Stereo(image)) {
             g_reads_stereo = true;
+            char text[96];
+            std::snprintf(text, sizeof(text), " %ux%u fmt %d at %#llx", image.info.size.width, image.info.size.height,
+                          int(image.info.pixel_format), (unsigned long long)image.info.guest_address);
+            g_stereo_reads += text;
         } else if (storage && !Stereo(image)) {
             g_mono_writes += " " + std::to_string(image.info.size.width) + "x" + std::to_string(image.info.size.height) +
                              " fmt " + std::to_string(int(image.info.pixel_format));
@@ -276,6 +282,27 @@ void NoteImage(const VideoCore::Image& image, bool storage) {
 u64 g_dispatch_hash = 0;
 void SetDispatchHash(u64 hash) {
     g_dispatch_hash = hash;
+}
+
+void SetDrawHash(u64 hash) {
+    g_draw_hash = hash;
+}
+
+std::span<const vk::BufferImageCopy> StereoUploads(const VideoCore::Image& dst,
+                                                   std::span<const vk::BufferImageCopy> copies) {
+    if (!Stereo(dst)) {
+        return copies;
+    }
+    thread_local std::vector<vk::BufferImageCopy> both;
+    both.assign(copies.begin(), copies.end());
+    for (const auto& copy : copies) {
+        if (copy.imageSubresource.baseArrayLayer == 0 && copy.imageSubresource.layerCount == 1) {
+            auto right = copy;
+            right.imageSubresource.baseArrayLayer = 1;
+            both.push_back(right);
+        }
+    }
+    return both;
 }
 
 Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
@@ -306,14 +333,17 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
     } else {
         out.vr_shift = {g_shift, -g_shift};
         static std::unordered_map<std::string, bool> mono_draw_seen;
-        if (g_reads_stereo && !g_mono_pass.empty() && mono_draw_seen.emplace(g_mono_pass, true).second) {
-            std::printf("VR multiview: a one-layer pass samples both eyes' images (drawn for the left eye only):%s\n",
-                        g_mono_pass.c_str());
+        if (g_reads_stereo && !g_mono_pass.empty() &&
+            mono_draw_seen.emplace(g_mono_pass + std::to_string(g_draw_hash), true).second) {
+            std::printf("VR multiview: a one-layer pass samples both eyes' images (drawn for the left eye only):%s; vs "
+                        "%#llx reads%s\n",
+                        g_mono_pass.c_str(), (unsigned long long)g_draw_hash, g_stereo_reads.c_str());
             std::fflush(stdout);
         }
     }
     g_reads_stereo = false;
     g_mono_writes.clear();
+    g_stereo_reads.clear();
     g_writes_stereo = false;
     return out;
 }

@@ -233,6 +233,7 @@ Runtime::TransferMark::~TransferMark() {
 
 void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
                           std::span<const vk::BufferImageCopy> upload_copies) {
+    upload_copies = Vr::Multiview::StereoUploads(*dst, upload_copies); // VR: both eyes
     SetBackingSamples(dst, dst->info.num_samples, false);
     scheduler.EndRendering();
     const TransferMark mark{*this, "image upload", *dst};

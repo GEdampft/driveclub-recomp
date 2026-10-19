@@ -119,6 +119,14 @@ void StereoCopies(const VideoCore::Image& src, const VideoCore::Image& dst, Regi
     }
 }
 
+/// Runtime::UploadImage: the copies with the right eye's layer added for a two-layer image (the same data in both
+/// eyes: a game texture that matched a main-view size would otherwise show unfilled memory in the right eye).
+std::span<const vk::BufferImageCopy> StereoUploads(const VideoCore::Image& dst,
+                                                   std::span<const vk::BufferImageCopy> copies);
+
+/// Development log (BB_VR_MONO_COMPUTE): the draw's vertex shader.
+void SetDrawHash(u64 hash);
+
 /// Runtime::ResolveImage: the layers to resolve or copy (`layers`, the source's and the destination's): both eyes when
 /// both images have them.
 template <typename Layers>

@@ -450,6 +450,7 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
             const GraphicsPipelineKey& key,
             VideoCore::ImageId color_id, VideoCore::ImageId target2_id, VideoCore::ImageId gbuffer_depth_id) {
     const u64 vs_hash = vs.pgm_hash;
+    Multiview::SetDrawHash(vs_hash);
     const int targets = std::popcount(key.mrt_mask);
     if (targets >= 3) {
         if (g_find_camera > 0) {

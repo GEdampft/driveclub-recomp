@@ -83,14 +83,13 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 **Skip the hardware check:** the launcher checks that your processor and graphics card can run the game (a processor with AVX, BMI1, LZCNT and MOVBE, and Vulkan 1.3). If it ever refuses hardware that works, turn this on to start anyway.
 
 ## Benchmark
-The **Benchmark** card in the launcher measures how the game runs on your PC with your settings. Choose a track, a car, alone or a race with 8 cars, the time of day, the weather, rain and the length, then press **Run benchmark**. The game starts straight into the event, the game's AI drives, and the game closes by itself when it is done (about half a minute of loading plus the length). The launcher then shows the average frame rate and the **1% and 0.1% lows** (the average of the slowest 1% and 0.1% of frames). The result is also in `data\user\benchmark\result.txt` and `logs\launcher.log`.
+The **Benchmark** card in the launcher measures how the game runs with your settings. Choose the track, car, time of day, weather, rain and length, then press **Run benchmark**. The game starts straight into the event, the AI drives, and the game closes by itself when it is done. The launcher then shows the average frame rate and the **1% and 0.1% lows** (the average of the slowest 1% and 0.1% of frames). The result is also in `data\user\benchmark\result.txt` and `logs\launcher.log`.
 
-For scripts, the same run can be started without the window: set `BB_BENCHMARK` and start `DriveClub.exe --play`.
+Without the window: set `BB_BENCHMARK` and start `DriveClub.exe --play`. `BB_BENCHMARK=1` uses the defaults (Fraser Valley, Ferrari 458 Italia, noon, clear, 60 s); keys can be given as `BB_BENCHMARK=track=chile_race_track_v1,car=fe_f12,tod=18`. The game exits when done (exit code 0, or 3 if the race did not start) and prints one line to its log:
 ```
-set BB_BENCHMARK=track=uk_road_circuit_01_n,car=mc_p1,tod=22,rain=Heavy,seconds=60
-DriveClub.exe --play
+Benchmark: result mode=TimeTrial track=canada_road_circuit_02_n car=fe_458 tod=12 weather=Clear rain=dry drive=ai seconds=60.0 frames=2639 avg_fps=43.97 low1_fps=26.94 low01_fps=14.14 p99_ms=32.65 max_ms=103.85 load_s=21.9
 ```
-The game prints one line to its log, for example `Benchmark: result mode=TimeTrial track=uk_road_circuit_01_n car=mc_p1 ... avg_fps=62.10 low1_fps=48.30 low01_fps=41.20 p99_ms=21.40 max_ms=30.10 load_s=21.0`, writes it to `result.txt` and exits (exit code 0; 3 if the race did not start). `BB_BENCHMARK=1` uses the defaults (Fraser Valley, Ferrari 458 Italia, noon, clear, 60 s). The keys (`track`, `car`, `mode`, `tod`, `weather`, `rain`, `laps`, `warmup`, `seconds`, `drive`, `view`, `timeout`) and their values are listed at the top of [src/runtime_benchmark.c](src/runtime_benchmark.c).
+The keys and their values are listed at the top of [src/runtime_benchmark.c](src/runtime_benchmark.c).
 
 ## Known issues
 - **Some reflections are too bright**, for example rain drops on the side window and the paint on cars on the stage select screen.

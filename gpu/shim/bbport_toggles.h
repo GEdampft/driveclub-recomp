@@ -70,6 +70,7 @@ enum : std::uint64_t {
     TaaKeepNearerHistory = 1ull << 55,
     SceneMipBias = 1ull << 57, ///< negative LOD bias of G-buffer samplers at reduced scene sizes
     MappedRangeCopies = 1ull << 58, ///< set: IsMapped takes the shared lock again (A/B)
+    DepthFormSwap = 1ull << 59, ///< an image used as depth and as color keeps both forms (texture_cache.cpp)
     // Bits 20-29 are used as raw debug toggles by the camera/object motion and the upscaler.
 };
 inline bool Disabled(std::uint64_t bit) {

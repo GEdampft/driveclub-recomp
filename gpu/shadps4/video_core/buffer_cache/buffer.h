@@ -46,6 +46,11 @@ constexpr vk::BufferUsageFlags ReadFlags =
 constexpr vk::BufferUsageFlags AllFlags =
     ReadFlags | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer;
 
+/// bbport: set by the Vulkan instance when the device can alias sparse memory. A migrated arena binds the
+/// same memory as the arena it replaces, which is only valid with sparseResidencyAliased; without it the
+/// AMD driver drops the old mapping and shaders that still use the old addresses read invalid memory.
+inline bool sparse_aliased_enabled = false;
+
 struct UniqueBuffer {
     explicit UniqueBuffer(vk::Device device, VmaAllocator allocator);
     ~UniqueBuffer();

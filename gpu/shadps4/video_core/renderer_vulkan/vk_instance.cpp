@@ -466,7 +466,7 @@ bool Instance::CreateDevice() {
     std::printf("GPU: subgroup sizes %u to %u (default %u), size can be required in stages %#x; recompiler targets %u wide%s\n",
                 vk13_props.minSubgroupSize, vk13_props.maxSubgroupSize, vk11_props.subgroupSize,
                 unsigned(VkShaderStageFlags(vk13_props.requiredSubgroupSizeStages)), SubgroupSize(),
-                IsSubgroupSize64Supported() ? ", compute and graphics pinned to 64"
+                IsSubgroupSize64Supported() ? ", compute pinned to 64 (graphics where the driver allows)"
                 : IsComputeSubgroupSize32Required() ? ", compute pinned to 32"
                                                     : "");
     // bbport: DLSS (optional bridge DLL) needs its own device extensions on NVIDIA GPUs.
@@ -482,6 +482,15 @@ bool Instance::CreateDevice() {
         }
     }
     Vr::AppendDeviceExtensions(*instance, physical_device, enabled_extensions); // VR: OpenXR's device extensions
+    // bbport: BB_SPARSE_ALIASED=0 leaves aliased sparse binding off.
+    // Default on for AMD only, where the driver drops the old mapping of memory that a second sparse
+    // buffer binds; NVIDIA and Intel keep what they had. BB_SPARSE_ALIASED=1 / 0 forces it on / off.
+    const bool sparse_aliased = features.sparseResidencyAliased && [&] {
+        const char* env = std::getenv("BB_SPARSE_ALIASED");
+        return env ? env[0] != '0' : properties.vendorID == 0x1002;
+    }();
+    VideoCore::sparse_aliased_enabled = sparse_aliased;
+    std::printf("GPU: sparse aliased binding %s\n", sparse_aliased ? "on" : "off");
     vk::StructureChain device_chain = {
         vk::DeviceCreateInfo{
             .queueCreateInfoCount = 1u,
@@ -521,6 +530,7 @@ bool Instance::CreateDevice() {
                 .shaderInt16 = features.shaderInt16,
                 .sparseBinding = features.sparseBinding,
                 .sparseResidencyBuffer = features.sparseResidencyBuffer,
+                .sparseResidencyAliased = sparse_aliased,
             },
         },
         vk::PhysicalDeviceVulkan11Features{

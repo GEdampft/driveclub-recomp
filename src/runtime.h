@@ -84,6 +84,8 @@ void runtime_memory_reserve(void);
 extern uintptr_t runtime_image_base;
 extern uint64_t runtime_image_size;
 void runtime_diag_start(void);
+void runtime_diag_print(void *file);
+void runtime_rwlock_dump(void *file);
 void runtime_diag_name(const char *name);
 void runtime_diag_wait_begin(const char *kind, uint64_t arg, const void *caller);
 void runtime_diag_wait_end(void);

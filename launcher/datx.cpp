@@ -191,8 +191,30 @@ std::string DatxExtract(const std::wstring& update_dir, const std::wstring& base
   return out.size() == size ? "" : "extracted size does not match the index";
 }
 
+// Size a volume must have: header, chunk table and every stored chunk. 0 when the header cannot be read.
+static uint64_t VolumeExpectedSize(const std::wstring& path, uint64_t& actual) {
+  FILE* f = _wfopen(path.c_str(), L"rb");
+  if (!f) return 0;
+  uint64_t expected = 0;
+  uint8_t head[0x24];
+  if (_fseeki64(f, 0, SEEK_END) == 0) actual = static_cast<uint64_t>(_ftelli64(f));
+  _fseeki64(f, 0, SEEK_SET);
+  if (fread(head, 1, sizeof head, f) == sizeof head && memcmp(head, "DATF", 4) == 0 && memcmp(head + 0x20, "CHNK", 4) == 0) {
+    const uint32_t count = Rd32(head + 0x18);
+    if (count != 0 && count <= 4000000) {
+      std::vector<uint8_t> table(size_t(count) * 4 + 4);
+      if (fread(table.data(), 1, table.size(), f) == table.size() && memcmp(&table[size_t(count) * 4], "DATA", 4) == 0) {
+        expected = 0x24 + uint64_t(count) * 4 + 4;
+        for (uint32_t k = 0; k < count; ++k) expected += Rd32(&table[size_t(k) * 4]);
+      }
+    }
+  }
+  fclose(f);
+  return expected;
+}
+
 std::string DatxCheckVolumes(const std::wstring& update_dir, const std::wstring& base_dir, unsigned& used,
-                             std::vector<unsigned>& missing) {
+                             std::vector<unsigned>& missing, std::vector<unsigned>* truncated) {
   std::vector<uint8_t> ndx;
   if (!ReadFile(update_dir + L"\\game.ndx", ndx) && !ReadFile(base_dir + L"\\game.ndx", ndx)) return "game.ndx not found";
   if (ndx.size() < 0x40 || memcmp(ndx.data(), "DATX", 4) != 0) return "game.ndx has an unexpected format";
@@ -216,12 +238,19 @@ std::string DatxCheckVolumes(const std::wstring& update_dir, const std::wstring&
   }
   used = 0;
   missing.clear();
+  if (truncated) truncated->clear();
   for (unsigned vol = 0; vol < seen.size(); ++vol) {
     if (!seen[vol]) continue;
     ++used;
-    if (GetFileAttributesW((update_dir + L"\\" + VolumeName(vol)).c_str()) == INVALID_FILE_ATTRIBUTES &&
-        GetFileAttributesW((base_dir + L"\\" + VolumeName(vol)).c_str()) == INVALID_FILE_ATTRIBUTES)
+    const std::wstring in_update = update_dir + L"\\" + VolumeName(vol), in_base = base_dir + L"\\" + VolumeName(vol);
+    const bool have_update = GetFileAttributesW(in_update.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!have_update && GetFileAttributesW(in_base.c_str()) == INVALID_FILE_ATTRIBUTES) {
       missing.push_back(vol);
+    } else if (truncated) {
+      uint64_t actual = 0;
+      const uint64_t expected = VolumeExpectedSize(have_update ? in_update : in_base, actual);
+      if (expected != 0 && actual < expected) truncated->push_back(vol);
+    }
   }
   return "";
 }

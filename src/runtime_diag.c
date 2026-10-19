@@ -75,6 +75,25 @@ static void describe(FILE *f, const void *caller) {
     else
         fprintf(f, "%p", caller);
 }
+/* The same table as threads.txt, for the log (freeze report). */
+void runtime_diag_print(void *file) {
+    FILE *f = (FILE *)file;
+    const uint64_t now = now_ns();
+    fprintf(f, "Blocked guest threads (waits of %d ms or more):\n", DIAG_MIN_WAIT_MS);
+    pthread_mutex_lock(&list_lock);
+    for (DiagThread *t = threads; t; t = t->next) {
+        const char *kind = __atomic_load_n(&t->kind, __ATOMIC_ACQUIRE);
+        if (!kind) continue;
+        const uint64_t waited = (now - t->since_ns) / 1000000u;
+        if (waited < DIAG_MIN_WAIT_MS) continue;
+        fprintf(f, "  %-24s %-9s id=%llu waited=%llums from ", t->name, kind, (unsigned long long)t->arg,
+                (unsigned long long)waited);
+        describe(f, t->caller);
+        fputc('\n', f);
+    }
+    pthread_mutex_unlock(&list_lock);
+    fflush(f);
+}
 static void *watchdog(void *unused) {
     (void)unused;
     for (;;) {

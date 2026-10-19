@@ -7,6 +7,36 @@
         <ID>CUSA00093</ID>
         <ID>CUSA00879</ID>
     </TitleID>
+    <Metadata Title="Driveclub"
+              Always="true"
+              Name="Red zone fix (particle curve sampler)"
+              Note="The function at 0x64d980 keeps seven locals below the stack pointer. A memory-tracking fault taken inside it on Windows overwrites them and the game stopped with a read of address 0 at 0x64db13. It gets a real stack frame instead."
+              Author="Ianespaa"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00a4d980" Value="e93b41f0009090909090" OriginalHash="4a4979e6750f9035"/>
+            <Line Type="bytes" Address="0x00a4d990" Value="4889442438" OriginalHash="cb047830b326f126"/>
+            <Line Type="bytes" Address="0x00a4d99b" Value="4889442430" OriginalHash="cb048030b326febe"/>
+            <Line Type="bytes" Address="0x00a4d9a6" Value="4889442428" OriginalHash="cb048830b3270c56"/>
+            <Line Type="bytes" Address="0x00a4d9b9" Value="4889442420" OriginalHash="cb049030b32719ee"/>
+            <Line Type="bytes" Address="0x00a4d9c4" Value="48897c2418" OriginalHash="1129a030db1f5f2e"/>
+            <Line Type="bytes" Address="0x00a4d9cc" Value="89442414" OriginalHash="5dcca6e3c6ee2b68"/>
+            <Line Type="bytes" Address="0x00a4d9d4" Value="4889442408" OriginalHash="cb04a830b32742b6"/>
+            <Line Type="bytes" Address="0x00a4da14" Value="488b442420" OriginalHash="469ca01fe03408f4"/>
+            <Line Type="bytes" Address="0x00a4da2f" Value="488b7c2418" OriginalHash="ec22401f1bf5ad44"/>
+            <Line Type="bytes" Address="0x00a4daed" Value="48396c2418" OriginalHash="9f6b0a75e4ada62e"/>
+            <Line Type="bytes" Address="0x00a4daf4" Value="8b442414" OriginalHash="36f0def70dde7fba"/>
+            <Line Type="bytes" Address="0x00a4dafa" Value="488b5c2408" OriginalHash="0077301fb83b2094"/>
+            <Line Type="bytes" Address="0x00a4e155" Value="488b442438" OriginalHash="469c881fe033e02c"/>
+            <Line Type="bytes" Address="0x00a4e735" Value="488b442430" OriginalHash="469c901fe033edc4"/>
+            <Line Type="bytes" Address="0x00a4e8c5" Value="488b442428" OriginalHash="469c981fe033fb5c"/>
+            <Line Type="bytes" Address="0x00a4e8f6" Value="e9e531f000909090909090" OriginalHash="b09699eac1a0b4d6"/>
+            <Line Type="bytes" Address="0x01951ac0" Value="554157415641554154534883ec40e9b7be0fff"/>
+            <Line Type="bytes" Address="0x01951ae0" Value="4883c4405b415c415d415e415f5dc3"/>
+        </PatchList>
+    </Metadata>
     <Metadata Title="Driveclub" 
               isEnabled="true"
               Name="60 FPS with deltatime" 

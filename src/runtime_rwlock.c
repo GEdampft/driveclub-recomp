@@ -13,8 +13,14 @@ typedef struct Holder {
     unsigned readers, writer, pending;
     struct Holder *next;
 } Holder;
+/* The lock itself is ours, not the host's: FreeBSD's rwlock lets a reader in while a writer is waiting, and the
+ * game takes a read lock it already holds (recursive reads). A host lock that queues new readers behind a
+ * waiting writer deadlocks there: the writer waits for the reader, the reader for the writer. */
 typedef struct Rwlock {
-    pthread_rwlock_t native;
+    pthread_mutex_t gate;
+    pthread_cond_t changed;
+    unsigned active_readers;
+    int active_writer;
     Holder *holders;
     unsigned inflight;
     struct Rwlock *next;
@@ -46,8 +52,10 @@ static Rwlock *find_locked(Rwlock *handle) {
 static int create_locked(Rwlock **out) {
     Rwlock *r=calloc(1,sizeof(*r));
     if (!r) return ENOMEM;
-    int e=pthread_rwlock_init(&r->native,NULL);
+    int e=pthread_mutex_init(&r->gate,NULL);
     if (e) { free(r); return e; }
+    e=pthread_cond_init(&r->changed,NULL);
+    if (e) { pthread_mutex_destroy(&r->gate); free(r); return e; }
     r->next=registry; registry=r; *out=r; ++created; return 0;
 }
 static ABI int32_t rw_init(Rwlock **out, void *const *attr, const char *name) {
@@ -66,6 +74,30 @@ static void prune_locked(Rwlock *r, Holder *h) {
     *link=h->next; free(h);
 }
 enum Operation { READ, WRITE, TRY_READ, TRY_WRITE, TIMED_READ, TIMED_WRITE };
+/* mode 0 waits, 1 only tries, 2 waits until the absolute deadline. A reader waits only for a writer that holds the
+ * lock; a writer waits for every holder. */
+static int native_acquire(Rwlock *r, int writer, int mode, const struct timespec *deadline) {
+    int e=0, waited=0;
+    pthread_mutex_lock(&r->gate);
+    while (r->active_writer || (writer && r->active_readers)) {
+        if (mode==1) { e=EBUSY; break; }
+        if (!waited) { waited=1; runtime_diag_wait_begin("rwlock",(uint64_t)(uintptr_t)r,__builtin_return_address(0)); }
+        if (mode==2) { e=pthread_cond_timedwait(&r->changed,&r->gate,deadline); if (e==ETIMEDOUT) break; e=0; }
+        else pthread_cond_wait(&r->changed,&r->gate);
+    }
+    if (waited) runtime_diag_wait_end();
+    if (!e) { if (writer) r->active_writer=1; else ++r->active_readers; }
+    pthread_mutex_unlock(&r->gate);
+    return e;
+}
+static int native_release(Rwlock *r) {
+    pthread_mutex_lock(&r->gate);
+    if (r->active_writer) r->active_writer=0;
+    else if (r->active_readers) --r->active_readers;
+    pthread_cond_broadcast(&r->changed);
+    pthread_mutex_unlock(&r->gate);
+    return 0;
+}
 static int32_t acquire(Rwlock **handle, enum Operation op, const GuestTime *time) {
     if (!handle) return error(EINVAL);
     int writer=op==WRITE || op==TRY_WRITE || op==TIMED_WRITE;
@@ -90,13 +122,13 @@ static int32_t acquire(Rwlock **handle, enum Operation op, const GuestTime *time
     ++r->inflight; ++h->pending;
     pthread_mutex_unlock(&registry_lock);
     /* Timed operations first try the lock, matching POSIX timeout validation. */
-    if (attempt || timed) e=writer ? pthread_rwlock_trywrlock(&r->native) : pthread_rwlock_tryrdlock(&r->native);
-    else e=writer ? pthread_rwlock_wrlock(&r->native) : pthread_rwlock_rdlock(&r->native);
+    if (attempt || timed) e=native_acquire(r,writer,1,NULL);
+    else e=native_acquire(r,writer,0,NULL);
     if (timed && e==EBUSY) {
         if (!time || time->nanoseconds<0 || time->nanoseconds>=1000000000) e=EINVAL;
         else {
             struct timespec deadline={.tv_sec=(time_t)time->seconds,.tv_nsec=(long)time->nanoseconds};
-            e=writer ? pthread_rwlock_timedwrlock(&r->native,&deadline) : pthread_rwlock_timedrdlock(&r->native,&deadline);
+            e=native_acquire(r,writer,2,&deadline);
         }
     }
     pthread_mutex_lock(&registry_lock);
@@ -122,7 +154,7 @@ static ABI int32_t rw_unlock(Rwlock **handle) {
     Holder *h=r->holders;
     while (h && !pthread_equal(h->thread,pthread_self())) h=h->next;
     if (!h || (!h->readers && !h->writer)) { pthread_mutex_unlock(&registry_lock); return error(EPERM); }
-    int e=pthread_rwlock_unlock(&r->native);
+    int e=native_release(r);
     if (!e) { if (h->writer) h->writer=0; else --h->readers; ++unlocks; }
     prune_locked(r,h);
     pthread_mutex_unlock(&registry_lock); return error(e);
@@ -134,7 +166,8 @@ static ABI int32_t rw_destroy(Rwlock **handle) {
     Rwlock *r=find_locked(*handle);
     if (!r) { pthread_mutex_unlock(&registry_lock); return error(EINVAL); }
     if (r->inflight || r->holders) { pthread_mutex_unlock(&registry_lock); return error(EBUSY); }
-    int e=pthread_rwlock_destroy(&r->native);
+    int e=pthread_cond_destroy(&r->changed);
+    if (!e) e=pthread_mutex_destroy(&r->gate);
     if (!e) {
         Rwlock **link=&registry;
         while (*link!=r) link=&(*link)->next;
@@ -173,6 +206,20 @@ uintptr_t runtime_rwlock_resolve(const char *name) {
     if (nid_match(name, "iPtZRWICjrM#p#J")) return (uintptr_t)rw_timedread;
     if (nid_match(name, "adh--6nIqTk#p#J")) return (uintptr_t)rw_timedwrite;
     return 0;
+}
+/* For the freeze report: every lock somebody waits for, with who holds it. */
+void runtime_rwlock_dump(void *file) {
+    FILE *f=(FILE *)file;
+    pthread_mutex_lock(&registry_lock);
+    for (Rwlock *r=registry; r; r=r->next) {
+        if (!r->inflight) continue;
+        fprintf(f,"  rwlock %p: %u waiting; active readers %u, writer %d;",(void *)r,r->inflight,r->active_readers,r->active_writer);
+        for (Holder *h=r->holders; h; h=h->next)
+            if (h->readers || h->writer) fprintf(f," holder %llx (%u read%s)",(unsigned long long)(uintptr_t)h->thread,h->readers,h->writer ? ", write" : "");
+        fputc(10,f);
+    }
+    pthread_mutex_unlock(&registry_lock);
+    fflush(f);
 }
 void runtime_rwlock_report(void) {
     pthread_mutex_lock(&registry_lock);

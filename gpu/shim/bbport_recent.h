@@ -69,6 +69,11 @@ inline std::string Sibling(const char* name) {
     return (cut == std::string::npos ? std::string() : path.substr(0, cut + 1)) + name;
 }
 
+inline bool Enabled() {
+    const char* on = std::getenv("BB_QUARANTINE");
+    return on && on[0] == '1';
+}
+
 inline void Add(std::uint32_t hash) {
     const std::uint32_t n = count.load();
     for (std::uint32_t i = 0; i < n; ++i) {
@@ -89,8 +94,9 @@ inline void Load() {
         }
         return;
     }
-    const char* off = std::getenv("BB_QUARANTINE");
-    if (!(off && off[0] == '0')) {
+    // Off unless BB_QUARANTINE=1: skipping the dispatches that ended a crashed run left the
+    // picture dark on AMD cards and did not stop the crashes.
+    if (Enabled()) {
         const std::string path = File();
         if (!path.empty()) {
             if (FILE* f = std::fopen(path.c_str(), "r")) {
@@ -158,6 +164,12 @@ inline void NoteDeviceLost() {
         ++found;
     }
     const std::string path = File();
+    if (!Enabled()) {
+        std::printf("GPU: device lost after %u trailing dispatch(es); not saved (BB_QUARANTINE=1 skips them next time)\n",
+                    found);
+        std::fflush(stdout);
+        return;
+    }
     std::printf("GPU: device lost, %u trailing dispatch(es) will be skipped on the next launch%s\n", found,
                 path.empty() ? " (no settings folder known, not saved)" : "");
     if (!path.empty()) {

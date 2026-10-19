@@ -382,7 +382,9 @@ thread_local struct {
 
 bool EyeCompute(u64 hash) {
     static const std::vector<u64> list = [] {
-        std::vector<u64> out{0x409b1cc4, 0x7ceec0f3}; // the tiled lighting's light data (depth, normals)
+        // The tiled lighting's light data (from depth and normals). Not 0x7ceec0f3 (256 KB from depth, albedo, normals):
+        // a simulation that reads its own last state (fire, rain): run per eye, the eyes' copies drifted apart.
+        std::vector<u64> out{0x409b1cc4};
         if (const char* v = std::getenv("BB_VR_EYE_COMPUTES")) {
             out.clear();
             for (const char* p = v; *p;) {

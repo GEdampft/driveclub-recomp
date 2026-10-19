@@ -1,6 +1,6 @@
 // DriveClub (PC) - launcher.
 //
-// One native window: the two game folders, the game patches, Play. The look follows a dark card layout
+// One native window: the two game folders, the game patches, a benchmark, Play. The look follows a dark card layout
 // (rounded cards, pill switches, segmented choices, a footer with a red Play button).
 // Play prepares the game once (a few minutes the first time, seconds afterwards), then starts it; this
 // program closes. Settings live next to this program (launcher.ini, data\), nothing is installed.
@@ -234,8 +234,9 @@ bool unlocked_saved = false;  // "Unlocked" frame rate choice, from launcher.ini
 // ------------------------------------------------------------------------------------------
 // benchmark: the game's AI drives one event and the runtime measures the frame times (BB_BENCHMARK, see
 // src/runtime_benchmark.c). The ids are the game's own: "Track Name" in newdata/tracks.csv and "Vehicle Name" in
-// newdata/vehicles.csv, all from the base game (no add-on content needed). Every one was run to a result.
-// Circuits only: a point-to-point route can end before the measurement does.
+// newdata/vehicles.csv, all from the base game (no add-on content needed). The ones marked "not run" are taken
+// from the game data; the others were run to a result. Circuits only: a point-to-point route can end before the
+// measurement does.
 // ------------------------------------------------------------------------------------------
 struct BenchChoice {
   const char* id;
@@ -253,18 +254,18 @@ const BenchChoice kBenchTracks[] = {
     {"india_road_circuit_01_n", L"Glenmorgan", L"India"},
     {"india_road_circuit_02_n", L"Bandipur", L"India"},
     {"india_dlc_road_circuit_03_n", L"Yedappalli", L"India"},
-    {"india_race_track_v1", L"Tamil Nadu Circuit", L"India"},
+    {"india_race_track_v1", L"Tamil Nadu Circuit", L"India"},  // not run
     {"norway_road_circuit_01_n", L"Sentraltind", L"Norway"},
     {"norway_road_circuit_02_n", L"Skjolden", L"Norway"},
-    {"norway_dlc_road_circuit_03_n", L"Atlanterhavsvegen", L"Norway"},
+    {"norway_dlc_road_circuit_03_n", L"Atlanterhavsvegen", L"Norway"},  // not run
     {"norway_race_track_01_v1", L"Sognefjord Raceway", L"Norway"},
-    {"uk_road_circuit_01_n", L"Loch Duich", L"Scotland"},
+    {"uk_road_circuit_01_n", L"Loch Duich", L"Scotland"},  // not run
     {"uk_road_circuit_02_n", L"Kinloch", L"Scotland"},
     {"uk_race_track_v1", L"Black Hills Circuit", L"Scotland"},
     {"japan_road_circuit_01_n", L"Takahagi Hills", L"Japan"},
     {"japan_road_circuit_02_n", L"Lake Shoji", L"Japan"},
     {"japan_dlc_road_circuit_03_n", L"Kobago", L"Japan"},
-    {"japan_race_track_01_v1", L"Asigiri Highland Raceway", L"Japan"},
+    {"japan_race_track_01_v1", L"Asigiri Highland Raceway", L"Japan"},  // not run
 };
 const BenchChoice kBenchCars[] = {
     {"mc_p1", L"McLaren P1", L"Hyper"},
@@ -277,18 +278,18 @@ const BenchChoice kBenchCars[] = {
     {"au_r8", L"Audi R8 V10 plus", L"Super"},
     {"mc_mp_12", L"McLaren 12C", L"Super"},
     {"as_ma_177", L"Aston Martin One-77", L"Super"},
-    {"me_sl_am", L"Mercedes-Benz SLS AMG Black Series", L"Super"},
+    {"me_sl_am", L"Mercedes-Benz SLS AMG Black Series", L"Super"},  // not run
     {"bm_m4", L"BMW M4", L"Performance"},
     {"me_gt_am", L"Mercedes-AMG GT S", L"Performance"},
-    {"au_rs6", L"Audi RS 6 Avant", L"Performance"},
+    {"au_rs6", L"Audi RS 6 Avant", L"Performance"},  // not run
     {"ma_mc_st", L"Maserati GranTurismo MC Stradale", L"Performance"},
-    {"lo_ex", L"Lotus Exige S", L"Performance"},
+    {"lo_ex", L"Lotus Exige S", L"Performance"},  // not run
     {"au_rs5", L"Audi RS 5 Coupé", L"Sports"},
     {"bm_m2", L"BMW M235i", L"Sports"},
     {"ren_dez", L"Renault DeZir", L"Sports"},
     {"vw_golf_gti", L"Volkswagen Golf GTI", L"Hot hatch"},
     {"mi_jcw", L"MINI John Cooper Works GP", L"Hot hatch"},
-    {"ren_cl", L"Renault Clio RS", L"Hot hatch"},
+    {"ren_cl", L"Renault Clio RS", L"Hot hatch"},  // not run
 };
 constexpr int kBenchTrackCount = int(sizeof(kBenchTracks) / sizeof(kBenchTracks[0]));
 constexpr int kBenchCarCount = int(sizeof(kBenchCars) / sizeof(kBenchCars[0]));
@@ -400,23 +401,23 @@ void BuildModel() {
     g_c.push_back(std::move(c));
     return int(g_c.size()) - 1;
   };
-  g_btrack = picker(L"Track", L"Where the benchmark drives. Click to choose: the circuits of every location of the base game.", "@bench_track");
-  g_bcar = picker(L"Car", L"The car the game's AI drives. Click to choose: cars of the base game, by class.", "@bench_car");
+  g_btrack = picker(L"Track", L"Where the benchmark drives. Click to choose a circuit.", "@bench_track");
+  g_bcar = picker(L"Car", L"The car the game's AI drives. Click to choose a car.", "@bench_car");
   g_bmode = seg(L"Cars on track",
-                L"Alone is a time trial: one car, the steadiest numbers. Race adds seven AI opponents, which loads the processor more.",
+                L"Alone is a time trial and gives the steadiest numbers. Race adds seven AI cars, which loads the processor more.",
                 {L"Alone", L"Race (8 cars)"}, {"@bench_mode", ""}, 0);
-  g_btod = seg(L"Time of day", L"The hour the event is set at. Night draws the headlights and the street lights.",
+  g_btod = seg(L"Time of day", L"Morning 8:00, noon 12:00, evening 18:00, night 22:00.",
                {L"Morning", L"Noon", L"Evening", L"Night"}, {"@bench_tod", "", "", ""}, 1);
   g_bweather = seg(L"Weather", L"The sky and the clouds.", {L"Clear", L"Cloudy", L"Overcast", L"Stormy"},
                    {"@bench_weather", "", "", ""}, 0);
-  g_brain = seg(L"Rain", L"Rain (snow in Norway) and wet roads, the heaviest scenes for the graphics card and the processor.",
+  g_brain = seg(L"Rain", L"Rain and wet roads make the scene heavier to draw. Wet road is a wet track without rain.",
                 {L"Dry", L"Light", L"Heavy", L"Wet road"}, {"@bench_rain", "", "", ""}, 0);
-  g_blen = seg(L"Length", L"How long the frame times are measured, after a few seconds of warm-up. Loading takes about half a minute more.",
+  g_blen = seg(L"Length", L"How long the frame times are measured, after 5 seconds of warm-up. Loading takes about half a minute more.",
                {L"30 s", L"1 min", L"2 min", L"5 min"}, {"@bench_length", "", "", ""}, 1);
   g_brun = int(g_c.size());
   g_c.push_back(Ctl{L"Last result",
-                    L"Starts the event with the settings on this page; the game's AI drives. The game closes by itself when it is done "
-                    L"and the result shows here: the average frame rate and the 1% and 0.1% lows (the average of the slowest 1% and 0.1% of frames).",
+                    L"Starts the event with all the settings on this page. The game's AI drives and the game closes by itself when it is done. "
+                    L"The 1% and 0.1% lows are the average frame rate of the slowest 1% and 0.1% of frames.",
                     Kind::Action, {}, {"@bench_run"}, 0, 0});
   // The cards flow into as many columns as the window width allows (see LayoutPass).
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
@@ -1448,23 +1449,35 @@ void LoadBenchResult() {
 }
 
 // The game's own reason when it stopped the benchmark ("Benchmark: FAILED, ..." in its log), or "".
+// The game's output can interleave with other lines, so the text is searched for anywhere in a line.
 std::wstring BenchFailure() {
-  std::wstring why;
+  std::string why;
   for (const auto& l : ReadLines(g_game_log)) {
-    if (l.rfind("Benchmark: FAILED, ", 0) == 0) why = Widen(l.substr(19));
+    const size_t p = l.find("Benchmark: FAILED, ");
+    if (p == std::string::npos) continue;
+    const size_t b = p + 19, e = l.find(" (", b);  // without the note for developers in brackets
+    why = l.substr(b, e == std::string::npos ? std::string::npos : e - b);
   }
-  return why;
+  return Widen(why);
+}
+
+// When result.txt was last written (0 = not there).
+unsigned long long ResultTime() {
+  WIN32_FILE_ATTRIBUTE_DATA info;
+  if (!GetFileAttributesExW(BenchResultPath().c_str(), GetFileExInfoStandard, &info)) return 0;
+  return (static_cast<unsigned long long>(info.ftLastWriteTime.dwHighDateTime) << 32) | info.ftLastWriteTime.dwLowDateTime;
 }
 
 void BenchWorker() {
   SetProgress(0, L"Preparing the game...");
-  LauncherLog("Benchmark pressed: " + BenchSpec());
+  LauncherLog("Run benchmark pressed: " + BenchSpec());
   std::wstring error = Preflight();
   if (error.empty()) error = RunPrepare();
   HANDLE game = nullptr;
+  unsigned long long before = 0;
   if (error.empty()) {
-    SetProgress(100, L"Benchmark running: the game's AI drives, and the game closes by itself when it is done.");
-    DeleteFileW(BenchResultPath().c_str());
+    SetProgress(100, L"Benchmark running. The game closes by itself when it is done.");
+    before = ResultTime();  // the last result stays on show if this run fails
     const std::wstring spec = Widen(BenchSpec());
     SetEnvironmentVariableW(L"BB_BENCHMARK", spec.c_str());
     SetEnvironmentVariableW(L"BB_BENCHMARK_OUT", BenchResultPath().c_str());
@@ -1477,13 +1490,14 @@ void BenchWorker() {
     WaitForSingleObject(game, INFINITE);
     GetExitCodeProcess(game, &code);
     CloseHandle(game);
-    if (code == 0 && Exists(BenchResultPath())) {
+    if (code == 0 && ResultTime() > before) {
       const auto lines = ReadLines(BenchResultPath());
       LauncherLog("benchmark result: " + (lines.empty() ? std::string("(empty)") : lines[0]));
     } else {
-      const std::wstring why = BenchFailure();
-      error = why.empty() ? L"The benchmark stopped before it finished (the game was closed or crashed). The log is in the logs folder."
-                          : L"The benchmark failed: " + why + L".";
+      std::wstring why = BenchFailure();
+      if (why.empty() && code == 3) why = L"the race did not start, or the game stopped drawing";
+      error = why.empty() ? L"The benchmark stopped before the end: the game was closed or crashed. The log is in the logs folder."
+                          : L"The benchmark failed: " + why + L". The log is in the logs folder.";
       LauncherLog("benchmark: exit code " + std::to_string(code) + ", " + Narrow(error));
     }
   } else {

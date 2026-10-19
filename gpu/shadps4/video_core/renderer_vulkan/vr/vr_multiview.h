@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <array>
 #include <optional>
 #include <span>
 
@@ -87,6 +88,19 @@ vk::Pipeline Variant(vk::Pipeline pipeline, u16 view_mask);
 
 /// Each frame: the eyes' clip x shift (left eye +shift, right eye -shift; P00 x half the eye distance).
 void SetShift(float shift);
+/// Deferred spot lights (vs 0xf719615a with pixel shaders 0xd80f041b, 0x7b2b16ed): the pixel shader rebuilds the lit
+/// point as light constants plus the view ray times the depth (light-relative: dwords 40-42 minus the ray; light
+/// space: dwords 44-46 plus the light-space ray, the light matrix being dwords 24-34). The vertex shader gives each eye
+/// its own ray (the eye translation in the shader recompiler), the constants stay the centre camera's: each eye's point
+/// was off by its eye offset, enough to flip the headlights' shadow test on a car side the beam grazes (lit in one eye,
+/// dark in the other). The light buffer binding (pixel shader buffer 1) gets a copy per eye with the offset added.
+bool EyeLightBinding(u64 fs_hash, u32 buffer_index);
+/// Development (EYELIGHTS trigger or BB_VR_EYE_LIGHTS at start: 1 on, 0 off, 2 the opposite correction).
+void SetEyeLights(int mode);
+/// The two copies (left, right) of a light's constants (`light`, `bytes` long, at most 256), given the player camera's
+/// constants (`camera`: the view-projection at dwords 0-15). False when they cannot be made.
+bool EyeLightConstants(const u32* light, u32 bytes, const float* camera, std::array<std::array<u32, 64>, 2>& out);
+
 /// The left eye's clip x shift (the right eye's is its negative).
 float Shift();
 

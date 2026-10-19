@@ -1162,6 +1162,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (const auto lit = Vr::Dlss::AaInput(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash); lit && drive_aa->Active() && fg_depth) {
         drive_aa->OnTaa(lit, fg_depth, lit); // VR: DLSS on the finished lit scene, before the post-processing
     }
+    Vr::Stereo::LogFragmentImages(pipeline->GetStage(Shader::SwStage::Vertex), // VR: development
+                                  pipeline->GetStages()[u32(Shader::SwStage::Fragment)],
+                                  std::bit_cast<u32>(Regs().depth_control), std::bit_cast<u32>(Regs().stencil_control),
+                                  std::bit_cast<u32>(Regs().stencil_ref_front));
     Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
                        pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
@@ -1323,7 +1327,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
 
     const vk::Pipeline handle = pipeline->Handle();
     const u32 num_indices = regs.num_indices;
-    const u32 num_instances = regs.num_instances.NumInstances();
+    const auto* skip_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)]; // VR: development (SKIP)
+    const u32 num_instances = Vr::Stereo::SkipDraw(vs_info.pgm_hash, skip_ps ? skip_ps->pgm_hash : 0)
+                                  ? 0
+                                  : regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
     const vk::Pipeline vr_handle = Vr::Multiview::Variant(handle, state.view_mask); // VR
@@ -1450,6 +1457,10 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     if (const auto lit = Vr::Dlss::AaInput(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash); lit && drive_aa->Active() && fg_depth) {
         drive_aa->OnTaa(lit, fg_depth, lit); // VR: DLSS on the finished lit scene, before the post-processing
     }
+    Vr::Stereo::LogFragmentImages(pipeline->GetStage(Shader::SwStage::Vertex), // VR: development
+                                  pipeline->GetStages()[u32(Shader::SwStage::Fragment)],
+                                  std::bit_cast<u32>(Regs().depth_control), std::bit_cast<u32>(Regs().stencil_control),
+                                  std::bit_cast<u32>(Regs().stencil_ref_front));
     Vr::Stereo::OnDraw(scheduler, runtime, texture_cache, pipeline->GetStage(Shader::SwStage::Vertex), // VR
                        pipeline->GetGraphicsKey(), cb_descs[0].first, cb_descs[2].first, db_desc.first);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
@@ -2384,6 +2395,54 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
     return true;
 }
 
+// VR: a deferred spot light's constants, one copy per eye (Vr::Multiview::EyeLightConstants) in a two-eye pass.
+bool Rasterizer::BindEyeLightConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                                       vk::WriteDescriptorSet& write) {
+    if (!Vr::Multiview::EyeLightBinding(stage.pgm_hash, buffer_index) || stage.buffers.size() <= buffer_index ||
+        Vr::Multiview::PassViewMask(texture_cache, cb_descs, 1, db_desc) != 0b11) {
+        return false;
+    }
+    const auto range_of = [&](u32 i) -> std::pair<u64, u32> {
+        if (const RingBinding* r = num_ring_stages ? FindRingBinding(stage, i) : nullptr) {
+            return {r->address, u32(r->size)};
+        }
+        const auto sharp = prepared ? prepared->buffer_sharps[i] : stage.buffers[i].GetSharp(stage);
+        return {sharp.base_address, u32(sharp.GetSize())};
+    };
+    const auto [light_address, light_bytes] = range_of(buffer_index);
+    const auto [camera_address, camera_bytes] = range_of(0);
+    if (camera_bytes != 512 || light_bytes > 256 || !memory->IsValidGpuMapping(light_address, 0) ||
+        !memory->IsValidGpuMapping(camera_address, 0)) {
+        return false;
+    }
+    std::array<std::array<u32, 64>, 2> eyes;
+    if (!Vr::Multiview::EyeLightConstants(reinterpret_cast<const u32*>(light_address), light_bytes,
+                                          reinterpret_cast<const float*>(camera_address), eyes)) {
+        return false;
+    }
+    // The copies keep the binding's offset adjustment (push data): the constants start `adjust` bytes in.
+    const u64 adjust = buffer_infos.back().range > light_bytes ? buffer_infos.back().range - light_bytes : 0;
+    if (adjust > 256) {
+        return false;
+    }
+    auto& stream = buffer_cache.GetStreamBuffer();
+    const u64 alignment = instance.StorageMinAlignment();
+    for (int eye = 0; eye < 2; ++eye) {
+        std::array<u8, 512> bytes{};
+        std::memcpy(bytes.data() + adjust, eyes[eye].data(), light_bytes);
+        const u64 offset = stream.Copy(bytes.data(), u32(adjust + light_bytes), alignment);
+        const vk::DescriptorBufferInfo info{stream.Handle(), offset, adjust + light_bytes};
+        if (eye == 0) {
+            buffer_infos.back() = info;
+        } else {
+            buffer_infos.push_back(info);
+        }
+    }
+    write.descriptorCount = 2;
+    write.pBufferInfo = &buffer_infos[buffer_infos.size() - 2];
+    return true;
+}
+
 void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
@@ -2511,7 +2570,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         set_write.descriptorCount = 1;
         set_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         set_write.pBufferInfo = &buffer_infos.back();
-        Vr::Multiview::EyeBufferWrite(instance, runtime, desc.IsSpecial(), set_write, buffer_infos); // VR: per eye
+        if (!BindEyeLightConstants(stage, prepared, buffer_index, set_write)) { // VR: a light's constants per eye
+            Vr::Multiview::EyeBufferWrite(instance, runtime, desc.IsSpecial(), set_write, buffer_infos); // VR: per eye
+        }
         ++binding.buffer;
     }
 }

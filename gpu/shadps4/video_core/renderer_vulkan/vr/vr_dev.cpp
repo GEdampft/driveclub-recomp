@@ -18,6 +18,7 @@
 
 #include "video_core/renderer_vulkan/vr/vr_camera.h"
 #include "video_core/renderer_vulkan/vr/vr_dev.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h"
 #include "video_core/renderer_vulkan/vr/vr_openxr.h"
 #include "video_core/renderer_vulkan/vr/vr_stereo.h"
 
@@ -261,6 +262,18 @@ void Poll() {
     }
     if (Take("DRAWLOG")) {
         Stereo::LogDraws();
+    }
+    std::string eye_lights;
+    if (Take("EYELIGHTS", &eye_lights)) {
+        Multiview::SetEyeLights(eye_lights.empty() ? 1 : eye_lights[0] - '0');
+    }
+    std::string skip;
+    if (Take("SKIP", &skip)) {
+        Stereo::SetSkippedShaders(skip);
+    }
+    std::string fs_vs;
+    if (Take("FSIMG", &fs_vs)) {
+        Stereo::WatchFragmentImages(std::strtoull(fs_vs.c_str(), nullptr, 16));
     }
     if (Take("RECENTER")) {
         Recenter();

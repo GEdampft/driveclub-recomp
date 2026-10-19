@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // VR (dcport-vr): stereo from the centre view. See vr_stereo.h.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #include "video_core/host_shaders/vr_stereo_mirror_comp.h"
 #include "video_core/host_shaders/vr_stereo_resolve_comp.h"
@@ -341,10 +345,10 @@ void FreeReadback(Readback& r) {
     r = {};
 }
 void CopyToReadback(VkCommandBuffer cmd, VkImage image, VkImageLayout layout, const Readback& r, VkDeviceSize offset,
-                    u32 w, u32 h, u32 layer = 0) {
+                    u32 w, u32 h, u32 layer = 0, VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
     VkBufferImageCopy region{};
     region.bufferOffset = offset;
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
+    region.imageSubresource = {aspect, 0, layer, 1};
     region.imageExtent = {w, h, 1};
     VKD.vkCmdCopyImageToBuffer(cmd, image, layout, r.buffer, 1, &region);
 }
@@ -364,11 +368,13 @@ void WriteReadback(const Readback& r, VkDeviceSize offset, u32 w, u32 h, const c
     VKD.vkUnmapMemory(g.device, r.memory);
 }
 
-// Reads an RGBA8 image back (the runtime keeps its layout) and writes it raw.
-void SaveImage(Scheduler& scheduler, Runtime& runtime, VideoCore::Image& image, const char* name) {
+// Reads an RGBA8 image back (the runtime keeps its layout) and writes it raw (8-byte texels: the header's width is
+// doubled). Layer: -1 = BB_VR_TSHOT_LAYER's.
+void SaveImage(Scheduler& scheduler, Runtime& runtime, VideoCore::Image& image, const char* name, int layer = -1) {
     const u32 w = image.info.size.width, h = image.info.size.height;
+    const u32 bytes = image.info.pixel_format == vk::Format::eR16G16B16A16Sfloat ? 8 : 4;
     Readback r;
-    if (!MakeReadback(r, VkDeviceSize(w) * h * 4)) {
+    if (!MakeReadback(r, VkDeviceSize(w) * h * bytes)) {
         return;
     }
     runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
@@ -378,9 +384,11 @@ void SaveImage(Scheduler& scheduler, Runtime& runtime, VideoCore::Image& image, 
     // Development: BB_VR_TSHOT_LAYER=1 dumps the right eye's layer of a two-layer target.
     static const bool right = std::getenv("BB_VR_TSHOT_LAYER") && std::getenv("BB_VR_TSHOT_LAYER")[0] == '1';
     CopyToReadback(VkCommandBuffer(scheduler.CommandBuffer()), VkImage(image.GetImage()),
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r, 0, w, h, right && Multiview::Stereo(image) ? 1 : 0);
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r, 0, w, h,
+                   layer >= 0 ? u32(layer) : (right && Multiview::Stereo(image) ? 1 : 0),
+                   image.info.props.is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT);
     scheduler.Finish();
-    WriteReadback(r, 0, w, h, name);
+    WriteReadback(r, 0, w * bytes / 4, h, name);
     FreeReadback(r);
 }
 
@@ -506,6 +514,73 @@ void NoteMainCamera(const float* constants) {
 
 } // namespace
 
+std::atomic<u64> g_fs_watch{[] {
+    const char* v = std::getenv("BB_VR_FS_IMAGES");
+    return v ? std::strtoull(v, nullptr, 16) : 0ull;
+}()};
+std::atomic<int> g_fs_watch_left{2000};
+
+std::mutex g_skip_mutex;
+std::vector<u64> g_skip;
+std::atomic<bool> g_skip_any{false};
+
+void SetSkippedShaders(const std::string& list) {
+    std::vector<u64> hashes;
+    std::string token;
+    for (const char c : list + " ") {
+        if (std::isxdigit(static_cast<unsigned char>(c)) || c == 'x' || c == 'X') {
+            token += c;
+        } else if (!token.empty()) {
+            hashes.push_back(std::strtoull(token.c_str(), nullptr, 16));
+            token.clear();
+        }
+    }
+    std::scoped_lock lock{g_skip_mutex};
+    g_skip = std::move(hashes);
+    g_skip_any = !g_skip.empty();
+    std::printf("VR skip: %zu shaders:%s\n", g_skip.size(), list.c_str());
+    std::fflush(stdout);
+}
+
+bool SkipDraw(u64 vs_hash, u64 fs_hash) {
+    if (!g_skip_any.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    std::scoped_lock lock{g_skip_mutex};
+    return std::find(g_skip.begin(), g_skip.end(), vs_hash) != g_skip.end() ||
+           (fs_hash && std::find(g_skip.begin(), g_skip.end(), fs_hash) != g_skip.end());
+}
+
+void WatchFragmentImages(u64 vs_hash) {
+    g_fs_watch_left = 2000;
+    g_fs_watch = vs_hash;
+}
+
+void LogFragmentImages(const Shader::Info& vs, const Shader::Info* fs, u32 depth_control, u32 stencil_control,
+                       u32 stencil_ref_front) {
+    const u64 vs_hash = vs.pgm_hash;
+    const u64 watch = g_fs_watch.load(std::memory_order_relaxed);
+    if (!watch || vs_hash != watch || !fs || fs->images.empty() || g_fs_watch_left.fetch_sub(1) <= 0) {
+        return;
+    }
+    std::printf("VR fs images: vs %#llx fs %#llx depth %#x stencil %#x ref %#x:", (unsigned long long)vs_hash,
+                (unsigned long long)fs->pgm_hash, depth_control, stencil_control, stencil_ref_front);
+    for (const auto& res : fs->images) {
+        const auto image = res.GetSharp(*fs);
+        std::printf(" [%#llx %ux%u dfmt %u nfmt %u]", (unsigned long long)image.Address(), u32(image.width) + 1,
+                    u32(image.height) + 1, u32(image.GetDataFmt()), u32(image.GetNumberFmt()));
+    }
+    for (const auto* stage : {&vs, fs}) {
+        std::printf(" | %s buffers:", stage == &vs ? "vs" : "fs");
+        for (u32 i = 0; i < stage->buffers.size(); ++i) {
+            const auto sharp = stage->buffers[i].GetSharp(*stage);
+            std::printf(" %u=[%#llx+%#x]", i, (unsigned long long)sharp.base_address, u32(sharp.GetSize()));
+        }
+    }
+    std::printf("\n");
+    std::fflush(stdout);
+}
+
 void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& texture_cache, const Shader::Info& vs,
             const GraphicsPipelineKey& key,
             VideoCore::ImageId color_id, VideoCore::ImageId target2_id, VideoCore::ImageId gbuffer_depth_id) {
@@ -563,12 +638,34 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
         const auto f = image.info.pixel_format;
         if (image.info.guest_address == g_shoot_address.load() && vs_hash != g_shoot_last_vs &&
             (f == vk::Format::eR8G8B8A8Unorm || f == vk::Format::eR8G8B8A8Srgb || f == vk::Format::eB8G8R8A8Unorm ||
-             f == vk::Format::eB8G8R8A8Srgb || f == vk::Format::eB10G11R11UfloatPack32) && g_shoot_count < 40) {
+             f == vk::Format::eB8G8R8A8Srgb || f == vk::Format::eB10G11R11UfloatPack32 ||
+             f == vk::Format::eR16G16B16A16Sfloat) && g_shoot_count < 40) {
             g_shoot_last_vs = vs_hash;
             char name[96];
             std::snprintf(name, sizeof(name), "tshot_%02d_%llx_%ux%u.raw", g_shoot_count++, (unsigned long long)vs_hash,
                           image.info.size.width, image.info.size.height);
-            SaveImage(scheduler, runtime, image, name);
+            // Both eyes of a two-layer target: the right eye's as <name>_R.raw.
+            const bool both = Multiview::Stereo(image) && !std::getenv("BB_VR_TSHOT_LAYER");
+            SaveImage(scheduler, runtime, image, name, both ? 0 : -1);
+            if (both) {
+                std::string right_name = name;
+                right_name.insert(right_name.size() - 4, "_R");
+                SaveImage(scheduler, runtime, image, right_name.c_str(), 1);
+            }
+            // The draw's depth (32-bit float depth only) as <name>_D.raw / _DR.raw.
+            if (gbuffer_depth_id) {
+                auto& depth = texture_cache.GetImage(gbuffer_depth_id);
+                const auto df = depth.info.pixel_format;
+                if (df == vk::Format::eD32SfloatS8Uint || df == vk::Format::eD32Sfloat) {
+                    std::string depth_name = name;
+                    depth_name.insert(depth_name.size() - 4, "_D");
+                    SaveImage(scheduler, runtime, depth, depth_name.c_str(), 0);
+                    if (Multiview::Stereo(depth)) {
+                        depth_name.insert(depth_name.size() - 4, "R");
+                        SaveImage(scheduler, runtime, depth, depth_name.c_str(), 1);
+                    }
+                }
+            }
         }
     }
     if (!g.ready || !color_id) {

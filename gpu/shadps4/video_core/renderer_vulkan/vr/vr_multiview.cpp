@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -103,6 +105,18 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
     const bool camera_draw = !compute && g_audit_main_camera;
     const bool from_eyes = g_audit_reads_stereo || !g_audit_left_reads.empty() || camera_draw;
     static std::unordered_map<u64, bool> seen;
+    // BB_VR_AUDIT_VS=<hex>: every pass with that shader hash, its reads and writes (a few times).
+    static const u64 watch = [] {
+        const char* v = std::getenv("BB_VR_AUDIT_VS");
+        return v ? std::strtoull(v, nullptr, 16) : 0ull;
+    }();
+    static int watch_left = 400;
+    if (watch && hash == watch && watch_left > 0) {
+        --watch_left;
+        std::printf("VR audit: VS %#llx %s reads%s; writes%s\n", (unsigned long long)hash,
+                    per_eye ? "both eyes" : "ONE EYE", AuditList(g_audit_reads).c_str(), AuditList(outputs).c_str());
+        std::fflush(stdout);
+    }
     if (!per_eye && from_eyes && !outputs.empty()) {
         for (const auto& out : outputs) {
             std::erase_if(g_left_only, [&](const AuditRes& r) { return r.address == out.address; });
@@ -176,8 +190,8 @@ const char* CacheSuffix() {
     // other per-eye sizes than 2880 (the launcher's BB_VR_EYE_RES) keep a cache of their own.
     static const std::string suffix = [] {
         const char* res = std::getenv("BB_VR_EYE_RES");
-        // _mv3: guest buffers are per-eye arrays in the shaders (EyeBufferInfo); screen-position outputs move with the eye.
-        return res && res[0] && std::strcmp(res, "2880") != 0 ? std::string("_mv3_") + res : std::string("_mv3");
+        // _mv4: guest buffers are per-eye arrays in the shaders (EyeBufferInfo); view-dependent outputs move with the eye.
+        return res && res[0] && std::strcmp(res, "2880") != 0 ? std::string("_mv4_") + res : std::string("_mv4");
     }();
     return Requested() ? suffix.c_str() : "";
 }
@@ -369,6 +383,58 @@ vk::Pipeline Variant(vk::Pipeline pipeline, u16 view_mask) {
 
 float Shift() {
     return g_shift;
+}
+
+// 1: the eyes' constants; 0: the centre camera's; 2 (development): the opposite correction (a sign check).
+std::atomic<int> g_eye_lights{[] {
+    const char* v = std::getenv("BB_VR_EYE_LIGHTS");
+    return v && v[0] ? v[0] - '0' : 1;
+}()};
+
+void SetEyeLights(int mode) {
+    g_eye_lights = mode;
+    std::printf("VR multiview: per-eye light constants mode %d\n", mode);
+    std::fflush(stdout);
+}
+
+bool EyeLightBinding(u64 fs_hash, u32 buffer_index) {
+    return g_enabled && g_eye_lights.load(std::memory_order_relaxed) != 0 && buffer_index == 1 &&
+           (fs_hash == 0xd80f041b || fs_hash == 0x7b2b16ed);
+}
+
+bool EyeLightConstants(const u32* light, u32 bytes, const float* camera, std::array<std::array<u32, 64>, 2>& out) {
+    if (bytes < 47 * 4 || bytes > 64 * 4) {
+        return false;
+    }
+    // The eye's offset e (as the vertex shader solves it): along row y x row w of the view-projection, scaled so that
+    // row x . e = -shift.
+    const float x[3] = {camera[0], camera[4], camera[8]};
+    const float y[3] = {camera[1], camera[5], camera[9]};
+    const float w[3] = {camera[3], camera[7], camera[11]};
+    const float d[3] = {y[1] * w[2] - y[2] * w[1], y[2] * w[0] - y[0] * w[2], y[0] * w[1] - y[1] * w[0]};
+    const float denom = x[0] * d[0] + x[1] * d[1] + x[2] * d[2];
+    if (!(std::abs(denom) > 1e-30f)) {
+        return false;
+    }
+    // The pixel shader's view depths are negative like the ray's z: it computes the light vector (towards the light) as
+    // dwords 40-42 minus the camera-relative point and the light-space point as dwords 44-46 plus M times it. With the
+    // eye's ray the point is relative to the eye: light - camera - e and light space + M e.
+    const float sign = g_eye_lights.load(std::memory_order_relaxed) == 2 ? -1.f : 1.f;
+    float f[64]{};
+    std::memcpy(f, light, bytes);
+    for (int eye = 0; eye < 2; ++eye) {
+        const float shift = eye == 0 ? g_shift : -g_shift;
+        const float t = shift / denom;
+        const float e[3] = {-d[0] * t * sign, -d[1] * t * sign, -d[2] * t * sign}; // the eye's offset
+        float g[64];
+        std::memcpy(g, f, sizeof(g));
+        for (int i = 0; i < 3; ++i) {
+            g[40 + i] = f[40 + i] - e[i];
+            g[44 + i] = f[44 + i] + (f[24 + i] * e[0] + f[28 + i] * e[1] + f[32 + i] * e[2]);
+        }
+        std::memcpy(out[eye].data(), g, sizeof(g));
+    }
+    return true;
 }
 
 void SetShift(float shift) {

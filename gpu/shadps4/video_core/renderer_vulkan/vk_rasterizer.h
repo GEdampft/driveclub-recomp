@@ -248,6 +248,8 @@ private:
     AmdGpu::CbDbExtent CbExtent(u32 index) const;
     AmdGpu::CbDbExtent DbExtent() const;
 
+    bool BindEyeLightConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                               vk::WriteDescriptorSet& write); // VR
     void BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                      Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data, u32& write_index);

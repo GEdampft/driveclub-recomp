@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/types.h"
@@ -38,6 +40,17 @@ void Init(VkPhysicalDevice physical_device, VkDevice device);
 /// give the frame's scene depth. Driveclub composites its frame into the display buffer, then draws every HUD element
 /// over it: at the second draw of such a run the scene and its depth are copied out and the target is cleared, so the
 /// HUD draws alone.
+/// Development (BB_VR_FS_IMAGES=<vs hex>, or the FSIMG trigger): the images draws with that vertex shader sample in
+/// their pixel shader.
+void LogFragmentImages(const Shader::Info& vs, const Shader::Info* fs, u32 depth_control = 0,
+                       u32 stencil_control = 0, u32 stencil_ref_front = 0);
+void WatchFragmentImages(u64 vs_hash);
+
+/// Development (SKIP trigger: shader hashes in hex, separated by spaces or commas; an empty file clears it): draws
+/// whose vertex or pixel shader is listed draw nothing (live, also while the game is paused).
+void SetSkippedShaders(const std::string& list);
+bool SkipDraw(u64 vs_hash, u64 fs_hash);
+
 void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& texture_cache, const Shader::Info& vs,
             const GraphicsPipelineKey& key,
             VideoCore::ImageId color, VideoCore::ImageId target2, VideoCore::ImageId depth);

@@ -48,6 +48,14 @@ void Epilogue(EmitContext& ctx);
 /// screen position deferred light volumes pass on to find their pixel in the G-buffer. The epilogue moves them with the
 /// shifted position (vr_shift[view] / w); otherwise each eye lights the G-buffer shift / w away from the pixel (the
 /// cockpit's lights land in different places per eye).
+///
+/// Also the eye's translation for view-dependent outputs: the position is a matrix times a vector v (three IR values
+/// common to x, y and w); the eye's offset e in v's own space solves M e = (-vr_shift, 0, *, 0) from the matrix's rows
+/// (e along row1 x row3). The position and every output holding a division by something that depends on v (screen
+/// positions, view rays p / z, projective light coordinates, normalised view vectors) are evaluated again with v - e:
+/// deferred light volumes rebuild each pixel's position from the eye's own ray (headlights on the cars ahead sat
+/// e * (d / z - 1) away per eye). Outputs affine in v (positions for world-space lookups) keep the centre's values.
+/// Shaders where this cannot be done (other position shapes, branches, unsupported operations) keep the clip shift.
 void ScanScreenParams(const IR::Program& program);
 
 /// Geometry shaders: the same shift for each vertex they emit.

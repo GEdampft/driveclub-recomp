@@ -230,6 +230,7 @@ std::wstring g_name = L"Player";  // in-game player name, from "name=" in launch
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 int g_vr = -1;  // VR fork: the "VR headset" row (Off or a size per eye)
 int g_vrdlss = -1, vrdlss_saved = 0;  // VR fork: the "VR DLSS" row (Off, DLAA, Quality, Balanced, Performance)
+int g_vrsharp = -1, vrsharp_saved = 0;  // VR fork: the "VR DLSS sharpness" row (Off, 20% .. 100%)
 
 // VR fork: the game in stereo on the OpenXR runtime (SteamVR). The VR patch sets a square render and output size per
 // eye, so the resolution, widescreen and upscaling rows are left out; anti-aliasing and frame generation stay off.
@@ -353,7 +354,11 @@ void BuildModel() {
                  L"render each eye 1.5, 1.7 or 2 times smaller and let DLSS rebuild it at the eye size: much faster at "
                  L"high sizes. Needs a GeForce RTX card.",
                  {L"Off", L"DLAA", L"Quality", L"Balanced", L"Performance"}, {"@vrdlss", "", "", "", ""}, 0);
-  g_cards.push_back({L"VR", {g_vr, g_vrdlss}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
+  g_vrsharp = seg(L"VR DLSS sharpness",
+                  L"Sharpens each eye after DLSS (AMD's contrast-adaptive sharpening: edges and texture detail, without "
+                  L"halos). DLSS itself no longer sharpens. Only with a VR DLSS mode on.",
+                  {L"Off", L"20%", L"40%", L"60%", L"80%", L"100%"}, {"@vrsharp", "", "", "", "", ""}, 0);
+  g_cards.push_back({L"VR", {g_vr, g_vrdlss, g_vrsharp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -391,6 +396,7 @@ void LoadSettings() {
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("vr_dlss=", 0) == 0) vrdlss_saved = atoi(line.substr(8).c_str());  // VR fork
+    if (line.rfind("vr_sharpness=", 0) == 0) vrsharp_saved = atoi(line.substr(13).c_str());  // VR fork
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
   }
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
@@ -436,7 +442,8 @@ void LoadSettings() {
   if (g_aa >= 0 && aa_saved >= 1 && aa_saved <= 2) g_c[g_aa].sel = aa_saved;
   if (g_fgen >= 0 && fgen_saved >= 1 && fgen_saved <= 4) g_c[g_fgen].sel = fgen_saved;
   if (g_fps >= 0 && unlocked_saved && g_c[g_fps].sel == 1) g_c[g_fps].sel = 3;
-  if (g_vrdlss >= 0 && vrdlss_saved >= 1 && vrdlss_saved <= 4) g_c[g_vrdlss].sel = vrdlss_saved;  // VR fork  // Unlocked is deltatime without the cap
+  if (g_vrdlss >= 0 && vrdlss_saved >= 1 && vrdlss_saved <= 4) g_c[g_vrdlss].sel = vrdlss_saved;  // VR fork
+  if (g_vrsharp >= 0 && vrsharp_saved >= 1 && vrsharp_saved <= 5) g_c[g_vrsharp].sel = vrsharp_saved;  // VR fork  // Unlocked is deltatime without the cap
   DerivePreset();
 }
 
@@ -520,7 +527,7 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\n";
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -1204,6 +1211,11 @@ std::wstring StartGame() {
     }
     SetEnvironmentVariableW(L"BB_AA_SCALE", kScale[VrDlss()]);
     SetEnvironmentVariableW(L"BB_AA_UPSCALE_DEV", VrDlss() >= 2 ? L"1" : nullptr);
+    if (GetEnvironmentVariableW(L"BB_VR_DLSS_SHARPNESS", nullptr, 0) == 0) {
+      static const wchar_t* const kSharp[] = {L"0", L"0.2", L"0.4", L"0.6", L"0.8", L"1"};
+      const int s = g_vrsharp >= 0 && VrDlss() ? g_c[g_vrsharp].sel : 0;
+      SetEnvironmentVariableW(L"BB_VR_DLSS_SHARPNESS", kSharp[s >= 0 && s <= 5 ? s : 0]);
+    }
     SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
     SetEnvironmentVariableW(L"BB_FULLSCREEN", L"0");
     if (GetEnvironmentVariableW(L"BB_VR_GAME_HZ", nullptr, 0) == 0) {

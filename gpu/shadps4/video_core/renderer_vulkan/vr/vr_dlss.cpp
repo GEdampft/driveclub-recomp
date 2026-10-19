@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vr/vr_dlss.h"
 
+#include <algorithm>
+#include <span>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -11,6 +13,8 @@
 #include <vector>
 
 #include "video_core/host_shaders/drive_aa_copy_comp.h"
+#include "video_core/host_shaders/vr_sharpen_comp.h"
+#include "video_core/host_shaders/vr_sharpen_r11_comp.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -53,6 +57,12 @@ struct State {
     vk::UniqueDescriptorSetLayout copy_desc_layout;
     vk::UniquePipelineLayout copy_pipeline_layout;
     vk::UniquePipeline copy_pipeline;
+    // Sharpening after DLSS (BB_VR_DLSS_SHARPNESS 0..1, the launcher's row; DLSS 3.1+ ignores its own): into the lit
+    // scene (DLAA) or into a second picture the game's passes read (upscaling).
+    vk::UniquePipeline sharpen_pipeline, sharpen_r11_pipeline;
+    VideoCore::UniqueImage sharp_image;
+    std::array<vk::UniqueImageView, 2> sharp_views;
+    vk::Image redirect_image{}; // the picture redirect_view shows
     std::chrono::steady_clock::time_point last_frame{};
     // The main view's camera: the latest frame's (from the G-buffer draws) and the one the last motion used.
     std::mutex camera_mutex;
@@ -199,20 +209,33 @@ void CreateCopyPipeline(const Instance& instance) {
         .pBindings = bindings.data(),
     }));
     const vk::PushConstantRange range{.stageFlags = vk::ShaderStageFlagBits::eCompute, .offset = 0,
-                                      .size = 2 * sizeof(float)};
+                                      .size = 3 * sizeof(float)}; // the copy's size, the sharpening's strength
     g.copy_pipeline_layout = Check(device.createPipelineLayoutUnique({
         .setLayoutCount = 1,
         .pSetLayouts = &*g.copy_desc_layout,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &range,
     }));
-    const auto module = CompileSPV(DRIVE_AA_COPY_COMP, device);
-    g.copy_pipeline = Check(device.createComputePipelineUnique(
-        {}, vk::ComputePipelineCreateInfo{
-                .stage = {.stage = vk::ShaderStageFlagBits::eCompute, .module = module, .pName = "main"},
-                .layout = *g.copy_pipeline_layout,
-            }));
-    device.destroyShaderModule(module);
+    const auto make = [&](std::span<const u32> code, vk::UniquePipeline& pipeline) {
+        const auto module = CompileSPV(code, device);
+        pipeline = Check(device.createComputePipelineUnique(
+            {}, vk::ComputePipelineCreateInfo{
+                    .stage = {.stage = vk::ShaderStageFlagBits::eCompute, .module = module, .pName = "main"},
+                    .layout = *g.copy_pipeline_layout,
+                }));
+        device.destroyShaderModule(module);
+    };
+    make(DRIVE_AA_COPY_COMP, g.copy_pipeline);
+    make(VR_SHARPEN_COMP, g.sharpen_pipeline);
+    make(VR_SHARPEN_R11_COMP, g.sharpen_r11_pipeline);
+}
+
+float Sharpness() {
+    static const float value = [] {
+        const char* v = std::getenv("BB_VR_DLSS_SHARPNESS");
+        return v ? std::clamp(float(std::atof(v)), 0.0f, 1.0f) : 0.0f;
+    }();
+    return value;
 }
 
 bool EnsureImages(const Instance& instance, Scheduler& scheduler, u32 w, u32 h, u32 ow, u32 oh) {
@@ -264,6 +287,10 @@ bool EnsureImages(const Instance& instance, Scheduler& scheduler, u32 w, u32 h, 
     make(g.result_image, g.result_views, &g.result_array, vk::Format::eR16G16B16A16Sfloat,
          vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc,
          ow, oh);
+    if (Sharpness() > 0.0f && (ow != w || oh != h)) {
+        make(g.sharp_image, g.sharp_views, nullptr, vk::Format::eR16G16B16A16Sfloat,
+             vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, ow, oh);
+    }
     g.redirect_view.reset();
     g.instance = &instance;
     g.width = w;
@@ -442,8 +469,39 @@ bool Record(const Instance& instance, Scheduler& scheduler, Runtime& runtime, Dr
     }
     dlss.SelectFeature(0);
 
+    // Each eye from `src` into `dst` with `pipeline` (the copy, or the sharpening at Sharpness()).
+    const float sharpness = Sharpness();
+    const auto per_eye = [&](vk::Pipeline pipeline, const std::array<vk::ImageView, 2>& src,
+                             const std::array<vk::ImageView, 2>& dst, u32 dw, u32 dh) {
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
+        const std::array<float, 3> push{float(dw), float(dh), sharpness};
+        for (u32 eye = 0; eye < 2; ++eye) {
+            const vk::DescriptorImageInfo src_info{.imageView = src[eye], .imageLayout = vk::ImageLayout::eGeneral};
+            const vk::DescriptorImageInfo dst_info{.imageView = dst[eye], .imageLayout = vk::ImageLayout::eGeneral};
+            const std::array<vk::WriteDescriptorSet, 2> writes = {{
+                {.dstBinding = 0, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eStorageImage,
+                 .pImageInfo = &src_info},
+                {.dstBinding = 1, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eStorageImage,
+                 .pImageInfo = &dst_info},
+            }};
+            cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *g.copy_pipeline_layout, 0, writes);
+            cmdbuf.pushConstants(*g.copy_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
+                                 push.data());
+            cmdbuf.dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
+        }
+    };
+    const std::array<vk::ImageView, 2> result_views{*g.result_views[0], *g.result_views[1]};
+
     if (ow != w || oh != h) {
-        // Upscaled: what samples the game's picture by UV from here on reads both eyes of this one (DriveAA).
+        // Upscaled: what samples the game's picture by UV from here on reads both eyes of this one (DriveAA), or of
+        // its sharpened copy.
+        if (sharpness > 0.0f && g.sharp_image) {
+            barrier(vk::Image(g.result_image), vk::ImageLayout::eGeneral, all, rw,
+                    vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead);
+            barrier(vk::Image(g.sharp_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
+                    vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
+            per_eye(*g.sharpen_pipeline, result_views, {*g.sharp_views[0], *g.sharp_views[1]}, ow, oh);
+        }
         const vk::MemoryBarrier2 ready{.srcStageMask = all, .srcAccessMask = vk::AccessFlagBits2::eShaderWrite,
                                        .dstStageMask = all, .dstAccessMask = vk::AccessFlagBits2::eShaderRead};
         cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &ready});
@@ -457,21 +515,7 @@ bool Record(const Instance& instance, Scheduler& scheduler, Runtime& runtime, Dr
                                        .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
                                        .dstAccessMask = vk::AccessFlagBits2::eShaderWrite};
     cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &read_done});
-    cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *g.copy_pipeline);
-    const std::array<float, 2> size{float(w), float(h)};
-    for (u32 eye = 0; eye < 2; ++eye) {
-        const vk::DescriptorImageInfo src_info{.imageView = *g.result_views[eye], .imageLayout = vk::ImageLayout::eGeneral};
-        const vk::DescriptorImageInfo dst_info{.imageView = out_views[eye], .imageLayout = vk::ImageLayout::eGeneral};
-        const std::array<vk::WriteDescriptorSet, 2> writes = {{
-            {.dstBinding = 0, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eStorageImage,
-             .pImageInfo = &src_info},
-            {.dstBinding = 1, .descriptorCount = 1, .descriptorType = vk::DescriptorType::eStorageImage,
-             .pImageInfo = &dst_info},
-        }};
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *g.copy_pipeline_layout, 0, writes);
-        cmdbuf.pushConstants(*g.copy_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(size), size.data());
-        cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
-    }
+    per_eye(sharpness > 0.0f ? *g.sharpen_r11_pipeline : *g.copy_pipeline, result_views, out_views, w, h);
     const vk::MemoryBarrier2 done{.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
                                   .srcAccessMask = vk::AccessFlagBits2::eShaderWrite,
                                   .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
@@ -484,7 +528,8 @@ bool Redirect(vk::ImageView& view, vk::ImageLayout& layout, vk::ComponentMapping
     if (!Active() || !g.result_ready || !g.result_array || !g.instance) {
         return false;
     }
-    if (!g.redirect_view || mapping != g.redirect_mapping) {
+    const vk::Image image = Sharpness() > 0.0f && g.sharp_image ? vk::Image(g.sharp_image) : vk::Image(g.result_image);
+    if (!g.redirect_view || mapping != g.redirect_mapping || image != g.redirect_image) {
         // The old view may be in a command buffer being recorded: kept until the image is remade (one mapping in
         // practice).
         static std::vector<vk::UniqueImageView> retired;
@@ -492,8 +537,9 @@ bool Redirect(vk::ImageView& view, vk::ImageLayout& layout, vk::ComponentMapping
             retired.push_back(std::move(g.redirect_view));
         }
         g.redirect_mapping = mapping;
+        g.redirect_image = image;
         g.redirect_view = Check(g.instance->GetDevice().createImageViewUnique({
-            .image = vk::Image(g.result_image),
+            .image = image,
             .viewType = vk::ImageViewType::e2DArray,
             .format = vk::Format::eR16G16B16A16Sfloat,
             .components = mapping,

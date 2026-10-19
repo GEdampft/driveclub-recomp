@@ -12,21 +12,25 @@
  *
  * The launcher's Benchmark card sets all of this for the player; DriveClub.exe --play passes it on as well:
  *   BB_BENCHMARK=1                       all defaults
- *   BB_BENCHMARK=track=uk_road_circuit_01_n,car=mc_p1,tod=22,rain=Heavy,seconds=60
+ *   BB_BENCHMARK=track=chile_race_track_v1,car=fe_f12,tod=18,seconds=60
  * key=value pairs, separated by ',' (values: letters, digits and '_' only; they go into Lua source):
  *   track    world name, "Track Name" in newdata/tracks.csv (default canada_road_circuit_02_n, Fraser Valley).
- *            Circuits of the base game, all run to a result (launcher/driveclub_launcher.cpp kBenchTracks has
- *            their names): <c>_road_circuit_01_n and _02_n for c = canada, chile, india, norway, uk, japan;
- *            canada_/india_/norway_/japan_dlc_road_circuit_03_n; canada_/chile_/india_/uk_race_track_v1,
- *            norway_/japan_race_track_01_v1. _r instead of _n is the reverse route, v2/v3 the other race track
- *            layouts; point-to-point routes (_road_point_) also start, but can end before the measurement does.
- *   car      "Vehicle Name" in newdata/vehicles.csv (default fe_458, Ferrari 458 Italia). Base game cars, all run
- *            to a result (names in kBenchCars): mc_p1 pa_hu ko_ag he_ve_gt pa_zo fe_458 fe_f12 au_r8 mc_mp_12
- *            as_ma_177 me_sl_am bm_m4 me_gt_am au_rs6 ma_mc_st lo_ex au_rs5 bm_m2 ren_dez vw_golf_gti mi_jcw ren_cl.
- *   mode     TimeTrial (default, the player's car alone) or Race (with the 7-car AI grid of the game's tests).
- *   tod      hour 0-23 (default 12).        weather  Clear (default), Cloudy, Overcast, Stormy.
- *   rain     empty = dry (default); Light, Mid, Heavy, VeryLight, Wet (wet road, no rain), Damp, DryToWet, or any
- *            of the game's precipitation presets with '_' for each space (Heavy_Precipitation, Wet_To_Dry, ...).
+ *            The launcher lists the circuits of the base game by name (kBenchTracks in
+ *            launcher/driveclub_launcher.cpp). Run to a result: canada_, chile_, india_, norway_, uk_ and
+ *            japan_road_circuit_02_n; the same with _01_n except uk_; canada_, india_ and japan_dlc_road_circuit_03_n;
+ *            canada_, chile_, uk_race_track_v1; norway_race_track_01_v1. From game data, not run: uk_road_circuit_01_n,
+ *            norway_dlc_road_circuit_03_n, india_race_track_v1, japan_race_track_01_v1, the reverse routes (_r for
+ *            _n), the other race track layouts (v2, v3) and the point-to-point routes (_road_point_), which can end
+ *            before the measurement does.
+ *   car      "Vehicle Name" in newdata/vehicles.csv (default fe_458, Ferrari 458 Italia). The launcher lists base
+ *            game cars by name (kBenchCars). Run to a result: mc_p1 pa_hu ko_ag he_ve_gt pa_zo fe_458 fe_f12 au_r8
+ *            mc_mp_12 as_ma_177 bm_m4 me_gt_am ma_mc_st au_rs5 bm_m2 ren_dez vw_golf_gti mi_jcw. From game data,
+ *            not run: me_sl_am au_rs6 lo_ex ren_cl, and the other cars of the list.
+ *   mode     TimeTrial (default, the player's car alone) or Race (with the 7-car AI grid of the game's tests;
+ *            from the game's test helpers, not run).
+ *   tod      hour 0-23 (default 12; 8, 12, 18 and 22 run).   weather  Clear (default, run), Cloudy, Overcast, Stormy.
+ *   rain     empty = dry (default); Heavy (run); Light, Mid, VeryLight, Wet (wet road, no rain), Damp, DryToWet, or
+ *            any of the game's precipitation presets with '_' for each space (Wet_To_Dry, ...): from game data, not run.
  *   laps     1-99 (default 5).               drive    ai (default) or none (the player drives).
  *   warmup   s after the race starts that are not measured (default 5).
  *   seconds  s measured (default 60).        view     camera: chase, driverhead, attach (empty = game default).
@@ -241,7 +245,7 @@ static void *watchdog(void *unused) {
         sleep(1);
         const double t = now_ms();
         if (phase == WAITING && t - t_config > cfg.timeout * 1000.0) {
-            printf("Benchmark: FAILED, the race did not start within %d s (see the [BB_BENCHMARK] lines)\n", cfg.timeout);
+            printf("Benchmark: FAILED, the race did not start within %d s (see the 'Benchmark: [lua' lines)\n", cfg.timeout);
             fflush(NULL);
             _exit(3);
         }

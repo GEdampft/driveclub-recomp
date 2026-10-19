@@ -345,8 +345,10 @@ void BuildModel() {
                             L"Unlocks the DLC content: add-on cars, bikes, tours and livery decals. Cars you earn by playing still unlock through normal progression. Built from your own game files; the game folders are not modified.",
                             "@unlock", false);
   // The cards flow into as many columns as the window width allows (see LayoutPass).
-  g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
-  g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_aniso}, 0});
+  // VR fork: the frame rate and resolution rows and anti-aliasing are not shown (the VR patch set stands in for
+  // them, VrReplaces); they keep their saved values for flat play.
+  (void)fps, (void)outres, (void)inres, (void)wide, (void)fov;
+  g_cards.push_back({L"TEXTURE FILTERING", {g_aniso}, 0});
   g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0});
   g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0,
                      L"Community patches for DriveClub version 1.28."});

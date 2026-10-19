@@ -596,7 +596,11 @@ void NoteFrameTime() {
         g.intervals.push_back(t - g.last_submit);
     }
     g.last_submit = t;
-    if (g.intervals.size() < 900) {
+    static const size_t report_frames = [] {
+        const char* v = std::getenv("BB_VR_REPORT_FRAMES"); // development: frames per report (900: 10 s at 90 Hz)
+        return v ? std::max<size_t>(90, size_t(std::atoi(v))) : size_t(900);
+    }();
+    if (g.intervals.size() < report_frames) {
         return;
     }
     const double period = g.frame_state.predictedDisplayPeriod > 0 ? double(g.frame_state.predictedDisplayPeriod) * 1e-9

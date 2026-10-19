@@ -424,7 +424,11 @@ void VideoOutDriver::Flip(const Request& req) {
         last_buffer_bytes = buffer_bytes;
         ++frames;
         const double window = std::chrono::duration<double>(now - window_start).count();
-        if (window >= 5.0) {
+        static const double stats_seconds = [] { // VR fork: BB_FRAME_STATS_SECONDS (benchmarks: 1 s samples)
+            const char* v = std::getenv("BB_FRAME_STATS_SECONDS");
+            return v ? std::max(0.2, std::atof(v)) : 5.0;
+        }();
+        if (window >= stats_seconds) {
             const u32 compiles = Vulkan::g_bb_compiles.exchange(0);
             const u64 compile_ns = Vulkan::g_bb_compile_ns.exchange(0);
             const u64 direct = Vulkan::Scheduler::direct_recordings.exchange(0);

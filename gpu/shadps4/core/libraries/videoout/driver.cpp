@@ -749,14 +749,16 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     const auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
                                           : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
-    // bbport: BB_PACE_CREDIT=<percent of a period, default 200>: how much earlier than one
+    // bbport: BB_PACE_CREDIT=<percent of a period, default 0>: how much earlier than one
     // period after a release the next release may come when frames run late. The slot after a
     // release at `now` is max(slot + period, now + period - credit). 200 is the old rule
     // (now - period: after a late frame the next one, and even a second, goes out at once:
     // a long frame followed by a short one); 0 keeps every release at least one period after
     // the one before (minimum spacing: a late frame only delays, it is never repaid).
+    // Default 0 (minimum spacing): measured in DriveClub's race at equal FPS, frame time sd
+    // 5.23 -> 3.66 ms, 1% low 29.1 -> 31.5 FPS, menus sd 5.07 -> 2.89 ms.
     const long credit_pct =
-        std::clamp<long>(EmulatorSettingsImpl::Number("BB_PACE_CREDIT", 200), 0, 200);
+        std::clamp<long>(EmulatorSettingsImpl::Number("BB_PACE_CREDIT", 0), 0, 200);
     const auto credit = frame_period * credit_pct / 100;
     // Off the old rule the waits for a slot use the precise sleep: a release that wakes late
     // would otherwise come out short of its period.

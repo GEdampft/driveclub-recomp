@@ -37,6 +37,7 @@ constexpr u64 ImageBase = 0x800000000ULL;
 
 extern "C" void SceneHandler(u64* regs);
 extern "C" void ViewHandler(u64* regs);
+extern "C" void CameraSetHandler(u64* regs);
 
 struct Site {
     u64 offset;
@@ -48,6 +49,9 @@ struct Site {
 // that every view and the next frame's "previous camera" come from, so the head goes in here. Then SetView(view,
 // world, projection, ...) and its twin, for the development log.
 const Site Sites[] = {
+    // Camera::Set(camera, world, projection): copies both into the camera and derives its culling (frustum, detail)
+    // from them, before the scene gets the camera. See CameraSetHandler.
+    {0x72d9e0, {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x53, 0x50, 0x49, 0x89, 0xd6}, &CameraSetHandler},
     {0x5e7a20, {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53}, &SceneHandler},
     {0x736650, {0xc5, 0xf8, 0x28, 0x46, 0x30, 0xc5, 0x78, 0x5c, 0x87, 0x40, 0x05, 0x00, 0x00, 0xc5, 0xf8, 0x29, 0x87, 0x40,
                 0x05, 0x00, 0x00}, &ViewHandler},
@@ -141,6 +145,64 @@ extern "C" void ViewHandler(u64* regs) {
     }
 }
 
+// The game culls with the frustum of the camera it sets here (Camera::Set(camera, world, block): the block holds the
+// projection, then at +0x60 six view-space planes, outward normals, inside where n.p + d <= 0: near, left, right,
+// bottom, top, far). Its own camera's planes face forward, +-46 degrees across: as the head turned, parts of the car
+// beside the driver and of cars alongside were culled (Matt 2026-10-19: the passenger door). The player camera's
+// planes are the headset's field of view turned with the head instead; the world and the projection stay the game's
+// (the detail it picks is unchanged), and the block is a copy (the game's is rebuilt every frame).
+// BB_VR_CULL_HEAD=0 turns it off.
+alignas(16) float g_cull_block[0x110 / 4];
+
+void HeadPlane(const float* pose, float nx, float ny, float nz, float d, float* out) {
+    const float inv = 1.f / std::sqrt(nx * nx + ny * ny + nz * nz);
+    nx *= inv, ny *= inv, nz *= inv, d *= inv;
+    // Row vectors: a head direction v goes to v * R (the pose's upper 3x3). The planes stay at the eye: the head's
+    // position moves them by centimetres in the car (the margin covers it), and in the menus it is metres away.
+    const float cx = nx * pose[0] + ny * pose[4] + nz * pose[8];
+    const float cy = nx * pose[1] + ny * pose[5] + nz * pose[9];
+    const float cz = nx * pose[2] + ny * pose[6] + nz * pose[10];
+    out[0] = cx, out[1] = cy, out[2] = cz;
+    out[3] = d;
+}
+
+extern "C" void CameraSetHandler(u64* regs) {
+    static const bool enabled = !(std::getenv("BB_VR_CULL_HEAD") && std::getenv("BB_VR_CULL_HEAD")[0] == '0');
+    const auto* block = reinterpret_cast<const float*>(regs[RDX]);
+    if (!enabled || !g_head_enabled || !IsPlayerView(block)) {
+        return;
+    }
+    Head head;
+    {
+        std::scoped_lock lock{g_head_mutex};
+        if (!g_head_valid) {
+            return;
+        }
+        head = g_head;
+    }
+    std::memcpy(g_cull_block, block, sizeof(g_cull_block));
+    // Both eyes: the headset's field of view as rendered (the multiview overscan), and a little more for the eyes'
+    // offsets.
+    const float margin = (Multiview::Enabled() ? 0.08f : 0.f) + 0.05f;
+    const float l = head.tan[0] - margin, r = head.tan[1] + margin, u = head.tan[2] + margin, d = head.tan[3] - margin;
+    float* planes = g_cull_block + 0x60 / 4;
+    const float near_d = planes[3], far_d = planes[23];
+    HeadPlane(head.pose, 0.f, 0.f, 1.f, near_d, planes + 0);
+    HeadPlane(head.pose, -1.f, 0.f, -l, 0.f, planes + 4);
+    HeadPlane(head.pose, 1.f, 0.f, r, 0.f, planes + 8);
+    HeadPlane(head.pose, 0.f, -1.f, -d, 0.f, planes + 12);
+    HeadPlane(head.pose, 0.f, 1.f, u, 0.f, planes + 16);
+    HeadPlane(head.pose, 0.f, 0.f, -1.f, far_d, planes + 20);
+    static bool told = false;
+    if (!told) {
+        told = true;
+        std::printf("VR camera: culling with the head (the game's left plane %.4f %.4f %.4f %.4g)\n", block[28],
+                    block[29], block[30], block[31]);
+        std::fflush(stdout);
+    }
+    regs[RDX] = reinterpret_cast<u64>(g_cull_block);
+}
+
 extern "C" void SceneHandler(u64* regs) {
     const auto* desc = reinterpret_cast<const float*>(regs[RSI]);
     const float* world = desc;
@@ -154,6 +216,14 @@ extern "C" void SceneHandler(u64* regs) {
     }
     if (!g_head_enabled || !IsPlayerView(proj)) {
         return;
+    }
+    // Development (BB_VR_LOOKLOG=1): the game's player camera yaw (its forward on the ground plane, degrees) per call.
+    static const bool look_log = std::getenv("BB_VR_LOOKLOG") != nullptr;
+    if (look_log) {
+        static u64 calls = 0;
+        std::printf("VR look: %llu yaw %.4f fwd %.5f %.5f %.5f proj %.4f %.4f\n", (unsigned long long)calls++,
+                    std::atan2(-world[8], -world[10]) * 57.29578f, -world[8], -world[9], -world[10], proj[0], proj[5]);
+        std::fflush(stdout);
     }
     Head head;
     {
@@ -275,7 +345,11 @@ void DoInstall() {
             return;
         }
     }
+    const bool cull_head = !(std::getenv("BB_VR_CULL_HEAD") && std::getenv("BB_VR_CULL_HEAD")[0] == '0');
     for (const Site& site : Sites) {
+        if (site.handler == &CameraSetHandler && !cull_head) {
+            continue;
+        }
         auto* stub = new Stub(site);
         stub->ready();
         g_stubs.push_back(stub);

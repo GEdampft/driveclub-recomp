@@ -67,6 +67,7 @@ void WriteFile(const std::filesystem::path& path, u64 address, u64 size) {
 #ifdef _WIN32
 std::atomic<u64> g_watch_address{0};
 std::atomic<int> g_watch_hits{0};
+std::atomic<bool> g_watch_exec{false}; // an execution breakpoint ("x"): logged with its caller, resumed past
 PVOID g_handler = nullptr;
 
 LONG CALLBACK WatchHandler(EXCEPTION_POINTERS* info) {
@@ -74,18 +75,61 @@ LONG CALLBACK WatchHandler(EXCEPTION_POINTERS* info) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     info->ContextRecord->Dr6 = 0;
+    if (g_watch_exec.load(std::memory_order_relaxed)) {
+        info->ContextRecord->EFlags |= 0x10000; // RF: run the instruction this time
+        const int hit = g_watch_hits.fetch_add(1);
+        if (hit < 300) {
+            u64 ret = 0;
+            SIZE_T got = 0;
+            ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(info->ContextRecord->Rsp), &ret, 8,
+                              &got);
+            std::printf("VR watch: exec hit %d thread %lu returns to %#llx (image +%#llx) rdi %#llx rsi %#llx\n", hit,
+                        GetCurrentThreadId(), (unsigned long long)ret, (unsigned long long)(ret - 0x800000000ull),
+                        (unsigned long long)info->ContextRecord->Rdi, (unsigned long long)info->ContextRecord->Rsi);
+            std::fflush(stdout);
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     const int hit = g_watch_hits.fetch_add(1);
     if (hit < 300) {
         const u64 rip = info->ContextRecord->Rip;
         MEMORY_BASIC_INFORMATION mbi{};
         VirtualQuery(reinterpret_cast<void*>(rip), &mbi, sizeof(mbi));
         const u64 base = u64(mbi.AllocationBase);
+        // The value is read through the kernel: a read here would hit the watch again (the debug registers are live).
         u64 value = 0;
-        std::memcpy(&value, reinterpret_cast<const void*>(g_watch_address.load()), 8);
-        std::printf("VR watch: hit %d at rip %#llx (base %#llx + %#llx) thread %lu value %#llx rsp %#llx\n", hit,
-                    (unsigned long long)rip, (unsigned long long)base, (unsigned long long)(rip - base),
-                    GetCurrentThreadId(), (unsigned long long)value,
-                    (unsigned long long)info->ContextRecord->Rsp);
+        SIZE_T got = 0;
+        ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(g_watch_address.load()), &value, 8, &got);
+        char module[MAX_PATH] = "?";
+        GetModuleFileNameA(reinterpret_cast<HMODULE>(base), module, sizeof(module));
+        const char* name = std::strrchr(module, '\\') ? std::strrchr(module, '\\') + 1 : module;
+        std::printf("VR watch: hit %d at rip %#llx (%s + %#llx) thread %lu value %#llx; callers in the game:", hit,
+                    (unsigned long long)rip, name, (unsigned long long)(rip - base), GetCurrentThreadId(),
+                    (unsigned long long)value);
+        // Return addresses into the main executable among the first 96 stack slots.
+        const u64 exe = u64(GetModuleHandleA(nullptr));
+        MEMORY_BASIC_INFORMATION exe_info{};
+        VirtualQuery(reinterpret_cast<void*>(exe + 0x1000), &exe_info, sizeof(exe_info));
+        static u64 exe_end = 0;
+        if (!exe_end) {
+            u64 at = exe;
+            MEMORY_BASIC_INFORMATION m{};
+            while (VirtualQuery(reinterpret_cast<void*>(at), &m, sizeof(m)) && u64(m.AllocationBase) == exe) {
+                at = u64(m.BaseAddress) + m.RegionSize;
+            }
+            exe_end = at;
+        }
+        u64 slots[96]{};
+        ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(info->ContextRecord->Rsp), slots,
+                          sizeof(slots), &got);
+        int shown = 0;
+        for (u64 slot : slots) {
+            if (slot > exe + 0x1000 && slot < exe_end && shown < 8) {
+                std::printf(" +%#llx", (unsigned long long)(slot - exe));
+                ++shown;
+            }
+        }
+        std::printf("\n");
         std::fflush(stdout);
     }
     return EXCEPTION_CONTINUE_EXECUTION;
@@ -167,8 +211,9 @@ void SetWatch(u64 address, u32 length, bool reads) {
     }
     g_watch_address = address;
     g_watch_hits = 0;
-    const u64 len_bits = length == 8 ? 2 : length == 4 ? 3 : length == 2 ? 1 : 0;
-    const u64 rw_bits = reads ? 3 : 1;
+    const bool exec = g_watch_exec.load();
+    const u64 len_bits = exec ? 0 : length == 8 ? 2 : length == 4 ? 3 : length == 2 ? 1 : 0;
+    const u64 rw_bits = exec ? 0 : reads ? 3 : 1;
     const DWORD self = GetCurrentThreadId();
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     THREADENTRY32 entry{sizeof(entry)};
@@ -239,6 +284,7 @@ void Poll() {
         unsigned length = 4;
         char mode[8] = "w";
         std::sscanf(spec.c_str(), "%llx %u %7s", reinterpret_cast<unsigned long long*>(&address), &length, mode);
+        g_watch_exec = std::strcmp(mode, "x") == 0;
         SetWatch(address, length, std::strcmp(mode, "rw") == 0);
     }
     if (Take("PWATCH", &spec)) {

@@ -241,7 +241,20 @@ int VrEye() {
   static const int kEye[] = {0, 2160, 2560, 2880, 3200, 3584, 3840, 4320};
   return VrOn() ? kEye[g_c[g_vr].sel] : 0;
 }
-int VrDlss() { return VrOn() && g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0; }  // 0 off, 1 DLAA, 2.. upscaling
+// VR fork: the "VR EXPERIMENTAL" card (VR DLSS, its sharpness, VR fast mode) shows only with --experimental on the
+// command line or vr_experimental=1 in launcher.ini; hidden, its settings keep their saved values but do not apply.
+bool g_experimental_ini = false;  // vr_experimental=1 in launcher.ini (kept when saving)
+bool ExperimentalOn() {
+  static const bool on = [] {
+    if (wcsstr(GetCommandLineW(), L"--experimental")) return true;
+    for (const auto& line : ReadLines(IniPath())) {
+      if (line.rfind("vr_experimental=1", 0) == 0) return g_experimental_ini = true;
+    }
+    return false;
+  }();
+  return on;
+}
+int VrDlss() { return VrOn() && ExperimentalOn() && g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0; }  // 0 off, 1 DLAA, 2.. upscaling
 // The render size per eye: the eye size, or below it by the DLSS mode's factor (a multiple of 16, as the
 // "VR render" patches in DriveClub.xml).
 int VrRender() {
@@ -365,7 +378,11 @@ void BuildModel() {
                     L"so some effects and scenery can go wrong: rain drops on the windscreen flicker, and some scenery is "
                     L"misplaced or missing (spectators standing in mid-air).",
                     "@vrfast", false);
-  g_cards.push_back({L"VR", {g_vr, g_vrdlss, g_vrsharp, g_vrfast}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
+  g_cards.push_back({L"VR", {g_vr}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
+  if (ExperimentalOn()) {
+    g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrsharp, g_vrfast}, 0,
+                       L"Still in development: may have graphical bugs."});
+  }
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -539,7 +556,7 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_fast=" << (g_vrfast >= 0 ? g_c[g_vrfast].sel : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_fast=" << (g_vrfast >= 0 ? g_c[g_vrfast].sel : 0) << (g_experimental_ini ? "\r\nvr_experimental=1" : "") << "\r\n";
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -1242,7 +1259,8 @@ std::wstring StartGame() {
     // GPU readbacks stay precise in VR, as flat. Without them (BB_READBACKS=0: 3200 per eye 76 -> 94 game FPS) the
     // game misses GPU results it reads: the crowd stood in mid-air, the windscreen drops flickered, and at dawn the
     // picture went black (small_writeback.cpp covers that one). "VR fast mode" (or BB_READBACKS=0) selects it.
-    if (g_vrfast >= 0 && g_c[g_vrfast].sel && GetEnvironmentVariableW(L"BB_READBACKS", nullptr, 0) == 0) {
+    if (ExperimentalOn() && g_vrfast >= 0 && g_c[g_vrfast].sel &&
+        GetEnvironmentVariableW(L"BB_READBACKS", nullptr, 0) == 0) {
       SetEnvironmentVariableW(L"BB_READBACKS", L"0");
     }
   }

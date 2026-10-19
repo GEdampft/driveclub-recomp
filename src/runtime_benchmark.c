@@ -10,14 +10,30 @@
  * fails and the game carries on). From then on each flip interval is kept; after the warm-up and the run time
  * the summary is printed and the process exits.
  *
- *   BB_BENCHMARK=1                       defaults below
- *   BB_BENCHMARK=track=canada_road_circuit_02_n,car=ren_dez,seconds=60
- * Keys: track, car, mode (TimeTrial or Race), tod (hour 0-23), weather (Clear, Cloudy, Overcast, Stormy),
- *       rain (the game's precipitation preset, '_' for each space: Heavy_Precipitation, Dry_To_Wet, Wet_Track,
- *       ...; short names Heavy, Mid, Light, VeryLight, Wet, Damp, DryToWet; empty = dry),
- *       laps, warmup (s after the race starts, not measured), seconds (measured), drive (ai or none),
- *       view (camera, e.g. chase, driverhead, attach; empty = game default), timeout (s until the race must run).
- * BB_BENCHMARK_OUT=<file> also gets the result line (default <user>/benchmark/result.txt).
+ * The launcher's Benchmark card sets all of this for the player; DriveClub.exe --play passes it on as well:
+ *   BB_BENCHMARK=1                       all defaults
+ *   BB_BENCHMARK=track=uk_road_circuit_01_n,car=mc_p1,tod=22,rain=Heavy,seconds=60
+ * key=value pairs, separated by ',' (values: letters, digits and '_' only; they go into Lua source):
+ *   track    world name, "Track Name" in newdata/tracks.csv (default canada_road_circuit_02_n, Fraser Valley).
+ *            Circuits of the base game, all run to a result (launcher/driveclub_launcher.cpp kBenchTracks has
+ *            their names): <c>_road_circuit_01_n and _02_n for c = canada, chile, india, norway, uk, japan;
+ *            canada_/india_/norway_/japan_dlc_road_circuit_03_n; canada_/chile_/india_/uk_race_track_v1,
+ *            norway_/japan_race_track_01_v1. _r instead of _n is the reverse route, v2/v3 the other race track
+ *            layouts; point-to-point routes (_road_point_) also start, but can end before the measurement does.
+ *   car      "Vehicle Name" in newdata/vehicles.csv (default fe_458, Ferrari 458 Italia). Base game cars, all run
+ *            to a result (names in kBenchCars): mc_p1 pa_hu ko_ag he_ve_gt pa_zo fe_458 fe_f12 au_r8 mc_mp_12
+ *            as_ma_177 me_sl_am bm_m4 me_gt_am au_rs6 ma_mc_st lo_ex au_rs5 bm_m2 ren_dez vw_golf_gti mi_jcw ren_cl.
+ *   mode     TimeTrial (default, the player's car alone) or Race (with the 7-car AI grid of the game's tests).
+ *   tod      hour 0-23 (default 12).        weather  Clear (default), Cloudy, Overcast, Stormy.
+ *   rain     empty = dry (default); Light, Mid, Heavy, VeryLight, Wet (wet road, no rain), Damp, DryToWet, or any
+ *            of the game's precipitation presets with '_' for each space (Heavy_Precipitation, Wet_To_Dry, ...).
+ *   laps     1-99 (default 5).               drive    ai (default) or none (the player drives).
+ *   warmup   s after the race starts that are not measured (default 5).
+ *   seconds  s measured (default 60).        view     camera: chase, driverhead, attach (empty = game default).
+ *   timeout  s from start until the race must run (default 240), else exit code 3.
+ * The result line ("Benchmark: result mode=... avg_fps= low1_fps= low01_fps= p99_ms= max_ms= load_s=") goes to the
+ * log and to <user>/benchmark/result.txt, or to BB_BENCHMARK_OUT=<file>. The lows are the average frame rate of
+ * the slowest 1% and 0.1% of frames. Exit code 0 = done, 3 = the race did not start or the frames stopped.
  * BB_BENCHMARK_LUA=<host file>: Lua run inside the script (in a pcall) with `stage` set to "frontend", "loaded",
  * "racing" and "tick" (every 5 s while racing); say(text) there goes to the log. A debugging aid: the game's
  * own print output does not reach the log, so script messages go through a marker open (say:<text>). */
@@ -42,7 +58,7 @@
 static struct {
     char track[64], car[64], mode[16], weather[16], view[24], drive[8], rain[48];
     int tod, laps, warmup, seconds, timeout;
-} cfg = {"canada_road_circuit_02_n", "ren_dez", "TimeTrial", "Clear", "", "ai", "", 12, 5, 5, 60, 240};
+} cfg = {"canada_road_circuit_02_n", "fe_458", "TimeTrial", "Clear", "", "ai", "", 12, 5, 5, 60, 240};
 
 enum { OFF, WAITING, WARMUP, MEASURING, DONE };
 static volatile int phase = OFF;
@@ -359,11 +375,13 @@ static void finish(double t) {
     qsort(intervals, n, sizeof(*intervals), cmp_desc);
     const double avg = elapsed > 0 ? 1000.0 * frames / elapsed : 0;
     const double p99 = n ? intervals[n / 100] : 0, worst = n ? intervals[0] : 0;
-    char line[600];
+    char line[600], rain[sizeof(cfg.rain)];
+    snprintf(rain, sizeof(rain), "%s", cfg.rain[0] ? cfg.rain : "dry");
+    for (char *c = rain; *c; ++c) if (*c == ' ') *c = '_'; /* one word per value */
     snprintf(line, sizeof(line),
-             "mode=%s track=%s car=%s tod=%d weather=%s drive=%s seconds=%.1f frames=%zu avg_fps=%.2f "
+             "mode=%s track=%s car=%s tod=%d weather=%s rain=%s drive=%s seconds=%.1f frames=%zu avg_fps=%.2f "
              "low1_fps=%.2f low01_fps=%.2f p99_ms=%.2f max_ms=%.2f load_s=%.1f",
-             cfg.mode, cfg.track, cfg.car, cfg.tod, cfg.weather, cfg.drive, elapsed / 1000.0, frames, avg,
+             cfg.mode, cfg.track, cfg.car, cfg.tod, cfg.weather, rain, cfg.drive, elapsed / 1000.0, frames, avg,
              low_fps(intervals, n, 0.01), low_fps(intervals, n, 0.001), p99, worst, (t_race - t_config) / 1000.0);
     printf("Benchmark: result %s\n", line);
     FILE *f = fopen(out_path, "wb");

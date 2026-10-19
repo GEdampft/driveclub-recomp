@@ -51,7 +51,8 @@ constexpr float kWinW = 960.f;
 // ------------------------------------------------------------------------------------------
 // model
 // ------------------------------------------------------------------------------------------
-enum class Kind { Segmented, Toggle };
+// Picker: one box that opens a menu (benchmark track and car). Action: the benchmark's Run button and its result.
+enum class Kind { Segmented, Toggle, Picker, Action };
 
 struct Ctl {
   const wchar_t* label;
@@ -230,6 +231,84 @@ std::wstring g_name = L"Player";  // in-game player name, from "name=" in launch
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 bool unlocked_saved = false;  // "Unlocked" frame rate choice, from launcher.ini  // indices of the render resolution and widescreen choices
 
+// ------------------------------------------------------------------------------------------
+// benchmark: the game's AI drives one event and the runtime measures the frame times (BB_BENCHMARK, see
+// src/runtime_benchmark.c). The ids are the game's own: "Track Name" in newdata/tracks.csv and "Vehicle Name" in
+// newdata/vehicles.csv, all from the base game (no add-on content needed). Every one was run to a result.
+// Circuits only: a point-to-point route can end before the measurement does.
+// ------------------------------------------------------------------------------------------
+struct BenchChoice {
+  const char* id;
+  const wchar_t* name;
+  const wchar_t* group;  // the submenu: location or car class
+};
+const BenchChoice kBenchTracks[] = {
+    {"canada_road_circuit_02_n", L"Fraser Valley", L"Canada"},
+    {"canada_road_circuit_01_n", L"Oliver's Landing", L"Canada"},
+    {"canada_dlc_road_circuit_03_n", L"Sinclair Point", L"Canada"},
+    {"canada_race_track_v1", L"Maplewood Motorsport Park", L"Canada"},
+    {"chile_road_circuit_01_n", L"Chungará Lake", L"Chile"},
+    {"chile_road_circuit_02_n", L"Salar de Surire", L"Chile"},
+    {"chile_race_track_v1", L"Autodromo Frontera", L"Chile"},
+    {"india_road_circuit_01_n", L"Glenmorgan", L"India"},
+    {"india_road_circuit_02_n", L"Bandipur", L"India"},
+    {"india_dlc_road_circuit_03_n", L"Yedappalli", L"India"},
+    {"india_race_track_v1", L"Tamil Nadu Circuit", L"India"},
+    {"norway_road_circuit_01_n", L"Sentraltind", L"Norway"},
+    {"norway_road_circuit_02_n", L"Skjolden", L"Norway"},
+    {"norway_dlc_road_circuit_03_n", L"Atlanterhavsvegen", L"Norway"},
+    {"norway_race_track_01_v1", L"Sognefjord Raceway", L"Norway"},
+    {"uk_road_circuit_01_n", L"Loch Duich", L"Scotland"},
+    {"uk_road_circuit_02_n", L"Kinloch", L"Scotland"},
+    {"uk_race_track_v1", L"Black Hills Circuit", L"Scotland"},
+    {"japan_road_circuit_01_n", L"Takahagi Hills", L"Japan"},
+    {"japan_road_circuit_02_n", L"Lake Shoji", L"Japan"},
+    {"japan_dlc_road_circuit_03_n", L"Kobago", L"Japan"},
+    {"japan_race_track_01_v1", L"Asigiri Highland Raceway", L"Japan"},
+};
+const BenchChoice kBenchCars[] = {
+    {"mc_p1", L"McLaren P1", L"Hyper"},
+    {"pa_hu", L"Pagani Huayra", L"Hyper"},
+    {"ko_ag", L"Koenigsegg Agera R", L"Hyper"},
+    {"he_ve_gt", L"Hennessey Venom GT", L"Hyper"},
+    {"pa_zo", L"Pagani Zonda R", L"Hyper"},
+    {"fe_458", L"Ferrari 458 Italia", L"Super"},
+    {"fe_f12", L"Ferrari F12berlinetta", L"Super"},
+    {"au_r8", L"Audi R8 V10 plus", L"Super"},
+    {"mc_mp_12", L"McLaren 12C", L"Super"},
+    {"as_ma_177", L"Aston Martin One-77", L"Super"},
+    {"me_sl_am", L"Mercedes-Benz SLS AMG Black Series", L"Super"},
+    {"bm_m4", L"BMW M4", L"Performance"},
+    {"me_gt_am", L"Mercedes-AMG GT S", L"Performance"},
+    {"au_rs6", L"Audi RS 6 Avant", L"Performance"},
+    {"ma_mc_st", L"Maserati GranTurismo MC Stradale", L"Performance"},
+    {"lo_ex", L"Lotus Exige S", L"Performance"},
+    {"au_rs5", L"Audi RS 5 Coupé", L"Sports"},
+    {"bm_m2", L"BMW M235i", L"Sports"},
+    {"ren_dez", L"Renault DeZir", L"Sports"},
+    {"vw_golf_gti", L"Volkswagen Golf GTI", L"Hot hatch"},
+    {"mi_jcw", L"MINI John Cooper Works GP", L"Hot hatch"},
+    {"ren_cl", L"Renault Clio RS", L"Hot hatch"},
+};
+constexpr int kBenchTrackCount = int(sizeof(kBenchTracks) / sizeof(kBenchTracks[0]));
+constexpr int kBenchCarCount = int(sizeof(kBenchCars) / sizeof(kBenchCars[0]));
+constexpr int kBenchDefaultCar = 5;  // Ferrari 458 Italia
+const int kBenchTod[] = {8, 12, 18, 22};
+const char* const kBenchWeather[] = {"Clear", "Cloudy", "Overcast", "Stormy"};
+const char* const kBenchRain[] = {"", "Light", "Heavy", "Wet"};
+const int kBenchSeconds[] = {30, 60, 120, 300};
+int g_bench_track = 0, g_bench_car = kBenchDefaultCar;
+int g_btrack = -1, g_bcar = -1, g_bmode = -1, g_btod = -1, g_bweather = -1, g_brain = -1, g_blen = -1, g_brun = -1;
+bool IsBenchRow(const Ctl& c) { return c.patches[0].rfind("@bench", 0) == 0; }
+
+// The last result, from data\user\benchmark\result.txt.
+struct BenchResult {
+  bool ok = false;
+  std::wstring fps, lows, about;  // "87.3", "1% low 71.2  0.1% low 60.4", "Fraser Valley, Ferrari 458 Italia, ..."
+};
+BenchResult g_bench_result;
+bool g_bench_running = false;
+
 void BuildModel() {
   g_folder[0].label = L"Update folder (version 1.28)";
   g_folder[0].hint = L"The DriveClub v1.28 update dump: the folder that contains eboot.bin. If your dump is already 1.28, leave this empty and choose it below.";
@@ -316,12 +395,54 @@ void BuildModel() {
   const int unlock = toggle(L"Unlock DLC content",
                             L"Unlocks the DLC content: add-on cars, bikes, tours and livery decals. Cars you earn by playing still unlock through normal progression. Built from your own game files; the game folders are not modified.",
                             "@unlock", false);
+  auto picker = [](const wchar_t* label, const wchar_t* hint, const char* tag) {
+    Ctl c{label, hint, Kind::Picker, {L""}, {tag}, 0, 0};
+    g_c.push_back(std::move(c));
+    return int(g_c.size()) - 1;
+  };
+  g_btrack = picker(L"Track", L"Where the benchmark drives. Click to choose: the circuits of every location of the base game.", "@bench_track");
+  g_bcar = picker(L"Car", L"The car the game's AI drives. Click to choose: cars of the base game, by class.", "@bench_car");
+  g_bmode = seg(L"Cars on track",
+                L"Alone is a time trial: one car, the steadiest numbers. Race adds seven AI opponents, which loads the processor more.",
+                {L"Alone", L"Race (8 cars)"}, {"@bench_mode", ""}, 0);
+  g_btod = seg(L"Time of day", L"The hour the event is set at. Night draws the headlights and the street lights.",
+               {L"Morning", L"Noon", L"Evening", L"Night"}, {"@bench_tod", "", "", ""}, 1);
+  g_bweather = seg(L"Weather", L"The sky and the clouds.", {L"Clear", L"Cloudy", L"Overcast", L"Stormy"},
+                   {"@bench_weather", "", "", ""}, 0);
+  g_brain = seg(L"Rain", L"Rain (snow in Norway) and wet roads, the heaviest scenes for the graphics card and the processor.",
+                {L"Dry", L"Light", L"Heavy", L"Wet road"}, {"@bench_rain", "", "", ""}, 0);
+  g_blen = seg(L"Length", L"How long the frame times are measured, after a few seconds of warm-up. Loading takes about half a minute more.",
+               {L"30 s", L"1 min", L"2 min", L"5 min"}, {"@bench_length", "", "", ""}, 1);
+  g_brun = int(g_c.size());
+  g_c.push_back(Ctl{L"Last result",
+                    L"Starts the event with the settings on this page; the game's AI drives. The game closes by itself when it is done "
+                    L"and the result shows here: the average frame rate and the 1% and 0.1% lows (the average of the slowest 1% and 0.1% of frames).",
+                    Kind::Action, {}, {"@bench_run"}, 0, 0});
   // The cards flow into as many columns as the window width allows (see LayoutPass).
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_aniso}, 0});
   g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0});
   g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0,
                      L"Community patches for DriveClub version 1.28."});
+  g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen, g_brun}, 0});
+}
+
+// The rows show the chosen track and car by name.
+void ShowBenchChoices() {
+  if (g_btrack >= 0) g_c[g_btrack].items[0] = std::wstring(kBenchTracks[g_bench_track].name) + L"  (" + kBenchTracks[g_bench_track].group + L")";
+  if (g_bcar >= 0) g_c[g_bcar].items[0] = kBenchCars[g_bench_car].name;
+}
+
+int FindBench(const BenchChoice* list, int count, const std::string& id, int fallback) {
+  for (int i = 0; i < count; ++i) {
+    if (id == list[i].id) return i;
+  }
+  return fallback;
+}
+
+std::wstring BenchName(const BenchChoice* list, int count, const std::string& id) {
+  const int i = FindBench(list, count, id, -1);
+  return i >= 0 ? std::wstring(list[i].name) : Widen(id);
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -359,7 +480,19 @@ void LoadSettings() {
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
+    if (line.rfind("bench_track=", 0) == 0) g_bench_track = FindBench(kBenchTracks, kBenchTrackCount, line.substr(12), 0);
+    if (line.rfind("bench_car=", 0) == 0) g_bench_car = FindBench(kBenchCars, kBenchCarCount, line.substr(10), kBenchDefaultCar);
+    const struct { const char* key; int row; } bench_rows[] = {{"bench_mode=", g_bmode}, {"bench_tod=", g_btod},
+                                                                {"bench_weather=", g_bweather}, {"bench_rain=", g_brain},
+                                                                {"bench_length=", g_blen}};
+    for (const auto& b : bench_rows) {
+      const size_t n = std::strlen(b.key);
+      if (b.row < 0 || line.compare(0, n, b.key) != 0) continue;
+      const int v = atoi(line.substr(n).c_str());
+      if (v >= 0 && v < int(g_c[b.row].items.size())) g_c[b.row].sel = v;
+    }
   }
+  ShowBenchChoices();
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
   CheckFolders();
   const auto lines = ReadLines(SelectionPath());
@@ -385,7 +518,7 @@ void LoadSettings() {
       c.sel = unlock_dlc ? 1 : 0;
       continue;
     }
-    if (!has_selection) continue;  // defaults
+    if (!has_selection || IsBenchRow(c)) continue;  // defaults; the benchmark rows are in launcher.ini
     c.sel = 0;
     for (size_t i = 0; i < c.patches.size(); ++i) {
       if (c.patches[i].empty()) continue;
@@ -476,6 +609,9 @@ void SaveSettings() {
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
         << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\n";
+    ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
+        << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
+        << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -511,13 +647,16 @@ void ResetDefaults() {
     c.sel = c.def;
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") g_skip_gpu_check = c.sel != 0;
   }
+  g_bench_track = 0;
+  g_bench_car = kBenchDefaultCar;
+  ShowBenchChoices();
   g_changed = true;
 }
 
 // ------------------------------------------------------------------------------------------
 // layout
 // ------------------------------------------------------------------------------------------
-float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : 70.f) + g_row_extra; }
+float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 96.f : 70.f) + g_row_extra; }
 float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
@@ -566,8 +705,9 @@ void LayoutPass(float bottom_extra) {
       Ctl& c = g_c[i];
       const float rh = RowHeight(c);
       c.row = RectF(card.rect.X + kPad, cy, colw - 2 * kPad, rh);
-      c.ctl = c.kind == Kind::Toggle ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
-                                     : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
+      c.ctl = c.kind == Kind::Toggle   ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
+              : c.kind == Kind::Action ? RectF(c.row.X + c.row.Width - 150.f, cy + 30.f, 150.f, 44.f)
+                                       : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
       cy += rh;
     }
     y[card.column] += h + kGap;
@@ -747,6 +887,41 @@ void Paint(HDC hdc, int w, int h) {
         SolidBrush knob(kWhite);
         const float d = ct.Height - 6 * S;
         g.FillEllipse(&knob, c.sel ? ct.X + ct.Width - d - 3 * S : ct.X + 3 * S, ct.Y + 3 * S, d, d);
+      } else if (c.kind == Kind::Picker) {
+        // A box with the chosen name and a down arrow: a click opens the menu of choices.
+        Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S), kText);
+        FillRound(g, ct, 9 * S, hot ? kTrackHover : kTrack);
+        Text(g, c.items[0], fSegBold, RectF(ct.X + 12 * S, ct.Y, ct.Width - 44 * S, ct.Height), kText);
+        SolidBrush arrow(kMuted);
+        const float ax = ct.X + ct.Width - 22 * S, ay = ct.Y + ct.Height / 2 - 2 * S;
+        const PointF tri[3] = {PointF(ax - 5 * S, ay), PointF(ax + 5 * S, ay), PointF(ax, ay + 6 * S)};
+        g.FillPolygon(&arrow, tri, 3);
+      } else if (c.kind == Kind::Action) {
+        // The benchmark: the last result on the left, Run on the right.
+        Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width - 170 * S, 22 * S), kText);
+        const RectF res(row.X, row.Y + 26 * S, row.Width - 170 * S, row.Height - 26 * S);
+        if (g_bench_running) {
+          Text(g, L"Running... the game closes by itself when the benchmark is done.", fHint, res, kText,
+               StringAlignmentNear, StringAlignmentNear, true);
+        } else if (g_bench_result.ok) {
+          Font fBig(&fam, 24 * S, FontStyleBold, UnitPixel);
+          StringFormat measure(StringFormat::GenericTypographic());
+          measure.SetFormatFlags(StringFormatFlagsNoWrap);
+          RectF box;
+          const std::wstring big = g_bench_result.fps + L" FPS";
+          g.MeasureString(big.c_str(), -1, &fBig, PointF(0, 0), &measure, &box);
+          Text(g, big, fBig, RectF(res.X, res.Y, box.Width + 4 * S, 32 * S), kWhite);
+          Text(g, g_bench_result.lows, fSeg, RectF(res.X + box.Width + 14 * S, res.Y + 2 * S, res.Width - box.Width - 14 * S, 30 * S),
+               kText);
+          Text(g, g_bench_result.about, fHint, RectF(res.X, res.Y + 34 * S, res.Width, res.Height - 34 * S), kMuted,
+               StringAlignmentNear, StringAlignmentNear, true);
+        } else {
+          Text(g, L"No result yet. Choose the event above and press Run.", fHint, res, kMuted, StringAlignmentNear,
+               StringAlignmentNear, true);
+        }
+        const bool disabled = g_busy || !FoldersOk() || GpuBlocked();
+        FillRound(g, ct, 10 * S, disabled ? kOff : hot && g_hover_seg == 0 ? kAccentHover : kAccent);
+        Text(g, L"Run benchmark", fBtn, ct, disabled ? kMuted : kWhite, StringAlignmentCenter);
       } else {
         Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S), kText);
         FillRound(g, ct, 9 * S, kTrack);
@@ -1056,12 +1231,16 @@ std::wstring Preflight() {
   return L"";
 }
 
-std::wstring StartGame() {
+std::wstring g_game_log;  // the log file of the game started last
+
+// Starts the game. With `process` the caller gets the game's process handle (and closes it).
+std::wstring StartGame(HANDLE* process = nullptr) {
   const std::wstring exe = GameExe();
   if (!Exists(exe)) return L"The game program (DriveClubGame.exe) was not found.";
   MakeDirs(g_home + L"\\logs");
   SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-  HANDLE log = CreateFileW((g_home + L"\\logs\\driveclub_" + Timestamp() + L".log").c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+  g_game_log = g_home + L"\\logs\\driveclub_" + Timestamp() + L".log";
+  HANDLE log = CreateFileW(g_game_log.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
                            &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   MakeDirs(g_home + L"\\mods");
   const std::wstring prep = g_data + L"\\prep", user = g_data + L"\\user";
@@ -1139,7 +1318,7 @@ std::wstring StartGame() {
     }
     std::wstring summary = L"release " + (version.empty() ? std::wstring(L"unknown") : version) + L":";
     for (const auto& c : g_c) {
-      if (c.patches.empty() || c.patches[0] == "@name" || c.patches[0] == "@lang" || c.sel < 0) continue;
+      if (c.patches.empty() || c.patches[0] == "@name" || c.patches[0] == "@lang" || IsBenchRow(c) || c.sel < 0) continue;
       summary += L" ";
       summary += c.label;
       summary += L"=";
@@ -1170,7 +1349,8 @@ std::wstring StartGame() {
     return L"Could not start the game.";
   }
   CloseHandle(pi.hThread);
-  CloseHandle(pi.hProcess);
+  if (process) *process = pi.hProcess;
+  else CloseHandle(pi.hProcess);
   return L"";
 }
 
@@ -1206,6 +1386,156 @@ void Play() {
   g_busy = true;
   g_status.clear();
   std::thread(PlayWorker).detach();
+}
+
+// ------------------------------------------------------------------------------------------
+// benchmark: runs the game with BB_BENCHMARK, waits for it and shows data\user\benchmark\result.txt
+// ------------------------------------------------------------------------------------------
+std::wstring BenchResultPath() { return g_data + L"\\user\\benchmark\\result.txt"; }
+
+// The BB_BENCHMARK value for the choices on the page (keys: src/runtime_benchmark.c).
+std::string BenchSpec() {
+  char spec[400];
+  std::snprintf(spec, sizeof spec, "track=%s,car=%s,mode=%s,tod=%d,weather=%s,rain=%s,laps=20,warmup=5,seconds=%d,timeout=420",
+                kBenchTracks[g_bench_track].id, kBenchCars[g_bench_car].id, g_c[g_bmode].sel == 1 ? "Race" : "TimeTrial",
+                kBenchTod[g_c[g_btod].sel], kBenchWeather[g_c[g_bweather].sel], kBenchRain[g_c[g_brain].sel],
+                kBenchSeconds[g_c[g_blen].sel]);
+  return spec;
+}
+
+// result.txt is one line of key=value pairs (runtime_benchmark.c, finish()).
+void LoadBenchResult() {
+  g_bench_result = BenchResult{};
+  const auto lines = ReadLines(BenchResultPath());
+  if (lines.empty()) return;
+  auto value = [&](const char* key) -> std::string {
+    const std::string& l = lines[0];
+    const std::string k = std::string(key) + "=";
+    for (size_t p = l.find(k); p != std::string::npos; p = l.find(k, p + 1)) {
+      if (p != 0 && l[p - 1] != ' ') continue;
+      const size_t b = p + k.size(), e = l.find(' ', b);
+      return l.substr(b, e == std::string::npos ? std::string::npos : e - b);
+    }
+    return "";
+  };
+  auto one = [](const std::string& v) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.1f", std::atof(v.c_str()));
+    return Widen(b);
+  };
+  if (value("avg_fps").empty()) return;
+  g_bench_result.ok = true;
+  g_bench_result.fps = one(value("avg_fps"));
+  g_bench_result.lows = L"1% low " + one(value("low1_fps")) + L"    0.1% low " + one(value("low01_fps"));
+  const std::string weather = value("weather");
+  std::string rain = value("rain");  // the game's preset name with '_' for each space
+  std::replace(rain.begin(), rain.end(), '_', ' ');
+  std::wstring about = BenchName(kBenchTracks, kBenchTrackCount, value("track")) + L", " +
+                       BenchName(kBenchCars, kBenchCarCount, value("car")) + (value("mode") == "Race" ? L", race" : L"") + L", " +
+                       Widen(value("tod")) + L":00 " + Widen(weather) + (rain.empty() || rain == "dry" ? L"" : L", rain " + Widen(rain)) +
+                       L", " + Widen(std::to_string(int(std::atof(value("seconds").c_str()) + 0.5))) + L" s measured";
+  WIN32_FILE_ATTRIBUTE_DATA info;
+  if (GetFileAttributesExW(BenchResultPath().c_str(), GetFileExInfoStandard, &info)) {
+    FILETIME local;
+    SYSTEMTIME t;
+    FileTimeToLocalFileTime(&info.ftLastWriteTime, &local);
+    FileTimeToSystemTime(&local, &t);
+    wchar_t when[40];
+    wsprintfW(when, L", %04d-%02d-%02d %02d:%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
+    about += when;
+  }
+  g_bench_result.about = about;
+}
+
+// The game's own reason when it stopped the benchmark ("Benchmark: FAILED, ..." in its log), or "".
+std::wstring BenchFailure() {
+  std::wstring why;
+  for (const auto& l : ReadLines(g_game_log)) {
+    if (l.rfind("Benchmark: FAILED, ", 0) == 0) why = Widen(l.substr(19));
+  }
+  return why;
+}
+
+void BenchWorker() {
+  SetProgress(0, L"Preparing the game...");
+  LauncherLog("Benchmark pressed: " + BenchSpec());
+  std::wstring error = Preflight();
+  if (error.empty()) error = RunPrepare();
+  HANDLE game = nullptr;
+  if (error.empty()) {
+    SetProgress(100, L"Benchmark running: the game's AI drives, and the game closes by itself when it is done.");
+    DeleteFileW(BenchResultPath().c_str());
+    const std::wstring spec = Widen(BenchSpec());
+    SetEnvironmentVariableW(L"BB_BENCHMARK", spec.c_str());
+    SetEnvironmentVariableW(L"BB_BENCHMARK_OUT", BenchResultPath().c_str());
+    error = StartGame(&game);
+    SetEnvironmentVariableW(L"BB_BENCHMARK", nullptr);  // a later Play is an ordinary game
+    SetEnvironmentVariableW(L"BB_BENCHMARK_OUT", nullptr);
+  }
+  DWORD code = 1;
+  if (error.empty() && game) {
+    WaitForSingleObject(game, INFINITE);
+    GetExitCodeProcess(game, &code);
+    CloseHandle(game);
+    if (code == 0 && Exists(BenchResultPath())) {
+      const auto lines = ReadLines(BenchResultPath());
+      LauncherLog("benchmark result: " + (lines.empty() ? std::string("(empty)") : lines[0]));
+    } else {
+      const std::wstring why = BenchFailure();
+      error = why.empty() ? L"The benchmark stopped before it finished (the game was closed or crashed). The log is in the logs folder."
+                          : L"The benchmark failed: " + why + L".";
+      LauncherLog("benchmark: exit code " + std::to_string(code) + ", " + Narrow(error));
+    }
+  } else {
+    LauncherLog("benchmark: " + Narrow(error));
+  }
+  g_bench_running = false;
+  g_busy = false;
+  if (!error.empty()) {
+    g_status = error;
+    g_status_color = kWarn;
+  } else {
+    g_status = L"Benchmark done.";
+    g_status_color = kOk;
+  }
+  if (g_hwnd) PostMessageW(g_hwnd, WM_APP + 3, 0, 0);  // show the result
+}
+
+void RunBenchmark() {
+  if (g_busy || !FoldersOk()) return;
+  if (GpuBlocked()) {
+    g_status = g_gpu_problem;
+    g_status_color = kBad;
+    return;
+  }
+  SaveSettings();
+  g_busy = true;
+  g_bench_running = true;
+  g_status.clear();
+  std::thread(BenchWorker).detach();
+}
+
+// The menu of tracks or cars, grouped by location or class. Returns the chosen index or -1.
+int BenchMenu(HWND h, const RectF& at, const BenchChoice* list, int count, int current) {
+  HMENU menu = CreatePopupMenu();
+  std::vector<std::pair<std::wstring, HMENU>> groups;
+  for (int i = 0; i < count; ++i) {
+    auto it = std::find_if(groups.begin(), groups.end(), [&](const auto& g) { return g.first == list[i].group; });
+    if (it == groups.end()) {
+      groups.push_back({list[i].group, CreatePopupMenu()});
+      it = groups.end() - 1;
+    }
+    AppendMenuW(it->second, MF_STRING | (i == current ? MF_CHECKED : 0), UINT_PTR(1 + i), list[i].name);
+  }
+  for (const auto& g : groups) {
+    const bool has_current = current >= 0 && g.first == list[current].group;
+    AppendMenuW(menu, MF_POPUP | (has_current ? MF_CHECKED : 0), UINT_PTR(g.second), g.first.c_str());
+  }
+  POINT pt{LONG(at.X), LONG(at.Y + at.Height)};
+  ClientToScreen(h, &pt);
+  const int pick = int(TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, pt.x, pt.y, 0, h, nullptr));
+  DestroyMenu(menu);  // and its submenus
+  return pick - 1;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1266,6 +1596,10 @@ int HitControl(float x, float y, int* seg) {
     Ctl& c = g_c[i];
     RectF r = Scaled(c.row);
     if (x < r.X || x > r.X + r.Width || y < r.Y || y > r.Y + r.Height) continue;
+    if (c.kind == Kind::Action) {
+      const RectF ct = Scaled(c.ctl);
+      if (x >= ct.X && x <= ct.X + ct.Width && y >= ct.Y && y <= ct.Y + ct.Height) *seg = 0;  // over the Run button
+    }
     if (c.kind == Kind::Segmented) {
       RectF ct = Scaled(c.ctl);
       if (x >= ct.X && x <= ct.X + ct.Width && y >= ct.Y && y <= ct.Y + ct.Height) {
@@ -1409,6 +1743,23 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           StartNameEdit(h, ctl);
           return 0;
         }
+        if (ctl.kind == Kind::Picker) {
+          const bool track = c == g_btrack;
+          const int pick = BenchMenu(h, Scaled(ctl.ctl), track ? kBenchTracks : kBenchCars, track ? kBenchTrackCount : kBenchCarCount,
+                                     track ? g_bench_track : g_bench_car);
+          if (pick >= 0) {
+            (track ? g_bench_track : g_bench_car) = pick;
+            ShowBenchChoices();
+            g_changed = true;
+          }
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
+        if (ctl.kind == Kind::Action) {
+          if (seg == 0) RunBenchmark();
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
         if (ctl.patches[0] == "@lang") {
           g_lang_id = (g_lang_id + 1) % 21;
           ctl.items[0] = kLangName[g_lang_id];
@@ -1464,6 +1815,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP + 2:
       DestroyWindow(h);
       return 0;
+    case WM_APP + 3:  // the benchmark has ended: show its result in front of the other windows
+      LoadBenchResult();
+      if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+      SetForegroundWindow(h);
+      InvalidateRect(h, nullptr, FALSE);
+      return 0;
     case WM_DESTROY:
       PostQuitMessage(0);
       return 0;
@@ -1492,6 +1849,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   BuildModel();
   MakeDirs(g_data + L"\\user");
   LoadSettings();
+  LoadBenchResult();
   StartLauncherLog();
   if (!g_skip_gpu_check) {
     g_gpu_problem = CheckCpu();

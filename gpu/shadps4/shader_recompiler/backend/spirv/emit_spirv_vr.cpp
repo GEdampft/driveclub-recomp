@@ -171,12 +171,13 @@ struct EyeTranslation {
     bool valid = false;
     IR::Inst* leaf[3]{};
     Coefficient row[3][3]; // position x, y, w by leaf
+    IR::Inst* position_w = nullptr;
     std::vector<EyeOutput> outputs;
     std::unordered_map<const IR::Inst*, u8> flags; // Analysis bits
 };
 thread_local EyeTranslation t_eye;
 
-constexpr u8 DependsOnV = 1, Projective = 2, Unsupported = 4;
+constexpr u8 DependsOnV = 1, Projective = 2, Unsupported = 4, Ray = 8;
 
 struct Term {
     IR::Value a, b; // a * b, or a alone (b empty)
@@ -278,7 +279,7 @@ u8 Analyse(EyeTranslation& eye, const IR::Value& value) {
         }
         args |= f;
     }
-    flags = args & (Projective | Unsupported);
+    flags = args & (Projective | Unsupported | Ray);
     if (args & DependsOnV) {
         flags |= DependsOnV;
         const auto op = inst->GetOpcode();
@@ -288,6 +289,10 @@ u8 Analyse(EyeTranslation& eye, const IR::Value& value) {
         if ((op == IR::Opcode::FPDiv32 && (arg_flags[1] & DependsOnV)) || op == IR::Opcode::FPRecip32 ||
             op == IR::Opcode::FPRecipSqrt32) {
             flags |= Projective;
+            // Not by the position's w: a view ray or a view vector (the screen position alone is the clip shift's)
+            if (Resolve(inst->Arg(op == IR::Opcode::FPDiv32 ? 1 : 0)) != eye.position_w) {
+                flags |= Ray;
+            }
         }
     }
     eye.flags[inst] = flags;
@@ -399,13 +404,15 @@ const char* ScanEyeTranslation(const IR::Program& program, EyeTranslation& eye) 
             }
         }
     }
+    eye.position_w = Resolve(pos[3]);
+    eye.flags.clear(); // Ray depends on the position's w
     for (int e = 0; e < 4; ++e) {
         if (Analyse(eye, pos[e]) & Unsupported) {
             return "position unsupported";
         }
         eye.outputs.push_back({IR::Attribute::Position0, u32(e), pos[e]});
     }
-    u32 view_dependent = 0;
+    u32 view_dependent = 0, rays = 0;
     for (const EyeOutput& out : params) {
         const u8 f = Analyse(eye, out.value);
         if ((f & DependsOnV) && (f & Projective)) {
@@ -414,7 +421,13 @@ const char* ScanEyeTranslation(const IR::Program& program, EyeTranslation& eye) 
             }
             eye.outputs.push_back(out);
             ++view_dependent;
+            rays += (f & Ray) != 0;
         }
+    }
+    // Only shaders that pass view rays on (the deferred lights): screen positions alone keep the clip shift and the
+    // x / w outputs' shift (translated geometry shaders made the rear lights and shadows noisy).
+    if (!rays) {
+        return "no view-dependent outputs";
     }
     if (!view_dependent) {
         return "no view-dependent outputs";

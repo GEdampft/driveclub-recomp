@@ -190,8 +190,8 @@ const char* CacheSuffix() {
     // other per-eye sizes than 2880 (the launcher's BB_VR_EYE_RES) keep a cache of their own.
     static const std::string suffix = [] {
         const char* res = std::getenv("BB_VR_EYE_RES");
-        // _mv4: guest buffers are per-eye arrays in the shaders (EyeBufferInfo); view-dependent outputs move with the eye.
-        return res && res[0] && std::strcmp(res, "2880") != 0 ? std::string("_mv4_") + res : std::string("_mv4");
+        // _mv5: guest buffers are per-eye arrays in the shaders (EyeBufferInfo); view-dependent outputs move with the eye.
+        return res && res[0] && std::strcmp(res, "2880") != 0 ? std::string("_mv5_") + res : std::string("_mv5");
     }();
     return Requested() ? suffix.c_str() : "";
 }

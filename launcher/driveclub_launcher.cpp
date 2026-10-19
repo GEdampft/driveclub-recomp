@@ -246,8 +246,11 @@ int VrEye() {
 int g_vrexp = -1;            // the toggle
 bool vr_experimental = false;  // its saved state ("vr_experimental=" in launcher.ini)
 int g_exp_card = -1;         // the card's index in g_cards
+int g_flat_card = -1, g_aa_card = -1, g_tex_card = -1;  // VR off: frame rate and resolution, anti-aliasing; VR on:
+                                                         // texture filtering (anisotropic filtering alone)
 bool ExperimentalOn() { return g_vrexp >= 0 && g_c[g_vrexp].sel != 0; }
 bool CardHidden(size_t k);
+bool CtlHidden(int i);
 int VrDlss() { return VrOn() && ExperimentalOn() && g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0; }  // 0 off, 1 DLAA, 2.. upscaling
 // The render size per eye: the eye size, or below it by the DLSS mode's factor (a multiple of 16, as the
 // "VR render" patches in DriveClub.xml).
@@ -344,14 +347,6 @@ void BuildModel() {
   const int unlock = toggle(L"Unlock DLC content",
                             L"Unlocks the DLC content: add-on cars, bikes, tours and livery decals. Cars you earn by playing still unlock through normal progression. Built from your own game files; the game folders are not modified.",
                             "@unlock", false);
-  // The cards flow into as many columns as the window width allows (see LayoutPass).
-  // VR fork: the frame rate and resolution rows and anti-aliasing are not shown (the VR patch set stands in for
-  // them, VrReplaces); they keep their saved values for flat play.
-  (void)fps, (void)outres, (void)inres, (void)wide, (void)fov;
-  g_cards.push_back({L"TEXTURE FILTERING", {g_aniso}, 0});
-  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0});
-  g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0,
-                     L"Community patches for DriveClub version 1.28."});
   // VR fork: the headset row.
   g_vr = seg(L"VR headset (OpenXR)",
              L"Plays in stereo on your PC VR headset through the active OpenXR runtime (SteamVR): start SteamVR first. "
@@ -378,11 +373,22 @@ void BuildModel() {
                    L"Shows the VR EXPERIMENTAL section below: VR DLSS, its sharpening and VR fast mode. Still in "
                    L"development: they may have graphical bugs. Off, those settings are not used.",
                    "@vrexp", false);
+  // The cards flow into as many columns as the window width allows (see LayoutPass). VR fork: the VR card first, at
+  // the top of the first column, the experimental card right below it. With a headset size the VR patch set stands
+  // in for the frame rate, resolution and anti-aliasing rows (VrReplaces): those cards show only with VR off.
   g_cards.push_back({L"VR", {g_vr, g_vrexp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
-  // Right after the VR card: laid out directly below it (LayoutPass), only while the toggle is on.
   g_exp_card = int(g_cards.size());
   g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrsharp, g_vrfast}, 0,
                      L"Still in development: may have graphical bugs."});
+  g_flat_card = int(g_cards.size());
+  g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
+  g_aa_card = int(g_cards.size());
+  g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_aniso}, 0});
+  g_tex_card = int(g_cards.size());
+  g_cards.push_back({L"TEXTURE FILTERING", {g_aniso}, 0});
+  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0});
+  g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0,
+                     L"Community patches for DriveClub version 1.28."});
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -614,7 +620,14 @@ int g_cols = 2;  // columns of cards: more when the window is wide
 // The window's size, scale and columns are worked out without the experimental card (g_size_without_exp), so
 // showing it moves nothing else: it only adds to the VR card's column, and the page scrolls if it no longer fits.
 bool g_size_without_exp = false;
-bool CardHidden(size_t k) { return int(k) == g_exp_card && (!ExperimentalOn() || g_size_without_exp); }
+bool CardHidden(size_t k) {
+  const int i = int(k);
+  if (i == g_exp_card) return !VrOn() || !ExperimentalOn() || g_size_without_exp;
+  if (i == g_flat_card || i == g_aa_card) return VrOn();
+  if (i == g_tex_card) return !VrOn();
+  return false;
+}
+bool CtlHidden(int i) { return i == g_vrexp && !VrOn(); }  // the experimental toggle: VR only
 
 void LayoutPass(float bottom_extra) {
   g_cols = (std::clamp)(int((g_win_w - 2 * kMargin + kGap) / (380.f + kGap)), 2, 4);
@@ -630,12 +643,13 @@ void LayoutPass(float bottom_extra) {
   }
   float y[4];
   for (float& v : y) v = kHeaderH + folders_h + kGap;
+  for (auto& c : g_c) c.row = c.ctl = RectF(-10000.f, -10000.f, 0.f, 0.f);  // VR fork: only shown rows get a place
   // Card heights; the tallest cards are placed first, each into the shortest column.
   std::vector<float> heights(g_cards.size());
   std::vector<size_t> order(g_cards.size());
   for (size_t k = 0; k < g_cards.size(); ++k) {
     float h = kTitleH + kPad * 0.4f;
-    for (int i : g_cards[k].ctls) h += RowHeight(g_c[i]);
+    for (int i : g_cards[k].ctls) h += CtlHidden(i) ? 0.f : RowHeight(g_c[i]);
     h += kPad * 0.6f;
     if (g_cards[k].note) h += 46.f;
     heights[k] = h;
@@ -646,8 +660,11 @@ void LayoutPass(float bottom_extra) {
   const auto unit = [&](size_t k) { return heights[k]; };
   std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return unit(a) > unit(b); });
   float fill[4] = {0, 0, 0, 0};
+  // VR fork: the VR card (first) heads the first column.
+  g_cards[0].column = 0;
+  fill[0] = unit(0) + kGap;
   for (size_t k : order) {
-    if (int(k) == g_exp_card) continue;
+    if (k == 0 || int(k) == g_exp_card || CardHidden(k)) continue;
     int col = 0;
     for (int c = 1; c < g_cols; ++c) {
       if (fill[c] < fill[col] - 1.f) col = c;
@@ -660,13 +677,13 @@ void LayoutPass(float bottom_extra) {
     auto& card = g_cards[k];
     if (CardHidden(k)) {  // VR fork: nothing to draw or click
       card.rect = RectF(-10000.f, -10000.f, 0.f, 0.f);
-      for (int i : card.ctls) g_c[i].row = g_c[i].ctl = RectF(-10000.f, -10000.f, 0.f, 0.f);
       continue;
     }
     const float h = heights[k];
     card.rect = RectF(kMargin + card.column * (colw + kGap), y[card.column], colw, h);
     float cy = y[card.column] + kTitleH + kPad * 0.4f;
     for (int i : card.ctls) {
+      if (CtlHidden(i)) continue;  // VR fork
       Ctl& c = g_c[i];
       const float rh = RowHeight(c);
       c.row = RectF(card.rect.X + kPad, cy, colw - 2 * kPad, rh);
@@ -713,7 +730,8 @@ void Layout() {
     for (int col = 0; col < g_cols; ++col) {
       int n = 0;
       for (size_t k = 0; k < g_cards.size(); ++k) {
-        if (g_cards[k].column == col && !CardHidden(k)) n += int(g_cards[k].ctls.size());
+        if (g_cards[k].column != col || CardHidden(k)) continue;
+        for (int i : g_cards[k].ctls) n += CtlHidden(i) ? 0 : 1;
       }
       rows = (std::max)(rows, n);
     }
@@ -854,6 +872,7 @@ void Paint(HDC hdc, int w, int h) {
            StringAlignmentNear, StringAlignmentFar, true);
     }
     for (int i : card.ctls) {
+      if (CtlHidden(i)) continue;  // VR fork
       Ctl& c = g_c[i];
       const RectF row = Scaled(c.row), ct = Scaled(c.ctl);
       const bool hot = g_hover_ctl == i;
@@ -1576,7 +1595,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           }
           g_changed = true;
         } else if (seg >= 0) {
+          const bool was_vr = VrOn();
           ctl.sel = seg;
+          if (c == g_vr && VrOn() != was_vr) {  // VR fork: VR on or off: the cards that apply change
+            RECT cr;
+            GetClientRect(h, &cr);
+            SendMessageW(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(cr.right, cr.bottom));
+          }
           if (c == g_preset) ApplyPreset(seg);
           else if (c == g_outres || c == g_inres || c == g_wide) DerivePreset();
           g_changed = true;

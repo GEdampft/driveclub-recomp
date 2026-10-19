@@ -11,6 +11,9 @@
 
 #pragma once
 
+#include <optional>
+#include <span>
+
 #include "common/types.h"
 #include "shader_recompiler/resource.h"
 #include "video_core/amdgpu/resource.h"
@@ -24,6 +27,8 @@ struct ImageViewInfo;
 } // namespace VideoCore
 
 namespace Vulkan {
+class Instance;
+class Runtime;
 class Scheduler;
 }
 
@@ -123,6 +128,38 @@ void StereoCopies(const VideoCore::Image& src, const VideoCore::Image& dst, Regi
 /// eyes: a game texture that matched a main-view size would otherwise show unfilled memory in the right eye).
 std::span<const vk::BufferImageCopy> StereoUploads(const VideoCore::Image& dst,
                                                    std::span<const vk::BufferImageCopy> copies);
+
+/// A guest buffer the bindings use (`adjust`: the byte offset the shader adds), written or read: the audit, and the
+/// binding the next EyeBufferWrite completes.
+void NoteBuffer(u64 address, u64 size, bool written, u64 adjust);
+
+/// Per-eye buffers. In VR every guest storage buffer is a two-element descriptor array in the shaders (the element is
+/// the eye: shader_recompiler emit_spirv_vr.h). The computes that build Driveclub's lighting data from the scene's
+/// depth and normals (its tiled lights) ran once, for the left eye, and the right eye was lit with the left eye's
+/// tiles (a sign beside the road dark in the right eye only, lighting on the cars different in each eye): they run per
+/// eye now, the right eye's dispatch writing a copy of the buffer that the right eye's reads get.
+/// The descriptors a storage buffer binding takes (two for a guest buffer in VR).
+u32 BufferDescriptors(bool special);
+
+/// The descriptors past one per binding among storage buffer bindings (for the push descriptor limit).
+u32 ExtraDescriptors(std::span<const vk::DescriptorSetLayoutBinding> bindings);
+
+/// The second descriptor of a guest buffer binding (`first` its left eye's): the right eye's copy of a per-eye buffer,
+/// else the same buffer. Nothing for a special buffer or outside VR.
+std::optional<vk::DescriptorBufferInfo> EyeBufferInfo(const Instance& instance, Runtime& runtime, bool special,
+                                                      const vk::DescriptorBufferInfo& first);
+
+/// Rasterizer::BindBuffers, after a buffer binding's write: the second descriptor appended to `infos`, the write made
+/// two long.
+template <typename Infos>
+void EyeBufferWrite(const Instance& instance, Runtime& runtime, bool special, vk::WriteDescriptorSet& write,
+                    Infos& infos) {
+    if (const auto second = EyeBufferInfo(instance, runtime, special, infos.back())) {
+        infos.push_back(*second);
+        write.descriptorCount = 2;
+        write.pBufferInfo = &infos[infos.size() - 2];
+    }
+}
 
 /// Development log (BB_VR_MONO_COMPUTE): the draw's vertex shader.
 void SetDrawHash(u64 hash);

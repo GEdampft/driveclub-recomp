@@ -512,7 +512,7 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
         const auto f = image.info.pixel_format;
         if (image.info.guest_address == g_shoot_address.load() && vs_hash != g_shoot_last_vs &&
             (f == vk::Format::eR8G8B8A8Unorm || f == vk::Format::eR8G8B8A8Srgb || f == vk::Format::eB8G8R8A8Unorm ||
-             f == vk::Format::eB8G8R8A8Srgb) && g_shoot_count < 40) {
+             f == vk::Format::eB8G8R8A8Srgb || f == vk::Format::eB10G11R11UfloatPack32) && g_shoot_count < 40) {
             g_shoot_last_vs = vs_hash;
             char name[96];
             std::snprintf(name, sizeof(name), "tshot_%02d_%llx_%ux%u.raw", g_shoot_count++, (unsigned long long)vs_hash,

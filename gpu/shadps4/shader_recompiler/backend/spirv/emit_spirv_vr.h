@@ -20,6 +20,14 @@ bool MultiviewShaders();
 /// Whether an image of this view type is declared as a 2D array.
 bool ArrayedImage(AmdGpu::ImageType view_type);
 
+/// Per-eye buffers: guest storage buffers are declared as two-element descriptor arrays (element = the eye: the view
+/// index, or vr_eye in compute). A buffer the game builds from one eye's picture (its tiled lighting data) has a copy
+/// for the right eye there; every other binding gives the same buffer twice (video_core vr_multiview.h, EyeBufferInfo).
+bool EyeBufferArrays();
+
+/// At the start of main: each guest buffer alias points at the eye's element.
+void EyeBuffers(EmitContext& ctx);
+
 /// After the interfaces: the MultiView capability and the view index input (graphics stages).
 void Define(EmitContext& ctx);
 

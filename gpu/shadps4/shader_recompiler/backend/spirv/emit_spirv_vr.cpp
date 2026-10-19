@@ -20,6 +20,10 @@ bool ArrayedImage(AmdGpu::ImageType view_type) {
     return MultiviewShaders() && view_type == AmdGpu::ImageType::Color2D;
 }
 
+bool EyeBufferArrays() {
+    return MultiviewShaders();
+}
+
 void Define(EmitContext& ctx) {
     if (!MultiviewShaders() || ctx.sw_stage == SwStage::Compute) {
         return;
@@ -46,6 +50,47 @@ Id Layer(EmitContext& ctx) {
 }
 
 } // namespace
+
+void EyeBuffers(EmitContext& ctx) {
+    if (!EyeBufferArrays()) {
+        return;
+    }
+    // The block types as DefineBuffer made them (Sirit gives the same ids for the same declarations).
+    const auto data_type = [&](u32 alias) -> Id {
+        switch (EmitContext::PointerType(alias)) {
+        case EmitContext::PointerType::U8:
+            return ctx.U8;
+        case EmitContext::PointerType::U16:
+            return ctx.U16;
+        case EmitContext::PointerType::U32:
+            return ctx.U32[1];
+        case EmitContext::PointerType::F32:
+            return ctx.F32[1];
+        case EmitContext::PointerType::U64:
+            return ctx.U64;
+        default:
+            return Id{};
+        }
+    };
+    Id eye{};
+    for (auto& buffer : ctx.buffers) {
+        if (buffer.buffer_type != BufferType::Guest) {
+            continue;
+        }
+        for (u32 i = 0; i < buffer.aliases.size(); ++i) {
+            auto& alias = buffer.aliases[i];
+            const Id type = data_type(i);
+            if (!Sirit::ValidId(alias.id) || !Sirit::ValidId(type)) {
+                continue;
+            }
+            if (!Sirit::ValidId(eye)) {
+                eye = Layer(ctx);
+            }
+            const Id block = ctx.TypeStruct(ctx.TypeRuntimeArray(type));
+            alias.id = ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::StorageBuffer, block), alias.id, eye);
+        }
+    }
+}
 
 Id Coords(EmitContext& ctx, const EmitContext::TextureDefinition& texture, Id image, Id coords, bool integer) {
     if (!texture.vr_array) {

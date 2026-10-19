@@ -834,7 +834,11 @@ EmitContext::BufferSpv EmitContext::DefineBuffer(bool is_written, bool is_cohere
     constexpr auto storage_class = spv::StorageClass::StorageBuffer;
     const Id struct_pointer_type{TypePointer(storage_class, struct_type)};
     const Id pointer_type = TypePointer(storage_class, data_type);
-    const Id id{AddGlobalVariable(struct_pointer_type, storage_class)};
+    // VR: guest buffers are a two-eye array (emit_spirv_vr.h, EyeBuffers).
+    const bool eye_array = Vr::EyeBufferArrays() && buffer_type == BufferType::Guest;
+    const Id id{AddGlobalVariable(
+        eye_array ? TypePointer(storage_class, TypeArray(struct_type, ConstU32(2U))) : struct_pointer_type,
+        storage_class)};
     Decorate(id, spv::Decoration::Binding, binding.unified);
     Decorate(id, spv::Decoration::DescriptorSet, 0U);
     if (!is_written) {

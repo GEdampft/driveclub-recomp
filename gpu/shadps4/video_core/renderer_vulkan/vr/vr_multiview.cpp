@@ -6,10 +6,14 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
+#include "video_core/buffer_cache/buffer.h"
+#include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vr/vr_fixes.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
@@ -35,12 +39,89 @@ std::unordered_map<VkPipeline, VkPipeline> g_twins; // pipeline -> its multiview
 
 float g_shift = 0.f;     // the eyes' clip shift (left +, right -)
 bool g_writes_stereo = false; // the bindings so far write a two-layer image
-// Development (BB_VR_MONO_COMPUTE): the bindings read a two-layer image and write one-layer storage images (their
-// sizes): such a compute runs once, for the left eye, and both eyes then use its result.
-bool g_reads_stereo = false;
-std::string g_mono_writes;
-std::string g_mono_pass; // the current pass's targets when it draws one layer (BB_VR_MONO_COMPUTE)
-std::string g_stereo_reads; // the two-layer images the bindings sample (BB_VR_MONO_COMPUTE)
+// Development audit (BB_VR_AUDIT=1): which passes make one picture for both eyes out of per-eye pictures. Every
+// draw and dispatch's inputs and outputs (images by guest range, storage buffers by range) are noted; a pass that runs
+// for the left eye only (one-layer targets, a compute dispatched once) while it reads a two-layer image or something
+// such a pass wrote makes its outputs "left eye only", and a later pass for both eyes that reads one of them shows the
+// left eye's data in the right eye. Each finding is printed once per shader.
+struct AuditRes {
+    u64 address;
+    u64 size;
+    std::string name;
+};
+bool g_audit = false;
+std::vector<AuditRes> g_audit_reads, g_audit_writes, g_audit_targets;
+bool g_audit_reads_stereo = false;
+std::string g_audit_left_reads; // left-eye-only resources the bindings read
+bool g_audit_pass_stereo = false;
+std::vector<AuditRes> g_left_only; // resources written for the left eye only from per-eye inputs
+std::mutex g_audit_mutex;
+
+std::string AuditName(const VideoCore::Image& image) {
+    char text[128];
+    std::snprintf(text, sizeof(text), "%ux%u fmt %d %s at %#llx", image.info.size.width, image.info.size.height,
+                  int(image.info.pixel_format), Stereo(image) ? "2 layers" : "1 layer",
+                  (unsigned long long)image.info.guest_address);
+    return text;
+}
+
+void AuditRead(u64 address, u64 size, const std::string& name) {
+    for (const auto& res : g_left_only) {
+        if (address < res.address + res.size && res.address < address + size) {
+            g_audit_left_reads += " [" + res.name + "]";
+            return;
+        }
+    }
+    (void)name;
+}
+
+std::string AuditList(const std::vector<AuditRes>& list) {
+    std::string text;
+    for (const auto& res : list) {
+        text += " [" + res.name + "]";
+    }
+    return text;
+}
+
+// One draw or dispatch done: `per_eye` when it produced both eyes (a multiview pass, a dispatch run per eye).
+void AuditFinish(bool compute, u64 hash, bool per_eye) {
+    std::vector<AuditRes> outputs = g_audit_writes;
+    if (!compute) {
+        outputs.insert(outputs.end(), g_audit_targets.begin(), g_audit_targets.end());
+    }
+    const bool from_eyes = g_audit_reads_stereo || !g_audit_left_reads.empty();
+    static std::unordered_map<u64, bool> seen;
+    if (!per_eye && from_eyes && !outputs.empty()) {
+        for (const auto& out : outputs) {
+            std::erase_if(g_left_only, [&](const AuditRes& r) { return r.address == out.address; });
+            AuditRes marked = out;
+            char tag[32];
+            std::snprintf(tag, sizeof(tag), " (by %#llx)", (unsigned long long)hash);
+            marked.name += tag;
+            g_left_only.push_back(marked);
+        }
+        if (seen.emplace(hash ^ 1, true).second) {
+            std::printf("VR audit: ONE EYE %s %#llx writes%s from%s%s\n", compute ? "compute" : "draw vs",
+                        (unsigned long long)hash, AuditList(outputs).c_str(), AuditList(g_audit_reads).c_str(),
+                        g_audit_left_reads.empty() ? "" : (" | left-eye-only:" + g_audit_left_reads).c_str());
+            std::fflush(stdout);
+        }
+    } else {
+        for (const auto& out : outputs) {
+            std::erase_if(g_left_only, [&](const AuditRes& r) { return r.address == out.address; });
+        }
+    }
+    if (per_eye && !g_audit_left_reads.empty() && seen.emplace(hash ^ 2, true).second) {
+        std::printf("VR audit: BOTH EYES READ LEFT %s %#llx reads%s; writes%s; also reads%s\n",
+                    compute ? "compute" : "draw vs", (unsigned long long)hash, g_audit_left_reads.c_str(),
+                    AuditList(outputs).c_str(), AuditList(g_audit_reads).c_str());
+        std::fflush(stdout);
+    }
+    g_audit_reads.clear();
+    g_audit_writes.clear();
+    g_audit_reads_stereo = false;
+    g_audit_left_reads.clear();
+}
 u64 g_draw_hash = 0;        // the draw's vertex shader (BB_VR_MONO_COMPUTE)
 bool g_second_eye = false;    // the dispatch being recorded runs again for the right eye
 
@@ -60,7 +141,8 @@ const char* CacheSuffix() {
     // other per-eye sizes than 2880 (the launcher's BB_VR_EYE_RES) keep a cache of their own.
     static const std::string suffix = [] {
         const char* res = std::getenv("BB_VR_EYE_RES");
-        return res && res[0] && std::strcmp(res, "2880") != 0 ? std::string("_mv") + res : std::string("_mv");
+        // _mv2: guest buffers are per-eye arrays in the shaders (EyeBufferInfo).
+        return res && res[0] && std::strcmp(res, "2880") != 0 ? std::string("_mv2_") + res : std::string("_mv2");
     }();
     return Requested() ? suffix.c_str() : "";
 }
@@ -68,6 +150,7 @@ const char* CacheSuffix() {
 void OnDevice(VkDevice device, bool supported) {
     g_device = device;
     g_enabled = Requested() && supported;
+    g_audit = g_enabled && std::getenv("BB_VR_AUDIT") != nullptr;
     if (Requested()) {
         Log(supported ? "on" : "requested, but the device has no multiview");
     }
@@ -163,21 +246,16 @@ u16 ViewMask(const VideoCore::Image* const* images, u32 count) {
         std::printf("\n");
         std::fflush(stdout);
     }
-    static const bool mono_log = std::getenv("BB_VR_MONO_COMPUTE") != nullptr;
-    if (mono_log) {
-        g_mono_pass.clear();
-        if (!(stereo && !mono)) {
-            for (u32 i = 0; i < count; ++i) {
-                if (images[i]) {
-                    g_mono_pass += " " + std::to_string(images[i]->info.size.width) + "x" +
-                                   std::to_string(images[i]->info.size.height) + " fmt " +
-                                   std::to_string(int(images[i]->info.pixel_format)) + " backing layers " +
-                                   std::to_string(images[i]->backing ? images[i]->backing->image.image_ci.arrayLayers : 0) +
-                                   " info layers " + std::to_string(images[i]->info.resources.layers) + " at " +
-                                   std::to_string(images[i]->info.guest_address & 0xffffffffull);
-                }
+    if (g_audit) {
+        std::scoped_lock lock{g_audit_mutex};
+        g_audit_targets.clear();
+        for (u32 i = 0; i < count; ++i) {
+            if (images[i]) {
+                g_audit_targets.push_back(
+                    {images[i]->info.guest_address, images[i]->info.guest_size, AuditName(*images[i])});
             }
         }
+        g_audit_pass_stereo = stereo && !mono;
     }
     return stereo && !mono ? 0b11 : 0;
 }
@@ -264,17 +342,15 @@ void NoteImage(const VideoCore::Image& image, bool storage) {
     if (storage && Stereo(image)) {
         g_writes_stereo = true;
     }
-    static const bool mono_log = std::getenv("BB_VR_MONO_COMPUTE") != nullptr;
-    if (mono_log) {
-        if (!storage && Stereo(image)) {
-            g_reads_stereo = true;
-            char text[96];
-            std::snprintf(text, sizeof(text), " %ux%u fmt %d at %#llx", image.info.size.width, image.info.size.height,
-                          int(image.info.pixel_format), (unsigned long long)image.info.guest_address);
-            g_stereo_reads += text;
-        } else if (storage && !Stereo(image)) {
-            g_mono_writes += " " + std::to_string(image.info.size.width) + "x" + std::to_string(image.info.size.height) +
-                             " fmt " + std::to_string(int(image.info.pixel_format));
+    if (g_audit) {
+        std::scoped_lock lock{g_audit_mutex};
+        AuditRes res{image.info.guest_address, image.info.guest_size, AuditName(image)};
+        if (storage) {
+            g_audit_writes.push_back(res);
+        } else {
+            g_audit_reads_stereo |= Stereo(image);
+            AuditRead(res.address, res.size, res.name);
+            g_audit_reads.push_back(std::move(res));
         }
     }
 }
@@ -286,6 +362,114 @@ void SetDispatchHash(u64 hash) {
 
 void SetDrawHash(u64 hash) {
     g_draw_hash = hash;
+}
+
+// Per-eye buffers (vr_multiview.h): the computes that run per eye (BB_VR_EYE_COMPUTES=hex,hex to replace the list,
+// 0 for none), the buffers they write and their right-eye copies, and the binding being made.
+struct EyeBuffer {
+    u64 base;
+    u64 size;
+    u64 shadow_base; // the copy holds [shadow_base, base + size): the same alignment within 256 bytes as the guest's
+    std::unique_ptr<VideoCore::Buffer> shadow;
+};
+std::vector<EyeBuffer> g_eye_buffers;
+std::mutex g_eye_mutex;
+bool g_eye_dispatch = false; // the dispatch being recorded writes a per-eye buffer
+thread_local struct {
+    u64 address, size, adjust;
+    bool valid;
+} t_eye_binding{};
+
+bool EyeCompute(u64 hash) {
+    static const std::vector<u64> list = [] {
+        std::vector<u64> out{0x409b1cc4, 0x7ceec0f3}; // the tiled lighting's light data (depth, normals)
+        if (const char* v = std::getenv("BB_VR_EYE_COMPUTES")) {
+            out.clear();
+            for (const char* p = v; *p;) {
+                char* end = nullptr;
+                const u64 value = std::strtoull(p, &end, 16);
+                if (value) {
+                    out.push_back(value);
+                }
+                p = (*end == ',') ? end + 1 : end;
+                if (end == p && *p) {
+                    break;
+                }
+            }
+        }
+        return out;
+    }();
+    return std::find(list.begin(), list.end(), hash) != list.end();
+}
+
+void NoteBuffer(u64 address, u64 size, bool written, u64 adjust) {
+    t_eye_binding = {address, size, adjust, true};
+    if (g_enabled && written && size && EyeCompute(g_dispatch_hash)) {
+        std::scoped_lock lock{g_eye_mutex};
+        const bool known = std::any_of(g_eye_buffers.begin(), g_eye_buffers.end(), [&](const EyeBuffer& e) {
+            return address >= e.base && address + size <= e.base + e.size;
+        });
+        if (!known) {
+            g_eye_buffers.push_back({address, size, address & ~u64{0xff}, nullptr});
+            std::printf("VR multiview: per-eye buffer %#llx+%#llx (compute %#llx)\n", (unsigned long long)address,
+                        (unsigned long long)size, (unsigned long long)g_dispatch_hash);
+            std::fflush(stdout);
+        }
+        g_eye_dispatch = true;
+    }
+    if (!g_audit) {
+        return;
+    }
+    std::scoped_lock lock{g_audit_mutex};
+    char text[64];
+    std::snprintf(text, sizeof(text), "buffer %#llx+%#llx", (unsigned long long)address, (unsigned long long)size);
+    if (written) {
+        g_audit_writes.push_back({address, size, text});
+    } else {
+        AuditRead(address, size, text);
+    }
+}
+
+u32 BufferDescriptors(bool special) {
+    return Requested() && !special ? 2 : 1;
+}
+
+u32 ExtraDescriptors(std::span<const vk::DescriptorSetLayoutBinding> bindings) {
+    u32 extra = 0;
+    for (const auto& binding : bindings) {
+        if (binding.descriptorType == vk::DescriptorType::eStorageBuffer && binding.descriptorCount > 1) {
+            extra += binding.descriptorCount - 1;
+        }
+    }
+    return extra;
+}
+
+std::optional<vk::DescriptorBufferInfo> EyeBufferInfo(const Instance& instance, Runtime& runtime, bool special,
+                                                      const vk::DescriptorBufferInfo& first) {
+    const auto binding = std::exchange(t_eye_binding, {});
+    if (!Requested() || special) {
+        return std::nullopt;
+    }
+    vk::DescriptorBufferInfo second = first;
+    if (!g_enabled || !binding.valid || !first.buffer) {
+        return second;
+    }
+    std::scoped_lock lock{g_eye_mutex};
+    for (auto& e : g_eye_buffers) {
+        if (binding.address < e.base || binding.address + binding.size > e.base + e.size) {
+            continue;
+        }
+        if (!e.shadow) {
+            const u64 bytes = e.base + e.size - e.shadow_base;
+            e.shadow = std::make_unique<VideoCore::Buffer>(instance, 0, bytes, VideoCore::MemoryType::DeviceLocal,
+                                                           "VR right eye buffer");
+            runtime.FillBuffer(e.shadow.get(), 0, bytes, 0);
+        }
+        second.buffer = e.shadow->Handle();
+        second.offset = binding.address - e.shadow_base - binding.adjust;
+        break;
+    }
+    return second;
 }
 
 std::span<const vk::BufferImageCopy> StereoUploads(const VideoCore::Image& dst,
@@ -313,16 +497,12 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
     out.vr_eye = 0;
     if (compute) {
         out.vr_shift = {0.f, 0.f};
-        g_second_eye = g_writes_stereo;
-        static std::unordered_map<u64, bool> mono_seen;
-        if (g_reads_stereo && !g_writes_stereo && !g_mono_writes.empty() &&
-            mono_seen.emplace(g_dispatch_hash, true).second) {
-            std::printf("VR multiview: compute %#llx reads both eyes, writes one-layer images only:%s\n",
-                        (unsigned long long)g_dispatch_hash, g_mono_writes.c_str());
-            std::fflush(stdout);
+        g_second_eye = g_writes_stereo || g_eye_dispatch; // a per-eye buffer: the right eye's dispatch writes its copy
+        if (g_audit) {
+            std::scoped_lock lock{g_audit_mutex};
+            AuditFinish(true, g_dispatch_hash, g_second_eye);
         }
-        g_reads_stereo = false;
-        g_mono_writes.clear();
+        g_dispatch_hash = 0; // draws bind with no compute's hash (EyeCompute)
         static const bool log = std::getenv("BB_VR_HASHES") != nullptr;
         static std::unordered_map<u64, bool> seen;
         if (log && seen.emplace(g_dispatch_hash ^ (u64(g_second_eye) << 63), true).second) {
@@ -332,18 +512,11 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
         }
     } else {
         out.vr_shift = {g_shift, -g_shift};
-        static std::unordered_map<std::string, bool> mono_draw_seen;
-        if (g_reads_stereo && !g_mono_pass.empty() &&
-            mono_draw_seen.emplace(g_mono_pass + std::to_string(g_draw_hash), true).second) {
-            std::printf("VR multiview: a one-layer pass samples both eyes' images (drawn for the left eye only):%s; vs "
-                        "%#llx reads%s\n",
-                        g_mono_pass.c_str(), (unsigned long long)g_draw_hash, g_stereo_reads.c_str());
-            std::fflush(stdout);
+        if (g_audit) {
+            std::scoped_lock lock{g_audit_mutex};
+            AuditFinish(false, g_draw_hash, g_audit_pass_stereo);
         }
     }
-    g_reads_stereo = false;
-    g_mono_writes.clear();
-    g_stereo_reads.clear();
     g_writes_stereo = false;
     return out;
 }
@@ -356,13 +529,27 @@ void SecondEye(Scheduler& scheduler, vk::PipelineLayout layout, const Shader::Pu
     Shader::PushData right = push_data;
     right.vr_shift = {0.f, 0.f};
     right.vr_eye = 1;
+    // The right eye's copies of per-eye buffers are not tracked by the buffer cache: their reads before and after.
+    const bool eye_buffers = std::exchange(g_eye_dispatch, false);
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+        const vk::MemoryBarrier2 barrier{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eShaderRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstAccessMask = vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eShaderRead,
+        };
+        if (eye_buffers) {
+            cmdbuf.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &barrier});
+        }
         cmdbuf.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0u, sizeof(right), &right);
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         if (indirect) {
             cmdbuf.dispatchIndirect(indirect, indirect_offset);
         } else {
             cmdbuf.dispatch(x, y, z);
+        }
+        if (eye_buffers) {
+            cmdbuf.pipelineBarrier2(vk::DependencyInfo{.memoryBarrierCount = 1, .pMemoryBarriers = &barrier});
         }
     });
 }

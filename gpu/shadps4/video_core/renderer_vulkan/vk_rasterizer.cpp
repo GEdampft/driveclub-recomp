@@ -2494,6 +2494,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 push_data.AddOffset(binding.buffer, adjust);
                 buffer_infos.emplace_back(buffer->Handle(), offset_aligned, size + adjust);
                 bound_buffers.emplace_back(buffer, offset, size, desc.is_written);
+                Vr::Multiview::NoteBuffer(vsharp.base_address, size, desc.is_written, adjust); // VR
                 if (desc.is_written) {
                     // Raw storage-buffer writes can also make an aliased cached image stale.
                     texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);
@@ -2509,6 +2510,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         set_write.descriptorCount = 1;
         set_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         set_write.pBufferInfo = &buffer_infos.back();
+        Vr::Multiview::EyeBufferWrite(instance, runtime, desc.IsSpecial(), set_write, buffer_infos); // VR: per eye
         ++binding.buffer;
     }
 }

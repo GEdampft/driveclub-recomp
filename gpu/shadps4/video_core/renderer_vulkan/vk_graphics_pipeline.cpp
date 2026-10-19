@@ -512,7 +512,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             bindings.push_back({
                 .binding = binding++,
                 .descriptorType = vk::DescriptorType::eStorageBuffer,
-                .descriptorCount = 1,
+                .descriptorCount = Vr::Multiview::BufferDescriptors(buffer.IsSpecial()), // VR: per eye
                 .stageFlags = stage_bit,
             });
         }
@@ -536,7 +536,7 @@ void GraphicsPipeline::BuildDescSetLayout(bool preloading) {
             });
         }
     }
-    uses_push_descriptors = binding < instance.MaxPushDescriptors();
+    uses_push_descriptors = binding + Vr::Multiview::ExtraDescriptors(bindings) < instance.MaxPushDescriptors(); // VR
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                            : vk::DescriptorSetLayoutCreateFlagBits{};

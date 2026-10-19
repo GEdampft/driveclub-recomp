@@ -17,6 +17,7 @@ void EmitPrologue(EmitContext& ctx) {
         ctx.DefineWorkgroupIndex();
     }
     ctx.DefineBufferProperties();
+    Vr::EyeBuffers(ctx); // VR: the eye's copy of each guest buffer
 }
 
 void ConvertDepthMode(EmitContext& ctx) {

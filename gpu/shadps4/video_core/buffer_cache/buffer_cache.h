@@ -115,6 +115,10 @@ public:
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
+    /// VR fork (small_writeback.cpp): small GPU writes reach guest memory with readbacks off.
+    void NoteSmallGpuWrite(VAddr device_addr, u64 size);
+    void WriteBackSmallWrites();
+
 private:
     struct ArenaBinds {
         const Buffer* arena;

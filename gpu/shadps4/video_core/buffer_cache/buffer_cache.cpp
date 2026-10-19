@@ -683,6 +683,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     if (is_written) {
         gpu_modified_ranges.Add(device_addr, size);
         StampGpuWrite(device_addr, size);
+        NoteSmallGpuWrite(device_addr, size); // VR fork: small_writeback.cpp
     }
     return {arena, arena->Offset(device_addr)};
 }

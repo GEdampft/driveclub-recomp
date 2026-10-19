@@ -1201,7 +1201,7 @@ std::wstring StartGame() {
     // VR fork: both eyes rendered (multiview); the headset's own thread shows the newest frame at the headset's rate,
     // so the game runs unpaced (the deltatime patch keeps its speed right).
     SetEnvironmentVariableW(L"BB_VR", L"1");
-    SetEnvironmentVariableW(L"BB_VR_STEREO", L"mv");
+    if (GetEnvironmentVariableW(L"BB_VR_STEREO", nullptr, 0) == 0) SetEnvironmentVariableW(L"BB_VR_STEREO", L"mv");
     // The shader cache follows the render size (one shader holds it).
     SetEnvironmentVariableW(L"BB_VR_EYE_RES", std::to_wstring(VrRender()).c_str());
     // DLSS per eye (DriveAA): DLAA at the eye size, or upscaling from the render size to it.

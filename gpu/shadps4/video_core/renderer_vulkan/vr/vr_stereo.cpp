@@ -442,6 +442,15 @@ void NoteMainCamera(const float* constants) {
     }
     last = {position[0], position[1], position[2]};
     have = true;
+    // Development (BB_VR_CAM_FILE=path): the camera's position every 4th frame, for test drivers.
+    static const char* cam_file = std::getenv("BB_VR_CAM_FILE");
+    static u32 cam_frames = 0;
+    if (cam_file && (cam_frames++ & 3) == 0) {
+        if (FILE* file = std::fopen(cam_file, "w")) {
+            std::fprintf(file, "%.2f %.2f %.2f %u\n", position[0], position[1], position[2], cam_frames);
+            std::fclose(file);
+        }
+    }
 }
 
 } // namespace

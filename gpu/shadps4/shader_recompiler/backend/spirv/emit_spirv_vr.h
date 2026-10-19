@@ -12,6 +12,10 @@
 
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 
+namespace Shader::IR {
+struct Program;
+}
+
 namespace Shader::Backend::SPIRV::Vr {
 
 /// Multiview shaders are compiled (BB_VR_STEREO=mv; fixed for the session).
@@ -39,6 +43,12 @@ Id Coords(EmitContext& ctx, const EmitContext::TextureDefinition& texture, Id im
 /// vr_shift[view] when w is not 1 (perspective geometry: the player's view in a main-view pass; full-screen passes draw
 /// at w = 1 and stay put).
 void Epilogue(EmitContext& ctx);
+
+/// Before emission: a hardware vertex shader's outputs that hold the position's x / w (times a constant, plus one), the
+/// screen position deferred light volumes pass on to find their pixel in the G-buffer. The epilogue moves them with the
+/// shifted position (vr_shift[view] / w); otherwise each eye lights the G-buffer shift / w away from the pixel (the
+/// cockpit's lights land in different places per eye).
+void ScanScreenParams(const IR::Program& program);
 
 /// Geometry shaders: the same shift for each vertex they emit.
 void BeforeEmitVertex(EmitContext& ctx);

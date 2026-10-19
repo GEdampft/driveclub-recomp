@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // VR (dcport-vr): see emit_spirv_vr.h.
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include "shader_recompiler/backend/spirv/emit_spirv_vr.h"
+#include "shader_recompiler/ir/program.h"
 
 namespace Shader::Backend::SPIRV::Vr {
 
@@ -116,7 +119,124 @@ Id Coords(EmitContext& ctx, const EmitContext::TextureDefinition& texture, Id im
 
 namespace {
 
-// The position's x plus vr_shift[view] when w is not 1, in multiview pipelines (specialisation constant 200).
+// ScanScreenParams' result for the shader being emitted (one shader per thread at a time).
+struct ScreenParam {
+    u32 index;   // output parameter
+    u32 element; // its component
+    float scale; // the output is scale * x / w + a constant
+};
+thread_local std::vector<ScreenParam> t_screen_params;
+
+IR::Inst* Resolve(const IR::Value& value) {
+    return value.IsImmediate() ? nullptr : value.TryInst();
+}
+
+// a / b as a * (1 / b) or a / b: {a, b}, else nulls.
+std::pair<IR::Inst*, IR::Inst*> Divide(IR::Inst* inst) {
+    if (!inst) {
+        return {};
+    }
+    if (inst->GetOpcode() == IR::Opcode::FPDiv32) {
+        return {Resolve(inst->Arg(0)), Resolve(inst->Arg(1))};
+    }
+    if (inst->GetOpcode() != IR::Opcode::FPMul32) {
+        return {};
+    }
+    for (int i = 0; i < 2; ++i) {
+        IR::Inst* recip = Resolve(inst->Arg(1 - i));
+        if (recip && recip->GetOpcode() == IR::Opcode::FPRecip32) {
+            return {Resolve(inst->Arg(i)), Resolve(recip->Arg(0))};
+        }
+    }
+    return {};
+}
+
+// `inst` as scale * (a / b) + c with constant scale and c: the divide and the scale.
+std::pair<IR::Inst*, float> ScaledDivide(IR::Inst* inst) {
+    if (!inst) {
+        return {};
+    }
+    if (Divide(inst).first) {
+        return {inst, 1.f};
+    }
+    const auto op = inst->GetOpcode();
+    if (op == IR::Opcode::FPMul32 || op == IR::Opcode::FPFma32) {
+        for (int i = 0; i < 2; ++i) {
+            IR::Inst* div = Resolve(inst->Arg(i));
+            const IR::Value other = inst->Arg(1 - i);
+            if (Divide(div).first && other.IsImmediate() &&
+                (op == IR::Opcode::FPMul32 || inst->Arg(2).IsImmediate())) {
+                return {div, other.F32()};
+            }
+        }
+    } else if (op == IR::Opcode::FPAdd32) {
+        for (int i = 0; i < 2; ++i) {
+            if (inst->Arg(1 - i).IsImmediate()) {
+                return ScaledDivide(Resolve(inst->Arg(i)));
+            }
+        }
+    }
+    return {};
+}
+
+} // namespace
+
+void ScanScreenParams(const IR::Program& program) {
+    t_screen_params.clear();
+    const Info& info = program.info;
+    if (!MultiviewShaders() || info.hw_stage != HwStage::Vertex || info.sw_stage != SwStage::Vertex) {
+        return;
+    }
+    IR::Inst* pos[4]{};
+    std::vector<std::pair<const IR::Inst*, IR::Inst*>> params; // (store, value) of each output parameter
+    for (const IR::Block* block : program.blocks) {
+        for (const IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != IR::Opcode::SetAttribute) {
+                continue;
+            }
+            const IR::Attribute attr = inst.Arg(0).Attribute();
+            const u32 element = inst.Arg(2).U32();
+            if (attr == IR::Attribute::Position0 && element < 4) {
+                pos[element] = Resolve(inst.Arg(1));
+            } else if (IR::IsParam(attr)) {
+                params.emplace_back(&inst, Resolve(inst.Arg(1)));
+            }
+        }
+    }
+    if (!pos[0] || !pos[3]) {
+        return;
+    }
+    std::vector<ScreenParam> found;
+    u32 others = 0; // outputs divided by something else (view rays, another frame's position)
+    for (const auto& [store, value] : params) {
+        const auto [div, scale] = ScaledDivide(value);
+        if (!div) {
+            continue;
+        }
+        const auto [a, b] = Divide(div);
+        others += b != pos[3];
+        if (b == pos[3] && a == pos[0]) {
+            found.push_back({u32(store->Arg(0).Attribute()) - u32(IR::Attribute::Param0), store->Arg(2).U32(), scale});
+        }
+    }
+    static const bool off = std::getenv("BB_VR_NO_SCREEN_PARAMS") != nullptr; // development: A/B
+    if (off) {
+        return;
+    }
+    static const bool log = std::getenv("BB_VR_LOG_SCREEN_PARAMS") != nullptr;
+    if (log && !found.empty()) {
+        std::printf("VR screen params: vs %#llx param %u.%u scale %g (%zu; %u other divides)\n",
+                    (unsigned long long)info.pgm_hash, found[0].index, found[0].element, found[0].scale, found.size(),
+                    others);
+        std::fflush(stdout);
+    }
+    t_screen_params = std::move(found);
+}
+
+namespace {
+
+// The position's x plus vr_shift[view] when w is not 1, in multiview pipelines (specialisation constant 200); outputs
+// holding x / w (ScanScreenParams) plus scale * vr_shift[view] / w.
 void ShiftPosition(EmitContext& ctx) {
     const Id pointer = ctx.TypePointer(spv::StorageClass::PushConstant, ctx.F32[1]);
     const Id shift = ctx.OpLoad(ctx.F32[1], ctx.OpAccessChain(pointer, ctx.push_data_block,
@@ -134,7 +254,21 @@ void ShiftPosition(EmitContext& ctx) {
     const Id perspective =
         ctx.OpLogicalAnd(ctx.U1[1], multiview, ctx.OpFOrdNotEqual(ctx.U1[1], w, ctx.ConstF32(1.f)));
     const Id x = ctx.OpLoad(ctx.F32[1], x_pointer);
-    ctx.OpStore(x_pointer, ctx.OpFAdd(ctx.F32[1], x, ctx.OpSelect(ctx.F32[1], perspective, shift, ctx.f32_zero_value)));
+    const Id eye_shift = ctx.OpSelect(ctx.F32[1], perspective, shift, ctx.f32_zero_value);
+    ctx.OpStore(x_pointer, ctx.OpFAdd(ctx.F32[1], x, eye_shift));
+    if (ctx.sw_stage != SwStage::Vertex) {
+        return;
+    }
+    for (const ScreenParam& param : t_screen_params) {
+        const auto& out = ctx.output_params.at(param.index);
+        if (!Sirit::ValidId(out.id) || param.element >= out.num_components) {
+            continue;
+        }
+        const Id pointer =
+            out.num_components == 1 ? out.id : ctx.OpAccessChain(out.pointer_type, out.id, ctx.ConstU32(param.element));
+        const Id moved = ctx.OpFMul(ctx.F32[1], ctx.OpFDiv(ctx.F32[1], eye_shift, w), ctx.ConstF32(param.scale));
+        ctx.OpStore(pointer, ctx.OpFAdd(ctx.F32[1], ctx.OpLoad(ctx.F32[1], pointer), moved));
+    }
 }
 
 } // namespace

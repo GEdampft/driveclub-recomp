@@ -18,6 +18,7 @@
 
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vr/vr_camera.h"
+#include "video_core/renderer_vulkan/vr/vr_user_config.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
 #include "video_core/renderer_vulkan/vr/vr_dev.h"
 #include "video_core/renderer_vulkan/vr/vr_openxr.h"
@@ -805,7 +806,8 @@ void EndFrame() {
         layers[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);
         layer_count = 1;
         {
-            // The HUD: a screen 1.4 m wide, 1.1 m ahead of the seat (the recentred origin), level, over the scene.
+            // Configurable HUD quad, relative to the recentered seat.
+            const auto& cfg = UserConfig::Get();
             hud.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
             hud.space = g.local_space;
             hud.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -813,9 +815,10 @@ void EndFrame() {
             hud.subImage.imageRect = {{0, 0}, {s32(g.hud_chain.width), s32(g.hud_chain.height)}};
             const float yaw = g.reference_yaw;
             hud.pose.orientation = {0.f, std::sin(yaw * 0.5f), 0.f, std::cos(yaw * 0.5f)};
-            hud.pose.position = {g.reference_position.x - 1.1f * std::sin(yaw), g.reference_position.y,
-                                 g.reference_position.z - 1.1f * std::cos(yaw)};
-            hud.size = {1.4f, 1.4f / Camera::ScreenAspect()}; // the HUD's canvas, whatever the render's shape
+            hud.pose.position = {g.reference_position.x - cfg.hud_distance * std::sin(yaw),
+                                 g.reference_position.y + cfg.hud_height,
+                                 g.reference_position.z - cfg.hud_distance * std::cos(yaw)};
+            hud.size = {cfg.hud_width, cfg.hud_width / Camera::ScreenAspect()}; // configurable HUD canvas
             layers[1] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&hud);
             layer_count = 2;
         }

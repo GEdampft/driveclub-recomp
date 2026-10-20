@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <string>
@@ -142,8 +143,9 @@ struct State {
     // The latest publications, newest first (under publish_mutex): the headset shows the newest whose GPU work is
     // done. Stereo slots are four, so three publications are still intact; screen images three, so two.
     std::array<Published, 3> recent{};
+    std::condition_variable publish_cv; // a new publication (SubmitFrame), for the headset's wait (WaitForGameFrame)
     // The headset's loop, per report: time in xrWaitFrame, xrBeginFrame (with the frame lock), Show, xrEndFrame.
-    std::array<double, 4> stage_sum{}, stage_max{};
+    std::array<double, 5> stage_sum{}, stage_max{}; // [4]: the wait for the game's frame (VR fork)
     // Show's parts (stereo): acquire the three swapchain images, wait for a command buffer, record + submit, release.
     std::array<double, 5> part_sum{}, part_max{};
     // The adaptive frame cap (FramePeriod): the headset's period (ns, from xrWaitFrame) and the game's flips.
@@ -623,9 +625,10 @@ void NoteFrameTime() {
         new_frames / sum, headset_fps, 1.0 / p99, 100.0 * over / double(g.intervals.size()),
         100.0 * late / double(g.intervals.size()), 1.0 / period, g.repeats, g.screens);
     const double n = double(g.intervals.size());
-    Log("headset loop ms (avg / max): wait frame %.2f / %.1f, begin %.2f / %.1f, show %.2f / %.1f, end frame %.2f / %.1f",
-        g.stage_sum[0] / n, g.stage_max[0], g.stage_sum[1] / n, g.stage_max[1], g.stage_sum[2] / n, g.stage_max[2],
-        g.stage_sum[3] / n, g.stage_max[3]);
+    Log("headset loop ms (avg / max): wait frame %.2f / %.1f, game frame %.2f / %.1f, begin %.2f / %.1f, show %.2f / "
+        "%.1f, end frame %.2f / %.1f",
+        g.stage_sum[0] / n, g.stage_max[0], g.stage_sum[4] / n, g.stage_max[4], g.stage_sum[1] / n, g.stage_max[1],
+        g.stage_sum[2] / n, g.stage_max[2], g.stage_sum[3] / n, g.stage_max[3]);
     Log("show parts ms (sum over the report / max): acquire %.0f / %.1f, command buffer %.0f / %.1f, record %.0f / %.1f, "
         "submit %.0f / %.1f, release %.0f / %.1f", g.part_sum[0], g.part_max[0], g.part_sum[1], g.part_max[1],
         g.part_sum[2], g.part_max[2], g.part_sum[4], g.part_max[4], g.part_sum[3], g.part_max[3]);
@@ -841,6 +844,37 @@ bool Finished(const State::Published& p) {
            value >= p.tick;
 }
 
+// The headset's thread, after xrWaitFrame: waits (up to 100 ms) for the game's next publication and its GPU work, so a
+// slow game frame makes the headset frame late and the runtime sees the drop (SteamVR's frame timing, its reprojection
+// and motion smoothing). Before, the loop submitted the last frame again on time: SteamVR always reported the full
+// rate. The 100 ms limit keeps the headset fed through loading screens. BB_VR_REPEAT=1: the old way.
+void WaitForGameFrame() {
+    static const bool repeat = std::getenv("BB_VR_REPEAT") && std::getenv("BB_VR_REPEAT")[0] == '1';
+    if (repeat) {
+        return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    State::Published newest;
+    {
+        std::unique_lock lock{g.publish_mutex};
+        if (!g.publish_cv.wait_until(lock, deadline, [] {
+                return g.quit.load() || (g.recent[0].kind != State::Content::None && g.recent[0].serial > g.shown_serial);
+            })) {
+            return;
+        }
+        newest = g.recent[0];
+    }
+    const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - std::chrono::steady_clock::now());
+    if (!newest.semaphore || left.count() <= 0) {
+        return;
+    }
+    VkSemaphoreWaitInfo info{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    info.semaphoreCount = 1;
+    info.pSemaphores = &newest.semaphore;
+    info.pValues = &newest.tick;
+    VULKAN_HPP_DEFAULT_DISPATCHER.vkWaitSemaphores(g.device, &info, u64(left.count()));
+}
+
 void FrameLoop() {
     while (!g.quit) {
         PollEvents();
@@ -868,6 +902,14 @@ void FrameLoop() {
             g.display_period_ns.store(u64(g.frame_state.predictedDisplayPeriod), std::memory_order_relaxed);
         }
         g.flip_token.store(true, std::memory_order_relaxed); // one game flip per headset frame (while capped)
+        // VR fork: the head for this frame's display time before the wait, so the game's next frame renders with it.
+        UpdateHead();
+        if (float pose[7], tangents[4]; Multiview::Enabled() && Camera::LastRendered(pose, tangents)) {
+            // An eye half the eye distance to the side moves clip x by P00 x that distance (left eye: surfaces right).
+            Multiview::SetShift(2.f / (tangents[1] - tangents[0]) * 0.5f * StereoBaseline());
+        }
+        WaitForGameFrame(); // VR fork: late when the game is (the runtime sees the dropped frame)
+        stage(4, since);
         std::scoped_lock frame_lock{g.frame_mutex};
         {
             QueueLock lock;
@@ -877,11 +919,6 @@ void FrameLoop() {
             }
         }
         stage(1, since);
-        UpdateHead();
-        if (float pose[7], tangents[4]; Multiview::Enabled() && Camera::LastRendered(pose, tangents)) {
-            // An eye half the eye distance to the side moves clip x by P00 x that distance (left eye: surfaces right).
-            Multiview::SetShift(2.f / (tangents[1] - tangents[0]) * 0.5f * StereoBaseline());
-        }
         std::array<State::Published, 3> recent;
         {
             std::scoped_lock lock{g.publish_mutex};
@@ -1142,6 +1179,7 @@ void SubmitFrame(VkSemaphore semaphore, u64 tick) {
     }
     g.recent[0] = g.published;
     g.pending = {};
+    g.publish_cv.notify_all(); // VR fork: the headset's WaitForGameFrame
 }
 
 } // namespace Vulkan::Vr

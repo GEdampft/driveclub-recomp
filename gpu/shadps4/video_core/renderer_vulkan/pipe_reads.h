@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // VR fork: guest memory the draw recording thread (stage B, vk_draw_pipe.h) reads directly, per packet still in
-// flight: buffers the GPU command thread did not copy into the constant ring, indirect arguments, and anything for
-// packets whose reads are not known (tasks, special draws). A guest write by the GPU command thread (the constant
-// engine's DumpConstRam, ~80k per second) only waits for stage B when it overlaps one of these; before, every dump
-// drained the pipe (stage A waited 35-40% of the time at 1080 per eye).
+// flight: buffers the GPU command thread did not copy into the constant ring, vertex and index buffers, and anything
+// for packets whose reads are not known (tasks, special and indirect draws). A guest write by the GPU command thread
+// (the constant engine's DumpConstRam, ~80k per second) only waits for stage B when it overlaps one of these; before,
+// every dump drained the pipe (stage A waited 35-40% of the time at 1080 per eye).
 
 #pragma once
 

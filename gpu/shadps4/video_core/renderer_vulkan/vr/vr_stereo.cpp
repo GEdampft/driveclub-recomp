@@ -588,6 +588,14 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
     const u64 vs_hash = vs.pgm_hash;
     Multiview::SetDrawHash(vs_hash);
     const int targets = std::popcount(key.mrt_mask);
+    // DRAWLOG: multi-target draws too (the G-buffer passes), marked "mrt N".
+    if (targets >= 2 && g_log_draws.load(std::memory_order_relaxed) > 0 && g_log_draws.fetch_sub(1) > 0 && color_id) {
+        const auto& image = texture_cache.GetImage(color_id);
+        std::printf("VR draws: vs %#llx ps %#llx target %ux%u format %d at %#llx mrt %d\n",
+                    (unsigned long long)vs_hash, (unsigned long long)key.stage_hashes[0], image.info.size.width,
+                    image.info.size.height, int(image.info.pixel_format), (unsigned long long)image.info.guest_address,
+                    targets);
+    }
     if (targets >= 3) {
         if (g_find_camera > 0) {
             FindCamera(vs);

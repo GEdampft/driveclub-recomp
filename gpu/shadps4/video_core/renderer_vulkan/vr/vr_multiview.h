@@ -27,6 +27,8 @@ struct ImageInfo;
 struct ImageViewInfo;
 } // namespace VideoCore
 
+#include <filesystem>
+
 namespace Vulkan {
 class Instance;
 class Runtime;
@@ -40,6 +42,11 @@ bool Enabled();
 
 /// The pipeline cache directory's suffix: multiview shaders are cached apart ("_mv").
 const char* CacheSuffix();
+
+/// Before the pipeline cache directory `path` (the shared one, CacheSuffix) is created: the fullest cache of
+/// the per-size layout (_mv5, _mv5_<size>) becomes it, renamed (its shaders are the same at every size), so the change
+/// costs no recompiling.
+void SeedCache(const std::filesystem::path& path);
 
 /// Device creation: whether the device has (and now enables) multiview.
 void OnDevice(VkDevice device, bool supported);

@@ -15,6 +15,10 @@ namespace Vulkan::Vr::Fixes {
 /// patches change). The "depth bug" of the community resolution patches.
 void PatchShader(u64 hash, std::vector<u32>& spirv);
 
+/// The disk cache stores this shader's SPIR-V: not the one PatchShader gives the render size (compiled again in each
+/// run, at first use, when the size is known), so one cache serves every eye size.
+bool Cacheable(u64 hash);
+
 /// The game's render size (eboot 0x16d0544/0x16d0554); false if unreadable.
 bool RenderSize(u32& width, u32& height);
 

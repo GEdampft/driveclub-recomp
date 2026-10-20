@@ -186,47 +186,14 @@ bool Enabled() {
 }
 
 const char* CacheSuffix() {
-    // One cache for every per-eye size: the shader that holds the render size (Fixes::PatchShader) is not stored
-    // (Fixes::Cacheable). Before (_mv5), each size had a cache of its own, and a size played for the first time
-    // stuttered through ~150 compiles a second wherever the game showed something new.
-    // _mv5: guest buffers are per-eye arrays in the shaders (EyeBufferInfo); view-dependent outputs move with the eye.
-    // _mv6: shared by all sizes.
-    return Requested() ? "_mv6" : "";
-}
-
-void SeedCache(const std::filesystem::path& path) {
-    std::error_code error;
-    if (!Requested() || std::filesystem::exists(path, error)) {
-        return;
-    }
-    const std::string name = path.filename().string();
-    const std::string serial = name.substr(0, name.rfind("_mv"));
-    // The fullest one (most cached shaders and pipelines): the size played most.
-    std::filesystem::path newest;
-    size_t newest_entries = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(path.parent_path(), error)) {
-        const std::string other = entry.path().filename().string();
-        if (!entry.is_directory(error) || (other != serial + "_mv5" && other.rfind(serial + "_mv5_", 0) != 0)) {
-            continue;
-        }
-        size_t entries = 0;
-        for (auto it = std::filesystem::directory_iterator(entry.path(), error);
-             it != std::filesystem::directory_iterator(); it.increment(error)) {
-            ++entries;
-        }
-        if (entries > newest_entries) {
-            newest = entry.path();
-            newest_entries = entries;
-        }
-    }
-    if (newest.empty()) {
-        return;
-    }
-    std::filesystem::rename(newest, path, error);
-    char text[512];
-    std::snprintf(text, sizeof(text), "pipeline cache %s (%zu files) now serves every eye size (renamed to %s%s)",
-                  newest.filename().string().c_str(), newest_entries, name.c_str(), error ? ", failed" : "");
-    Log(text);
+    // The cache opens before the game's render size can be read, and one shader holds that size (Fixes::PatchShader):
+    // other per-eye sizes than 2880 (the launcher's BB_VR_EYE_RES) keep a cache of their own.
+    static const std::string suffix = [] {
+        const char* res = std::getenv("BB_VR_EYE_RES");
+        // _mv5: guest buffers are per-eye arrays in the shaders (EyeBufferInfo); view-dependent outputs move with the eye.
+        return res && res[0] && std::strcmp(res, "2880") != 0 ? std::string("_mv5_") + res : std::string("_mv5");
+    }();
+    return Requested() ? suffix.c_str() : "";
 }
 
 void OnDevice(VkDevice device, bool supported) {

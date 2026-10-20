@@ -10,7 +10,6 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
-#include "video_core/renderer_vulkan/vr/vr_fixes.h" // VR fork
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
@@ -89,7 +88,7 @@ void RegisterShaderMeta(const Shader::Info& info,
 }
 
 void RegisterShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx) {
-    if (!Storage::DataBase::Instance().IsOpened() || !Vr::Fixes::Cacheable(pgm_hash)) { // VR fork: size-patched
+    if (!Storage::DataBase::Instance().IsOpened()) {
         return;
     }
 

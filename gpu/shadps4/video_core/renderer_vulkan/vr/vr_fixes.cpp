@@ -44,10 +44,6 @@ bool RenderSize(u32& width, u32& height) {
     return width >= 64 && height >= 64 && width <= 16384 && height <= 16384;
 }
 
-bool Cacheable(u64 hash) {
-    return hash != 0x2d9c66a5ULL;
-}
-
 void PatchShader(u64 hash, std::vector<u32>& spirv) {
     static const bool off = std::getenv("BB_VR_NO_FIXES") != nullptr; // development: A/B
     if (hash != 0x2d9c66a5ULL || off) {

@@ -113,7 +113,6 @@ void DataBase::Open() {
     } else {
         cache_path = GetUserPath(PathType::CacheDir) /
                      (std::string{game_info.GameSerial()} + Vulkan::Vr::Multiview::CacheSuffix()); // VR
-        Vulkan::Vr::Multiview::SeedCache(cache_path); // VR fork: the per-size caches before _mv6
         if (!std::filesystem::exists(cache_path)) {
             std::filesystem::create_directories(cache_path);
         }

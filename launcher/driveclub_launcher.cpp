@@ -49,6 +49,7 @@ const Color kBg(255, 16, 18, 22), kCard(255, 24, 27, 33), kCardLine(255, 38, 42,
     kWarn(255, 240, 170, 60), kBad(255, 240, 96, 84);
 
 constexpr float kMargin = 24.f, kGap = 18.f, kHeaderH = 92.f, kFooterH = 96.f, kPad = 22.f, kTitleH = 44.f;
+constexpr float kTabH = 46.f;  // the row of tabs under the header: one group of cards at a time
 constexpr float kWinW = 960.f;
 
 // ------------------------------------------------------------------------------------------
@@ -72,6 +73,7 @@ struct Card {
   const wchar_t* title;
   std::vector<int> ctls;
   int column;
+  int tab = 0;  // the tab whose page this card is on (kTab*)
   const wchar_t* note = nullptr;
   float note_h = 0;  // the note's height at the current column width (LayoutPass)
   RectF rect{};
@@ -102,6 +104,18 @@ float g_scroll = 0;          // pixels the content is scrolled up when the windo
 float g_natural_h = 0;       // the height the content needs
 float g_row_extra = 0;       // extra space given to every row when the window is taller than the content
 int g_hover_ctl = -1, g_hover_seg = -1, g_hover_btn = -1, g_hover_browse = -1, g_press_btn = -1;
+int g_hover_tab = -1;
+
+// The cards are split over tabs so a page holds what belongs together and needs no scrolling.
+enum { kTabGraphics, kTabGameplay, kTabBench, kTabCount };
+const wchar_t* const kTabName[kTabCount] = {L"Graphics", L"Gameplay", L"Benchmark"};
+const wchar_t* const kTabHint[kTabCount] = {
+    L"Frame rate, the sizes the game draws and shows, anti-aliasing and texture filtering.",
+    L"Your name and language, the mirrors, the window, the add-on content and the community patches.",
+    L"Drive one circuit on its own and get back the frame rate and the 1% and 0.1% lows."};
+int g_tab = kTabGraphics;
+RectF g_tab_rect[kTabCount];
+bool OnPage(const Card& card) { return card.tab == g_tab; }
 std::wstring g_status;
 std::wstring g_gpu_problem;  // from CheckGpu() at start; Play stays off while it is set, unless the check is skipped
 bool g_skip_gpu_check = false;  // "Skip the graphics card check" in the launcher (skip_gpu_check= in launcher.ini)
@@ -492,23 +506,25 @@ void BuildModel() {
                    L"Shows the VR EXPERIMENTAL section below: VR DLSS, its model and the sharpening. Still in "
                    L"development: they may have graphical bugs. Off, those settings are not used.",
                    "@vrexp", false);
-  // The cards flow into as many columns as the window width allows (see LayoutPass). VR fork: the VR card first, at
-  // the top of the first column, the experimental card right below it. With a headset size the VR patch set stands
-  // in for the frame rate, resolution and anti-aliasing rows (VrReplaces): those cards show only with VR off.
-  g_cards.push_back({L"VR", {g_vr, g_vrexp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
+  // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab. VR fork:
+  // the VR card first on the Graphics tab, at the top of the first column, the experimental card right below it. With
+  // a headset size the VR patch set stands in for the frame rate, resolution and anti-aliasing rows (VrReplaces):
+  // those cards show only with VR off.
+  g_cards.push_back({L"VR", {g_vr, g_vrexp}, 0, kTabGraphics, L"Stereo 3D with head tracking on a PC VR headset."});
   g_exp_card = int(g_cards.size());
-  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrmodel, g_vrsharp}, 0,
+  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrmodel, g_vrsharp}, 0, kTabGraphics,
                      L"Still in development: may have graphical bugs."});
   g_flat_card = int(g_cards.size());
-  g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
+  g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0, kTabGraphics});
   g_aa_card = int(g_cards.size());
-  g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_aniso}, 0});
+  g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_aniso}, 0, kTabGraphics});
   g_tex_card = int(g_cards.size());
-  g_cards.push_back({L"TEXTURE FILTERING", {g_aniso}, 0});
-  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0});
-  g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0,
+  g_cards.push_back({L"TEXTURE FILTERING", {g_aniso}, 0, kTabGraphics});
+  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0, kTabGameplay});
+  g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0, kTabGameplay,
                      L"Community patches for DriveClub version 1.28."});
-  g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen, g_brun}, 0});
+  g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen}, 0, kTabBench});
+  g_cards.push_back({L"BENCHMARK RUN AND RESULT", {g_brun}, 0, kTabBench});
 }
 
 // The rows show the chosen track and car by name.
@@ -798,13 +814,29 @@ void LayoutPass(float bottom_extra) {
   // and the other columns have room, so the folders card goes into one of them instead of taking a full-width strip.
   g_folders_in_flow = g_cols >= 3;
   const float folders_h = kTitleH + 2 * FolderRowHeight() + kPad * 0.4f + 8.f;
+  const float content_top = kHeaderH + kTabH;
+  // The tab row: as many pills as tabs, each as wide as its label needs.
+  {
+    float tx = kMargin;
+    for (int t = 0; t < kTabCount; ++t) {
+      const float tw = 30.f + 8.2f * float(wcslen(kTabName[t]));
+      g_tab_rect[t] = RectF(tx, kHeaderH + 6.f, tw, 32.f);
+      tx += tw + 8.f;
+    }
+  }
   float y[4];
-  for (float& v : y) v = kHeaderH + (g_folders_in_flow ? 0.f : folders_h + kGap);
+  for (float& v : y) v = content_top + (g_folders_in_flow ? 0.f : folders_h + kGap);
   for (auto& c : g_c) c.row = c.ctl = RectF(-10000.f, -10000.f, 0.f, 0.f);  // VR fork: only shown rows get a place
-  // Card heights; the tallest cards are placed first, each into the shortest column.
-  std::vector<float> heights(g_cards.size());
-  std::vector<size_t> order(g_cards.size());
+  // Card heights; the tallest cards are placed first, each into the shortest column. Only the cards of the
+  // current tab are placed; the others move off the page, so they neither draw nor catch the mouse.
+  std::vector<float> heights(g_cards.size() + 1, 0.f);
+  std::vector<size_t> order;
   for (size_t k = 0; k < g_cards.size(); ++k) {
+    if (!OnPage(g_cards[k])) {
+      g_cards[k].rect = RectF(-1e6f, -1e6f, 0.f, 0.f);
+      for (int i : g_cards[k].ctls) g_c[i].row = g_c[i].ctl = RectF(-1e6f, -1e6f, 0.f, 0.f);
+      continue;
+    }
     float h = kTitleH + kPad * 0.4f;
     for (int i : g_cards[k].ctls) h += CtlHidden(i) ? 0.f : RowHeight(g_c[i]);
     h += kPad * 0.6f;
@@ -816,22 +848,29 @@ void LayoutPass(float bottom_extra) {
       h += g_cards[k].note_h + 10.f;
     }
     heights[k] = h;
-    order[k] = k;
+    order.push_back(k);
   }
   // The folders card, when in a column, takes part as index g_cards.size() and goes on top of its column.
   const size_t folders_k = g_cards.size();
-  if (g_folders_in_flow) heights.push_back(folders_h);
-  // VR fork: the shown cards take part except the experimental one, which goes right below the VR card (so showing
-  // it moves nothing else); the VR card (first) heads the first column.
-  std::vector<size_t> part;
-  for (size_t k = 1; k < g_cards.size(); ++k) {
-    if (int(k) != g_exp_card && !CardHidden(k)) part.push_back(k);
+  if (g_folders_in_flow) {
+    heights[folders_k] = folders_h;
+    order.push_back(folders_k);
   }
-  if (g_folders_in_flow) part.push_back(folders_k);
+  // VR fork: the page's shown cards take part except the experimental one, which goes right below the VR card (so
+  // showing it moves nothing else); the VR card, when on this page, heads the first column.
+  std::vector<size_t> part;
+  bool vr_here = false;
+  for (const size_t k : order) {
+    if (k == 0) {
+      vr_here = true;
+    } else if (k == folders_k || (int(k) != g_exp_card && !CardHidden(k))) {
+      part.push_back(k);
+    }
+  }
   std::sort(part.begin(), part.end(), [&](size_t a, size_t b) { return heights[a] > heights[b]; });
-  part.insert(part.begin(), size_t(0));
-  // Every split of the cards into columns is tried (at most 4^7 with 8 cards) and the one with the shortest tallest
-  // column is kept, so the window needs the least height. The VR card stays in the first column.
+  if (vr_here) part.insert(part.begin(), size_t(0));
+  // Every split of the page's cards into columns is tried and the one with the shortest tallest column is kept, so
+  // the page needs the least height. The first card (the VR card, or the tallest) stays in the first column.
   const size_t n = part.size();
   size_t splits = 1;
   for (size_t i = 1; i < n; ++i) splits *= size_t(g_cols);
@@ -854,16 +893,20 @@ void LayoutPass(float bottom_extra) {
   }
   int folders_col = 0;
   for (size_t k : part) (k == folders_k ? folders_col : g_cards[k].column) = best[k];
-  if (g_exp_card > 0) g_cards[g_exp_card].column = g_cards[0].column;
-  // Top to bottom in each column: the VR card and the experimental card, the folders card, then the others in their
-  // usual order.
-  std::vector<size_t> seq{0};
-  if (g_exp_card > 0) seq.push_back(size_t(g_exp_card));
-  if (g_folders_in_flow) seq.push_back(folders_k);
-  for (size_t k = 0; k < g_cards.size(); ++k) {
-    if (k != 0 && int(k) != g_exp_card) seq.push_back(k);  // VR fork: those two are placed first
+  if (vr_here && g_exp_card > 0) g_cards[g_exp_card].column = g_cards[0].column;
+  // Top to bottom in each column: the first card (VR fork: the VR card and the experimental card; else the tallest),
+  // the folders card, then the others; the page's hidden cards last (they take no place).
+  std::vector<size_t> seq;
+  if (!part.empty()) seq.push_back(part[0]);
+  if (vr_here && g_exp_card > 0) seq.push_back(size_t(g_exp_card));
+  if (g_folders_in_flow && (part.empty() || part[0] != folders_k)) seq.push_back(folders_k);
+  for (size_t k : part) {
+    if (k != part[0] && k != folders_k) seq.push_back(k);
   }
-  if (!g_folders_in_flow) g_folders_rect = RectF(kMargin, kHeaderH, g_win_w - 2 * kMargin, folders_h);
+  for (size_t k : order) {
+    if (std::find(seq.begin(), seq.end(), k) == seq.end()) seq.push_back(k);
+  }
+  if (!g_folders_in_flow) g_folders_rect = RectF(kMargin, content_top, g_win_w - 2 * kMargin, folders_h);
   int last[4] = {-1, -1, -1, -1};  // the lowest card in each column: it is stretched to the common bottom
   for (size_t k : seq) {
     if (k == folders_k) {
@@ -934,7 +977,7 @@ void Layout() {
     for (int col = 0; col < g_cols; ++col) {
       int n = 0;
       for (size_t k = 0; k < g_cards.size(); ++k) {
-        if (g_cards[k].column != col || CardHidden(k)) continue;
+        if (g_cards[k].column != col || CardHidden(k) || !OnPage(g_cards[k])) continue;
         for (int i : g_cards[k].ctls) n += CtlHidden(i) ? 0 : 1;
       }
       rows = (std::max)(rows, n);
@@ -1037,6 +1080,15 @@ void Paint(HDC hdc, int w, int h) {
          StringAlignmentNear, StringAlignmentCenter, false, false);
   }
 
+  // tabs: one page of cards at a time
+  for (int t = 0; t < kTabCount; ++t) {
+    const RectF tr = Scaled(g_tab_rect[t]);
+    const bool sel = t == g_tab;
+    FillRound(g, tr, tr.Height / 2, sel ? (g_hover_tab == t ? kAccentHover : kAccent)
+                                        : (g_hover_tab == t ? kTrackHover : kTrack));
+    Text(g, kTabName[t], fSeg, tr, sel ? kWhite : kMuted, StringAlignmentCenter);
+  }
+
   // game folders card
   {
     const RectF cr = Scaled(g_folders_rect);
@@ -1066,7 +1118,7 @@ void Paint(HDC hdc, int w, int h) {
 
   // cards
   for (size_t k = 0; k < g_cards.size(); ++k) {
-    if (CardHidden(k)) continue;  // VR fork
+    if (CardHidden(k) || !OnPage(g_cards[k])) continue;  // VR fork: hidden cards too
     auto& card = g_cards[k];
     RectF cr = Scaled(card.rect);
     FillRound(g, cr, 12 * S, kCard);
@@ -1161,6 +1213,9 @@ void Paint(HDC hdc, int w, int h) {
     mc = kMuted;
   } else if (g_hover_browse >= 0) {
     msg = g_folder[g_hover_browse].hint;
+    mc = kMuted;
+  } else if (g_hover_tab >= 0) {
+    msg = kTabHint[g_hover_tab];
     mc = kMuted;
   } else if (g_hover_btn == 0) {
     msg = L"Put every patch back to its default.";
@@ -1920,6 +1975,15 @@ int HitControl(float x, float y, int* seg) {
   return -1;
 }
 
+int HitTab(float x, float y) {
+  if (y >= FooterTop()) return -1;
+  for (int t = 0; t < kTabCount; ++t) {
+    RectF r = Scaled(g_tab_rect[t]);
+    if (x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height) return t;
+  }
+  return -1;
+}
+
 int HitButton(float x, float y) {
   const float content_oy = g_oy;
   g_oy = FooterOy();
@@ -1978,7 +2042,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const int ncw = (wr.right - wr.left) - cr.right, nch = (wr.bottom - wr.top) - cr.bottom;
       auto* mm = reinterpret_cast<MINMAXINFO*>(l);
       mm->ptMinTrackSize.x = LONG(kWinW * g_dpi * 0.6f) + ncw;
-      mm->ptMinTrackSize.y = LONG((kHeaderH + kFooterH + 160.f) * g_dpi * 0.6f) + nch;  // shorter: the content scrolls
+      mm->ptMinTrackSize.y = LONG((kHeaderH + kTabH + kFooterH + 160.f) * g_dpi * 0.6f) + nch;  // shorter: the content scrolls
       mm->ptMaxTrackSize.x = LONG(kMaxW * g_dpi) + ncw;
       return 0;
     }
@@ -2022,7 +2086,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_MOUSEMOVE: {
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       int seg;
-      const int c = HitControl(x, y, &seg), b = HitButton(x, y), br = HitBrowse(x, y);
+      const int c = HitControl(x, y, &seg), b = HitButton(x, y), br = HitBrowse(x, y), tab = HitTab(x, y);
       // Over the benchmark's result (its row below the Run button): the panel of settings the game ran with.
       bool ran_hover = false;
       if (c >= 0 && c == g_brun && seg != 0) {
@@ -2033,11 +2097,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_bench_ran_hover = ran_hover;
         InvalidateRect(h, nullptr, FALSE);
       }
-      if (c != g_hover_ctl || seg != g_hover_seg || b != g_hover_btn || br != g_hover_browse) {
+      if (c != g_hover_ctl || seg != g_hover_seg || b != g_hover_btn || br != g_hover_browse || tab != g_hover_tab) {
         g_hover_ctl = c;
         g_hover_seg = seg;
         g_hover_btn = b;
         g_hover_browse = br;
+        g_hover_tab = tab;
         InvalidateRect(h, nullptr, FALSE);
       }
       TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0};
@@ -2045,7 +2110,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       return 0;
     }
     case WM_MOUSELEAVE:
-      g_hover_ctl = g_hover_seg = g_hover_btn = g_hover_browse = -1;
+      g_hover_ctl = g_hover_seg = g_hover_btn = g_hover_browse = g_hover_tab = -1;
       g_bench_ran_hover = false;
       InvalidateRect(h, nullptr, FALSE);
       return 0;
@@ -2053,6 +2118,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       if (g_busy) return 0;
       CommitName();
+      if (const int t = HitTab(x, y); t >= 0 && t != g_tab) {
+        g_tab = t;
+        Layout();  // the page has its own height
+        g_scroll = (std::min)(g_scroll, MaxScroll());
+        g_oy = ContentOy();
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+      }
       const int br = HitBrowse(x, y);
       if (br >= 0) {
         BrowseFolder(br);
@@ -2235,6 +2308,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       g_dpi = g_scale = float(GetDeviceCaps(screen, LOGPIXELSX)) / 96.f;
       ReleaseDC(nullptr, screen);
       if (const char* sw = std::getenv("LAUNCHER_SNAPSHOT_W")) g_win_w = float(std::atoi(sw));
+      if (const char* st = std::getenv("LAUNCHER_SNAPSHOT_TAB")) g_tab = std::clamp(std::atoi(st), 0, kTabCount - 1);
       Layout();
       const int w = int(g_win_w * g_scale), h = int(TotalHeight() * g_scale);
       {

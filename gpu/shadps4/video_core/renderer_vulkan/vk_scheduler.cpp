@@ -4,6 +4,9 @@
 #include "bbport_frame_info.h"
 #include <thread>
 #include <algorithm>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <unordered_map>
@@ -164,16 +167,17 @@ void Scheduler::TraceDirectRecording(void* caller) {
     std::ranges::sort(top, std::greater{});
     for (size_t i = 0; i < std::min<size_t>(top.size(), 8); ++i) {
 #ifdef _WIN32
-        struct { const char* dli_fname; void* dli_fbase; } info{nullptr, nullptr};
+        // The executable's own offset (addr2line at 0x140000000 + offset on the unstripped build).
+        struct { const char* dli_fname; void* dli_fbase; } info{"exe", reinterpret_cast<void*>(GetModuleHandleW(nullptr))};
 #else
         Dl_info info{};
         dladdr(top[i].second, &info);
 #endif
-        std::printf("Recorder sync caller: %llu x %s+0x%lx\n",
+        std::printf("Recorder sync caller: %llu x %s+0x%llx\n",
                     static_cast<unsigned long long>(top[i].first),
                     info.dli_fname ? info.dli_fname : "?",
-                    static_cast<unsigned long>(reinterpret_cast<uintptr_t>(top[i].second) -
-                                               reinterpret_cast<uintptr_t>(info.dli_fbase)));
+                    static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(top[i].second) -
+                                                    reinterpret_cast<uintptr_t>(info.dli_fbase)));
     }
     callers.clear();
 }

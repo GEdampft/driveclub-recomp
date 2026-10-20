@@ -571,7 +571,12 @@ void SaveSettings() {
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
-    tog << "137439506432";  // the renderer's experimental two-thread draw path stays off
+    // VR fork: in VR the two-thread draw path (bit 37) is on: it takes the draw recording off the GPU command thread
+    // (headset FPS at the race start, 1080 per eye 108 -> 126, 3200 per eye 101.5 -> 115). It can crash while a race
+    // loads (about 1 boot in 50 on 2026-10-20: the NVIDIA driver read a corrupted recorded vertex input). Flat keeps
+    // it off as upstream ships it (flat 4K 119 -> 129). Still off in both: prepared resources, draw preparation,
+    // deferred stream copies, pooled small copies (no gain measured).
+    tog << (VrOn() ? "552960" : "137439506432");
     const std::wstring game_ini = g_data + L"\\user\\driveclub.ini";
     std::ofstream game(game_ini.c_str(), std::ios::binary | std::ios::trunc);
     game << "show_fps=" << (fps_on ? 1 : 0) << "\r\n";

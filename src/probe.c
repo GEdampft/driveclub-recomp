@@ -287,7 +287,7 @@ static void write_crash_dump_now(EXCEPTION_POINTERS *info, DWORD faulting_thread
     HANDLE file = write ? CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL) : INVALID_HANDLE_VALUE;
     if (file != INVALID_HANDLE_VALUE) {
         MINIDUMP_EXCEPTION_INFORMATION exception = {faulting_thread, info, FALSE};
-        const BOOL ok = write(GetCurrentProcess(), GetCurrentProcessId(), file, (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithThreadInfo),
+        const BOOL ok = write(GetCurrentProcess(), GetCurrentProcessId(), file, (MINIDUMP_TYPE)(MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithIndirectlyReferencedMemory), // VR fork: + memory the registers and stacks point at
                               &exception, NULL, NULL);
         CloseHandle(file);
         fprintf(stderr, "  crash dump: %s%s", path, ok ? "" : " (incomplete)");

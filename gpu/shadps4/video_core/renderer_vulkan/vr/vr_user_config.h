@@ -14,8 +14,8 @@
 
 namespace Vulkan::Vr::UserConfig {
 struct Settings {
-    float hud_width = 1.61f;
-    float hud_height = 0.06f;
+    float hud_width = 1.73f;
+    float hud_height = 0.095f;
     float hud_distance = 1.10f;
     bool far_enabled = true;
     float far_distance_offset = 1.50f;

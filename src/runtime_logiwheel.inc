@@ -42,7 +42,8 @@ static PadData wheel_last_read;   /* the last read of the wheel port, under lock
 static int32_t rd_clamp(int32_t v, int32_t lo, int32_t hi) { return v<lo ? lo : v>hi ? hi : v; }
 static Sint16 level16(int32_t v) { return (Sint16)(rd_clamp(v,-255,255)*32767/255); }
 static Uint16 sat16(int32_t v) { return (Uint16)(rd_clamp(v,0,255)*65535/255); }
-static bool ffb_effect_from(const LogiEffectParams *p, SDL_HapticEffect *e) {
+/* pos: where the wheel is now, on the game's steering scale. */
+static bool ffb_effect_from(const LogiEffectParams *p, SDL_HapticEffect *e, int32_t pos) {
     memset(e,0,sizeof(*e));
     const int sign=ffb_invert ? -1 : 1;
     switch (p->type) {
@@ -64,13 +65,18 @@ static bool ffb_effect_from(const LogiEffectParams *p, SDL_HapticEffect *e) {
         e->condition.direction.type=SDL_HAPTIC_CARTESIAN; e->condition.direction.dir[0]=1;
         e->condition.length=SDL_HAPTIC_INFINITY;
         e->condition.right_coeff[0]=level16(p->c); e->condition.left_coeff[0]=level16(p->d);
-        /* the saturation is the strength of the force; wheel_ffb_gain above 100 lifts it, clipped at full */
+        /* the saturation caps the force; wheel_ffb_gain lifts the cap with the force */
         e->condition.right_sat[0]=sat16(p->e*ffb_gain/100); e->condition.left_sat[0]=sat16(p->f*ffb_gain/100);
         if (p->type==LOGI_SPRING) {
             /* The centre is where the tyres want the wheel, on the steering scale itself (-32768..32767, as the
-             * wheel position the game reads): DriveClub's road feel is this spring following the car, with the
-             * saturation as its strength. */
-            e->condition.center[0]=(Sint16)rd_clamp(sign*p->a,-32767,32767);
+             * wheel position the game reads): DriveClub's road feel is this spring following the car. The game
+             * asks for the stiffest spring and the wheel rarely sits more than a few percent from that centre, so
+             * the force stays well under the saturation: lifting the saturation alone changes nothing. A spring
+             * pulls in proportion to how far the wheel is from its centre, so wheel_ffb_gain moves the centre
+             * that much further from where the wheel is now (the haptic thread follows the wheel every 4 ms). */
+            const int32_t target=pos+(int32_t)((int64_t)(p->a-pos)*ffb_gain/100);
+            const int32_t physical=wheel_inverted[WAX_STEER] ? -target : target;
+            e->condition.center[0]=(Sint16)rd_clamp(sign*physical,-32767,32767);
             e->condition.deadband[0]=(Uint16)(rd_clamp(p->b,0,255)*65535/255);
         }
         return true;
@@ -88,8 +94,8 @@ static void ffb_log_params(const char *what, int id, const LogiEffectParams *p) 
 static void *ffb_thread(void *unused) {
     (void)unused;
     SDL_Haptic *haptic=NULL;
-    int sdl_id[LOGI_EFFECTS]; bool running[LOGI_EFFECTS];
-    for (int i=0;i<LOGI_EFFECTS;++i) { sdl_id[i]=-1; running[i]=false; }
+    int sdl_id[LOGI_EFFECTS]; bool running[LOGI_EFFECTS]; Sint16 spring_centre[LOGI_EFFECTS];
+    for (int i=0;i<LOGI_EFFECTS;++i) { sdl_id[i]=-1; running[i]=false; spring_centre[i]=0; }
     for (;;) {
         compat_sleep_ns(4000000); /* 4 ms */
         if (!haptic) {
@@ -124,6 +130,7 @@ static void *ffb_thread(void *unused) {
         }
         pthread_mutex_lock(&lock);
         const bool gone=!wheel;
+        const int32_t pos=wheel ? (int32_t)wheel_value(wheel,WAX_STEER)-32768 : 0;   /* the game's steering scale */
         pthread_mutex_unlock(&lock);
         if (gone) {
             SDL_CloseHaptic(haptic); haptic=NULL;
@@ -166,9 +173,14 @@ static void *ffb_thread(void *unused) {
                 if (sdl_id[i]>=0) { SDL_DestroyHapticEffect(haptic,sdl_id[i]); sdl_id[i]=-1; running[i]=false; }
                 continue;
             }
-            if (dirty[i]) {
-                SDL_HapticEffect e;
-                if (ffb_effect_from(&want[i],&e)) {
+            /* a spring follows the wheel: its centre is redone when the wheel has moved, not only when the game asks */
+            SDL_HapticEffect e;
+            const bool have=ffb_effect_from(&want[i],&e,pos);
+            const bool spring_moved=have && want[i].type==LOGI_SPRING && sdl_id[i]>=0 && ffb_gain!=100 &&
+                                    abs(e.condition.center[0]-spring_centre[i])>=16;
+            if (dirty[i] || spring_moved) {
+                if (have) {
+                    if (want[i].type==LOGI_SPRING) spring_centre[i]=e.condition.center[0];
                     if (sdl_id[i]<0) {
                         sdl_id[i]=SDL_CreateHapticEffect(haptic,&e);
                         if (sdl_id[i]<0) { static unsigned n; if (n++<8) printf("Runtime: FFB effect type %u not created: %s\n",want[i].type,SDL_GetError()); }

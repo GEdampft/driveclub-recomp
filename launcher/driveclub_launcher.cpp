@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -572,10 +573,10 @@ void SaveSettings() {
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
     // VR fork: in VR the two-thread draw path (bit 37) is on: it takes the draw recording off the GPU command thread
-    // (headset FPS at the race start, 1080 per eye 108 -> 126, 3200 per eye 101.5 -> 115). It can crash while a race
-    // loads (about 1 boot in 50 on 2026-10-20: the NVIDIA driver read a corrupted recorded vertex input). Flat keeps
-    // it off as upstream ships it (flat 4K 119 -> 129). Still off in both: prepared resources, draw preparation,
-    // deferred stream copies, pooled small copies (no gain measured).
+    // (race start, headset FPS: 1080 per eye 108 -> 126, more with 6d1291c). Its crashes while a race loads were the
+    // GPU thread recording beside it (fixed 0f2447e; 29/29 VR boots after). Flat keeps upstream's mask: flat 4K would
+    // gain 117 -> 140 FPS, but 2 of ~28 flat boots hung before the race with the GPU busy (not understood yet). Still
+    // off in both: prepared resources, draw preparation, deferred stream copies, pooled small copies (no gain measured).
     tog << (VrOn() ? "552960" : "137439506432");
     const std::wstring game_ini = g_data + L"\\user\\driveclub.ini";
     std::ofstream game(game_ini.c_str(), std::ios::binary | std::ios::trunc);

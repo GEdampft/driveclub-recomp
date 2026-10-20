@@ -11,12 +11,6 @@
 // after each submit, as with readbacks off. Written ranges of up to 1 KB are fast from the start. A page where a guest
 // access touched GPU bytes (the crowd's ground heights) stays exact for good. BB_READBACK_HYBRID=0 turns it off;
 // BB_READBACK_CLASSIFY=1 logs the faults per page.
-//
-// Driveclub's page 0x400220f000 is exact from the start (DefaultExact): its 4-byte GPU flag at 0x400220ff50, which
-// the game reads once a slot's label from two frames back has passed (game +0x758a2d), arrived a submit or more late
-// when fast, and grass clumps were drawn floating in random places. The game's own bytes on that page fault too, but
-// cheaply: its GPU work has long finished by then (no frame rate change). 0x300042f000 (a 1 KB range read right
-// after the GPU writes it) is left fast: exact, each read waited for the GPU (72 to 50 FPS at 3200 per eye).
 
 #pragma once
 
@@ -50,8 +44,7 @@ inline bool Enabled() {
 }
 
 // Development switches: BB_HYBRID_SMALL=0 (small ranges are not fast from the start), BB_HYBRID_LEARN=0 (no page is
-// learned fast), BB_HYBRID_EXACT=<hex page,...> (these pages are never fast, instead of DefaultExact; 0 for none).
-constexpr VAddr DefaultExact = 0x400220f000;
+// learned fast), BB_HYBRID_EXACT=<hex page,...> (these pages are never fast).
 inline bool SmallFast() {
     static const bool on = !(std::getenv("BB_HYBRID_SMALL") && std::getenv("BB_HYBRID_SMALL")[0] == '0');
     return on;
@@ -64,9 +57,6 @@ inline bool ExactPage(VAddr address) {
     static const std::vector<VAddr> pages = [] {
         std::vector<VAddr> list;
         const char* v = std::getenv("BB_HYBRID_EXACT");
-        if (!v) {
-            list.push_back(DefaultExact);
-        }
         while (v && *v) {
             char* end = nullptr;
             const unsigned long long page = std::strtoull(v, &end, 16);
@@ -101,18 +91,6 @@ inline void NoteSmallFast(VAddr address, u64 size) {
     std::scoped_lock lk(m);
     if (seen.size() < 4000 && seen.insert(address & ~VAddr(4095)).second) {
         std::printf("Readback hybrid: small range %#llx +%llu fast (page %#llx)\n", (unsigned long long)address,
-                    (unsigned long long)size, (unsigned long long)(address & ~VAddr(4095)));
-        std::fflush(stdout);
-    }
-}
-
-/// A small range kept exact by ExactPage, logged the first time per page (the log shows DefaultExact still matches).
-inline void NoteSmallExact(VAddr address, u64 size) {
-    static std::mutex m;
-    static std::set<VAddr> seen;
-    std::scoped_lock lk(m);
-    if (seen.size() < 16 && seen.insert(address & ~VAddr(4095)).second) {
-        std::printf("Readback hybrid: small range %#llx +%llu exact (page %#llx)\n", (unsigned long long)address,
                     (unsigned long long)size, (unsigned long long)(address & ~VAddr(4095)));
         std::fflush(stdout);
     }

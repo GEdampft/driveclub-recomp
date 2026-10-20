@@ -34,6 +34,7 @@
 #include "video_core/renderer_vulkan/vr/vr_dlss.h"
 #include "video_core/renderer_vulkan/vr/vr_fixes.h"
 #include "video_core/texture_cache/texture_cache.h"
+#include <vulkan/vulkan_format_traits.hpp>
 
 namespace Vulkan::Vr::Stereo {
 namespace {
@@ -556,9 +557,27 @@ void WatchFragmentImages(u64 vs_hash) {
     g_fs_watch = vs_hash;
 }
 
+std::atomic<u64> g_tex_vs{0};
+std::atomic<int> g_tex_mode{0}, g_tex_left{0};
+std::vector<VAddr> g_tex_pending; // the draw's textures (LogFragmentImages, then OnDraw on the same thread)
+std::vector<VAddr> g_tex_done;
+
+void TextureAction(u64 vs_hash, int mode) {
+    g_tex_done.clear();
+    g_tex_mode = mode;
+    g_tex_left = 40;
+    g_tex_vs = vs_hash;
+}
+
 void LogFragmentImages(const Shader::Info& vs, const Shader::Info* fs, u32 depth_control, u32 stencil_control,
                        u32 stencil_ref_front, u32 indices, u32 instances) {
     const u64 vs_hash = vs.pgm_hash;
+    g_tex_pending.clear();
+    if (fs && g_tex_vs.load(std::memory_order_relaxed) == vs_hash) {
+        for (const auto& res : fs->images) {
+            g_tex_pending.push_back(res.GetSharp(*fs).Address());
+        }
+    }
     const u64 watch = g_fs_watch.load(std::memory_order_relaxed);
     if (!watch || vs_hash != watch || !fs || fs->images.empty() || g_fs_watch_left.fetch_sub(1) <= 0) {
         return;
@@ -587,6 +606,60 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
             VideoCore::ImageId color_id, VideoCore::ImageId target2_id, VideoCore::ImageId gbuffer_depth_id) {
     const u64 vs_hash = vs.pgm_hash;
     Multiview::SetDrawHash(vs_hash);
+    if (!g_tex_pending.empty() && g_tex_vs.load(std::memory_order_relaxed) == vs_hash && g.device) {
+        for (const VAddr address : g_tex_pending) {
+            if (std::ranges::find(g_tex_done, address) != g_tex_done.end()) {
+                continue;
+            }
+            g_tex_done.push_back(address);
+            const VideoCore::ImageId id = texture_cache.FindImageFromRange(address, 1, false);
+            if (!id) {
+                std::printf("VR tex: %#llx not in the texture cache\n", (unsigned long long)address);
+                continue;
+            }
+            auto& image = texture_cache.GetImage(id);
+            if (g_tex_mode == 2) {
+                texture_cache.InvalidateMemory(address, image.info.guest_size);
+                std::printf("VR tex: %#llx (%ux%u) marked for upload again\n", (unsigned long long)address,
+                            image.info.size.width, image.info.size.height);
+                continue;
+            }
+            // Mip 0, layer 0, raw (compressed formats as their blocks).
+            const auto format = image.info.pixel_format;
+            const u32 w = image.info.size.width, h = image.info.size.height;
+            const auto extent = vk::blockExtent(format);
+            const u64 bytes = u64((w + extent[0] - 1) / extent[0]) * ((h + extent[1] - 1) / extent[1]) * vk::blockSize(format);
+            Readback r;
+            if (!MakeReadback(r, bytes)) {
+                continue;
+            }
+            runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                            vk::AccessFlagBits2::eTransferRead);
+            runtime.FlushBarriers();
+            scheduler.EndRendering();
+            CopyToReadback(VkCommandBuffer(scheduler.CommandBuffer()), VkImage(image.GetImage()),
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r, 0, w, h);
+            scheduler.Finish();
+            void* data = nullptr;
+            VKD.vkMapMemory(g.device, r.memory, 0, r.size, 0, &data);
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s\\dcvr\\tex_%llx.raw", std::getenv("TEMP") ? std::getenv("TEMP") : ".",
+                          (unsigned long long)address);
+            if (FILE* f = std::fopen(path, "wb")) {
+                const u32 header[4] = {w, h, u32(format), u32(bytes)};
+                std::fwrite(header, sizeof(header), 1, f);
+                std::fwrite(data, 1, bytes, f);
+                std::fclose(f);
+            }
+            VKD.vkUnmapMemory(g.device, r.memory);
+            FreeReadback(r);
+            std::printf("VR tex: %#llx %ux%u vk format %d written\n", (unsigned long long)address, w, h, int(format));
+        }
+        std::fflush(stdout);
+        if (g_tex_left.fetch_sub(1) <= 1) {
+            g_tex_vs = 0;
+        }
+    }
     const int targets = std::popcount(key.mrt_mask);
     // DRAWLOG: multi-target draws too (the G-buffer passes), marked "mrt N".
     if (targets >= 2 && g_log_draws.load(std::memory_order_relaxed) > 0 && g_log_draws.fetch_sub(1) > 0 && color_id) {

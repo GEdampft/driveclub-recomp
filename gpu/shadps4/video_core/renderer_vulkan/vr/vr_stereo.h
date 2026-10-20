@@ -47,6 +47,11 @@ void LogFragmentImages(const Shader::Info& vs, const Shader::Info* fs, u32 depth
                        u32 instances = 0);
 void WatchFragmentImages(u64 vs_hash);
 
+/// Development (TEXDUMP / TEXREFRESH <vs>): over that vertex shader's next 40 draws, each distinct texture its pixel
+/// shader samples is written raw to %TEMP%\dcvr\tex_<address>.raw (mode 1) or marked for upload again from guest
+/// memory (mode 2).
+void TextureAction(u64 vs_hash, int mode);
+
 /// Development (SKIP trigger: shader hashes in hex, separated by spaces or commas; an empty file clears it): draws
 /// whose vertex or pixel shader is listed draw nothing (live, also while the game is paused).
 void SetSkippedShaders(const std::string& list);

@@ -271,6 +271,13 @@ void Poll() {
     if (Take("SKIP", &skip)) {
         Stereo::SetSkippedShaders(skip);
     }
+    std::string tex_vs;
+    if (Take("TEXDUMP", &tex_vs)) {
+        Stereo::TextureAction(std::strtoull(tex_vs.c_str(), nullptr, 16), 1);
+    }
+    if (Take("TEXREFRESH", &tex_vs)) {
+        Stereo::TextureAction(std::strtoull(tex_vs.c_str(), nullptr, 16), 2);
+    }
     std::string fs_vs;
     if (Take("FSIMG", &fs_vs)) {
         Stereo::WatchFragmentImages(std::strtoull(fs_vs.c_str(), nullptr, 16));

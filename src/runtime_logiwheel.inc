@@ -73,10 +73,10 @@ static bool ffb_effect_from(const LogiEffectParams *p, SDL_HapticEffect *e, int3
              * asks for the stiffest spring and the wheel rarely sits more than a few percent from that centre, so
              * the force stays well under the saturation: lifting the saturation alone changes nothing. A spring
              * pulls in proportion to how far the wheel is from its centre, so wheel_ffb_gain moves the centre
-             * that much further from where the wheel is now (the haptic thread follows the wheel every 4 ms). */
+             * that much further from where the wheel is now (the haptic thread follows the wheel every 4 ms).
+             * pos is already on the game's scale: wheel_value flips the axis of an inverted wheel. */
             const int32_t target=pos+(int32_t)((int64_t)(p->a-pos)*ffb_gain/100);
-            const int32_t physical=wheel_inverted[WAX_STEER] ? -target : target;
-            e->condition.center[0]=(Sint16)rd_clamp(sign*physical,-32767,32767);
+            e->condition.center[0]=(Sint16)rd_clamp(sign*target,-32767,32767);
             e->condition.deadband[0]=(Uint16)(rd_clamp(p->b,0,255)*65535/255);
         }
         return true;
@@ -173,11 +173,12 @@ static void *ffb_thread(void *unused) {
                 if (sdl_id[i]>=0) { SDL_DestroyHapticEffect(haptic,sdl_id[i]); sdl_id[i]=-1; running[i]=false; }
                 continue;
             }
-            /* a spring follows the wheel: its centre is redone when the wheel has moved, not only when the game asks */
+            /* a spring follows the wheel: its centre is redone once the wheel is 0.2% of the steering
+             * range off it, not on every 4 ms poll */
             SDL_HapticEffect e;
             const bool have=ffb_effect_from(&want[i],&e,pos);
             const bool spring_moved=have && want[i].type==LOGI_SPRING && sdl_id[i]>=0 && ffb_gain!=100 &&
-                                    abs(e.condition.center[0]-spring_centre[i])>=16;
+                                    abs(e.condition.center[0]-spring_centre[i])>=64;
             if (dirty[i] || spring_moved) {
                 if (have) {
                     if (want[i].type==LOGI_SPRING) spring_centre[i]=e.condition.center[0];

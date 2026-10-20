@@ -677,21 +677,18 @@ float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind =
 float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
+RectF g_folders_rect;          // the game folders card
+bool g_folders_in_flow = false;  // the folders card sits in a column (3+ columns) instead of across the top
 
 void LayoutPass(float bottom_extra) {
   g_cols = (std::clamp)(int((g_win_w - 2 * kMargin + kGap) / (380.f + kGap)), 2, 4);
   const float colw = (g_win_w - 2 * kMargin - float(g_cols - 1) * kGap) / float(g_cols);
-  // game folders: a full-width card on top
+  // Game folders: a full-width card on top with 2 columns. With 3 or 4 the benchmark card alone sets the height
+  // and the other columns have room, so the folders card goes into one of them instead of taking a full-width strip.
+  g_folders_in_flow = g_cols >= 3;
   const float folders_h = kTitleH + 2 * FolderRowHeight() + kPad * 0.4f + 8.f;
-  const RectF folders_rect(kMargin, kHeaderH, g_win_w - 2 * kMargin, folders_h);
-  float fy = folders_rect.Y + kTitleH;
-  for (auto& f : g_folder) {
-    f.row = RectF(folders_rect.X + kPad, fy, folders_rect.Width - 2 * kPad, FolderRowHeight());
-    f.browse = RectF(f.row.X + f.row.Width - 104.f, fy + 24.f, 104.f, 36.f);
-    fy += FolderRowHeight();
-  }
   float y[4];
-  for (float& v : y) v = kHeaderH + folders_h + kGap;
+  for (float& v : y) v = kHeaderH + (g_folders_in_flow ? 0.f : folders_h + kGap);
   // Card heights; the tallest cards are placed first, each into the shortest column.
   std::vector<float> heights(g_cards.size());
   std::vector<size_t> order(g_cards.size());
@@ -709,18 +706,55 @@ void LayoutPass(float bottom_extra) {
     heights[k] = h;
     order[k] = k;
   }
-  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return heights[a] > heights[b]; });
-  float fill[4] = {0, 0, 0, 0};
-  for (size_t k : order) {
-    int col = 0;
-    for (int c = 1; c < g_cols; ++c) {
-      if (fill[c] < fill[col] - 1.f) col = c;
-    }
-    g_cards[k].column = col;
-    fill[col] += heights[k] + kGap;
+  // The folders card, when in a column, takes part as index g_cards.size() and goes on top of its column.
+  const size_t folders_k = g_cards.size();
+  if (g_folders_in_flow) {
+    heights.push_back(folders_h);
+    order.push_back(folders_k);
   }
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return heights[a] > heights[b]; });
+  // Every split of the cards into columns is tried (at most 4^6 with 7 cards) and the one with the shortest tallest
+  // column is kept, so the window needs the least height. The tallest card stays in the first column.
+  const size_t n = heights.size();
+  size_t splits = 1;
+  for (size_t i = 1; i < n; ++i) splits *= size_t(g_cols);
+  std::vector<int> col_of(n, 0), best(n, 0);
+  float best_h = 1e30f;
+  for (size_t m = 0; m < splits; ++m) {
+    float fill[4] = {0, 0, 0, 0};
+    size_t r = m;
+    for (size_t i = 0; i < n; ++i) {
+      const int c = i == 0 ? 0 : int(r % size_t(g_cols));
+      if (i) r /= size_t(g_cols);
+      col_of[order[i]] = c;
+      fill[c] += heights[order[i]] + kGap;
+    }
+    const float tallest = *std::max_element(fill, fill + g_cols);
+    if (tallest < best_h - 1.f) {
+      best_h = tallest;
+      best = col_of;
+    }
+  }
+  int folders_col = 0;
+  for (size_t k = 0; k < n; ++k) (k == folders_k ? folders_col : g_cards[k].column) = best[k];
+  // Top to bottom in each column: the tallest card (the benchmark: top left), the folders card, then the others in
+  // their usual order.
+  std::vector<size_t> seq{order[0]};
+  if (g_folders_in_flow && order[0] != folders_k) seq.push_back(folders_k);
   for (size_t k = 0; k < g_cards.size(); ++k) {
+    if (k != order[0]) seq.push_back(k);
+  }
+  if (!g_folders_in_flow) g_folders_rect = RectF(kMargin, kHeaderH, g_win_w - 2 * kMargin, folders_h);
+  int last[4] = {-1, -1, -1, -1};  // the lowest card in each column: it is stretched to the common bottom
+  for (size_t k : seq) {
+    if (k == folders_k) {
+      g_folders_rect = RectF(kMargin + folders_col * (colw + kGap), y[folders_col], colw, folders_h);
+      y[folders_col] += folders_h + kGap;
+      last[folders_col] = -1;
+      continue;
+    }
     auto& card = g_cards[k];
+    last[card.column] = int(k);
     const float h = heights[k];
     card.rect = RectF(kMargin + card.column * (colw + kGap), y[card.column], colw, h);
     float cy = y[card.column] + kTitleH + kPad * 0.4f;
@@ -735,15 +769,19 @@ void LayoutPass(float bottom_extra) {
     }
     y[card.column] += h + kGap;
   }
+  float fy = g_folders_rect.Y + kTitleH;
+  for (auto& f : g_folder) {
+    f.row = RectF(g_folders_rect.X + kPad, fy, g_folders_rect.Width - 2 * kPad, FolderRowHeight());
+    // In a column the Browse button moves up beside the label, so the path gets the whole width.
+    f.browse = g_folders_in_flow ? RectF(f.row.X + f.row.Width - 104.f, fy, 104.f, 28.f)
+                                 : RectF(f.row.X + f.row.Width - 104.f, fy + 24.f, 104.f, 36.f);
+    fy += FolderRowHeight();
+  }
   float bottom_y = y[0];
   for (int col = 1; col < g_cols; ++col) bottom_y = (std::max)(bottom_y, y[col]);
   const float bottom = bottom_y - kGap + bottom_extra;
   for (int col = 0; col < g_cols; ++col) {
-    for (int k = int(g_cards.size()) - 1; k >= 0; --k) {
-      if (g_cards[k].column != col) continue;
-      g_cards[k].rect.Height += bottom - (y[col] - kGap);
-      break;
-    }
+    if (last[col] >= 0) g_cards[size_t(last[col])].rect.Height += bottom - (y[col] - kGap);
   }
   g_content_h = bottom + kGap;
   const float bar_y = g_content_h + 2.f;
@@ -866,7 +904,8 @@ void Paint(HDC hdc, int w, int h) {
 
   // game folders card
   {
-    const RectF cr = Scaled(RectF(kMargin, kHeaderH, g_win_w - 2 * kMargin, kTitleH + 2 * FolderRowHeight() + kPad * 0.4f + 8.f));
+    const RectF cr = Scaled(g_folders_rect);
+    const float path_w = g_folders_in_flow ? 16 * S : 130 * S;  // in a column the Browse button is beside the label, not the path
     FillRound(g, cr, 12 * S, kCard);
     StrokeRound(g, cr, 12 * S, kCardLine);
     Text(g, L"GAME FILES", fCard, RectF(cr.X + kPad * S, cr.Y + 6 * S, cr.Width - 2 * kPad * S, (kTitleH - 6) * S), kMuted);
@@ -877,12 +916,12 @@ void Paint(HDC hdc, int w, int h) {
       SolidBrush dot(f.ok ? kOk : (f.path.empty() ? kOff : kWarn));
       g.FillEllipse(&dot, row.X, row.Y + 38 * S, 8 * S, 8 * S);
       const std::wstring shown = f.path.empty() ? std::wstring(L"Not chosen yet") : f.path;
-      Text(g, shown, fHint, RectF(row.X + 16 * S, row.Y + 28 * S, row.Width - 130 * S, 28 * S),
+      Text(g, shown, fHint, RectF(row.X + 16 * S, row.Y + 28 * S, row.Width - path_w, 28 * S),
            f.path.empty() ? kMuted : kText);
       if (const std::wstring problem = FolderProblem(i); !problem.empty()) {
         SolidBrush bad(kBad);
         g.FillEllipse(&bad, row.X, row.Y + 38 * S, 8 * S, 8 * S);
-        Text(g, problem, fHint, RectF(row.X + 16 * S, row.Y + 50 * S, row.Width - 130 * S, 22 * S), kBad);
+        Text(g, problem, fHint, RectF(row.X + 16 * S, row.Y + 50 * S, row.Width - path_w, 22 * S), kBad);
       }
       const bool over = g_hover_browse == i;
       FillRound(g, br, 10 * S, over ? Color(255, 66, 73, 88) : Color(255, 50, 56, 68));

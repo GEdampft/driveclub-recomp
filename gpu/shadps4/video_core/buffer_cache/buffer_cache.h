@@ -118,6 +118,7 @@ public:
     /// VR fork (small_writeback.cpp): small GPU writes reach guest memory with readbacks off.
     void NoteSmallGpuWrite(VAddr device_addr, u64 size);
     void WriteBackSmallWrites();
+    void MergeCopyBack(VAddr addr, const u8* gpu, u64 size, bool other_pages); // VR fork: readback_hybrid.h
 
 private:
     struct ArenaBinds {

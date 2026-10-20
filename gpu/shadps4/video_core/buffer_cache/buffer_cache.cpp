@@ -333,8 +333,12 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     download.buffer->Invalidate(download.offset, download.size);
     for (const auto& copy : copies) {
         auto* dst_addr = std::bit_cast<u8*>(arena_base + copy.srcOffset);
-        memory->TryWriteBacking(dst_addr, download.mapped + (copy.dstOffset - download.offset),
-                                copy.size);
+        const u8* src = download.mapped + (copy.dstOffset - download.offset);
+        if (ReadbackHybrid::Enabled()) { // VR fork: fast pages merge (the game may have written GPU bytes there)
+            MergeCopyBack(arena_base + copy.srcOffset, src, copy.size, true);
+        } else {
+            memory->TryWriteBacking(dst_addr, src, copy.size);
+        }
     }
     memory_tracker->UnmarkRegionAsGpuModified(device_addr, size);
 }
@@ -517,16 +521,26 @@ void BufferCache::FinishReadback(const Readback& job) {
     }
     // The write-back runs ahead of the verdict: other downloads of the window wait while this one
     // is pending, and a vetoed window stays GPU modified.
+    // VR fork: fast pages merge (readback_hybrid.h: the game may have written GPU bytes there).
+    const bool merge = ReadbackHybrid::Enabled();
     if (use_direct) {
         BbStats::readback_paths[5].fetch_add(1, std::memory_order_relaxed);
         for (const auto& span : job.spans) {
-            memory->TryWriteBacking(std::bit_cast<u8*>(span.dst), span.src, span.size);
+            if (merge) {
+                MergeCopyBack(span.dst, span.src, span.size, true);
+            } else {
+                memory->TryWriteBacking(std::bit_cast<u8*>(span.dst), span.src, span.size);
+            }
         }
     } else {
         for (const auto& copy : job.copies) {
             auto* dst_addr = std::bit_cast<u8*>(job.arena_base + copy.srcOffset);
-            memory->TryWriteBacking(
-                dst_addr, job.staging.mapped + (copy.dstOffset - job.staging.offset), copy.size);
+            const u8* src = job.staging.mapped + (copy.dstOffset - job.staging.offset);
+            if (merge) {
+                MergeCopyBack(job.arena_base + copy.srcOffset, src, copy.size, true);
+            } else {
+                memory->TryWriteBacking(dst_addr, src, copy.size);
+            }
         }
     }
     const bool unmarked = memory_tracker->TryUnmarkRegionAsGpuModified(
@@ -882,8 +896,42 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
     memory_tracker->ForEachUploadRange(
         device_addr, size, is_written,
         [&](u64 addr, u64 size) {
-            copies.emplace_back(total_size_bytes, addr, size);
-            total_size_bytes += size;
+            const auto add = [&](VAddr part, u64 part_size) {
+                copies.emplace_back(total_size_bytes, part, part_size);
+                total_size_bytes += part_size;
+            };
+            if (ReadbackHybrid::Enabled()) { // VR fork
+                // The GPU's bytes not yet read back stay as the GPU has them; on a fast page the ones the game
+                // changed since the shadow go up (readback_hybrid.h).
+                ReadbackHybrid::ForEachNotGpuWritten(addr, size, add);
+                for (const auto& [begin, end] : ReadbackHybrid::GpuWrittenParts(addr, size)) {
+                    for (VAddr at = begin; at < end;) {
+                        const VAddr page = at & ~VAddr(4095);
+                        const u64 seg = std::min<VAddr>(end, page + 4096) - at;
+                        u8 guest[4096];
+                        memory->CopySparseMemory(at, guest, seg);
+                        ReadbackHybrid::WithShadow(page, [&](u8* shadow) {
+                            u8* s = shadow + (at - page);
+                            for (u64 j = 0; j < seg;) {
+                                if (guest[j] == s[j]) {
+                                    ++j;
+                                    continue;
+                                }
+                                u64 e = j;
+                                while (e < seg && guest[e] != s[e]) {
+                                    s[e] = guest[e];
+                                    ++e;
+                                }
+                                add(at + j, e - j);
+                                j = e;
+                            }
+                        });
+                        at += seg;
+                    }
+                }
+            } else {
+                add(addr, size);
+            }
         },
         [&] { src_buffer = UploadCopies(arena, copies, total_size_bytes); });
 

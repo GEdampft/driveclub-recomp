@@ -96,12 +96,19 @@ public:
         if constexpr (type == Type::CPU && enable) {
             CountWriteFaults(start_page, end_page);
         }
-        if constexpr (type == Type::GPU) { // VR fork: pages with only small GPU writes (BB_READBACK_HYBRID)
+        if constexpr (type == Type::GPU) { // VR fork: fast pages (BB_READBACK_HYBRID)
             if (enable && t_small_gpu_write) {
-                RegionBits added;
-                added.SetRange(start_page, end_page);
-                added &= ~gpu;
-                small_gpu |= added;
+                RegionBits range;
+                range.SetRange(start_page, end_page);
+                // Pages already watched for reads that are now fast lose their watcher first (the update below only
+                // adds watchers).
+                RegionBits became_fast = range;
+                became_fast &= gpu;
+                became_fast &= ~small_gpu;
+                small_gpu |= range;
+                if (became_fast.Any()) {
+                    UpdateProtection<false, true>();
+                }
             } else {
                 small_gpu.UnsetRange(start_page, end_page);
             }

@@ -112,7 +112,8 @@ public:
                     // VR fork: fast pages (readback_hybrid.h) take the write as with readbacks off.
                     if (EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled &&
                         (ReadbackHybrid::Enabled() ? manager->IsRegionReadGuarded(offset, size)
-                                                   : manager->template IsRegionModified<Type::GPU>(offset, size))) {
+                                                   : manager->template IsRegionModified<Type::GPU>(offset, size)) &&
+                        !ReadbackHybrid::t_own_write) { // VR fork: the game's own bytes need no readback
                         return true;
                     }
                     manager->template ChangeRegionState<Type::CPU, true>(
@@ -154,7 +155,10 @@ public:
         // VR fork (readback_hybrid.h): a small range's pages, and a larger range's first and last pages once learned
         // fast, are marked as fast (not protected).
         const bool hybrid = ReadbackHybrid::Enabled();
-        const bool small = hybrid && query_size <= ReadbackHybrid::SmallWrite && ReadbackHybrid::SmallFast() &&
+        const bool small = hybrid && query_size <= ReadbackHybrid::SmallWrite &&
+                           (ReadbackHybrid::SmallFast() ||
+                            ((query_cpu_range ^ (query_cpu_range + query_size - 1)) < 4096 &&
+                             ReadbackHybrid::FastFor(query_cpu_range, query_cpu_range + query_size))) &&
                            !ReadbackHybrid::ExactPage(query_cpu_range) &&
                            !ReadbackHybrid::ExactPage(query_cpu_range + query_size - 1);
         if (small) {
@@ -174,9 +178,9 @@ public:
                                 } else {
                                     const VAddr first_end = std::min(end, (begin | 4095) + 1);
                                     const VAddr last_begin = std::max(first_end, (end - 1) & ~VAddr(4095));
-                                    mark(begin, first_end, ReadbackHybrid::IsFastPage(begin));
+                                    mark(begin, first_end, ReadbackHybrid::FastFor(begin, first_end));
                                     mark(first_end, last_begin, false);
-                                    mark(last_begin, end, ReadbackHybrid::IsFastPage(last_begin));
+                                    mark(last_begin, end, last_begin < end && ReadbackHybrid::FastFor(last_begin, end));
                                 }
                                 RegionManager::t_small_gpu_write = false;
                                 manager->lock.unlock();

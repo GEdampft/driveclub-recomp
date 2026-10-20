@@ -111,13 +111,66 @@ void BufferCache::NoteSmallGpuWrite(VAddr device_addr, u64 size) {
         if (ReadbackHybrid::IsFastPage(device_addr)) {
             g_noted.push_back({device_addr, first_end - device_addr});
         }
-        if (last_begin < end && ReadbackHybrid::IsFastPage(last_begin)) {
+        if (last_begin < end && last_begin >= first_end && ReadbackHybrid::IsFastPage(last_begin)) {
             g_noted.push_back({last_begin, end - last_begin});
         }
         return;
     }
+    // readback_hybrid.h: only ranges on its fast pages.
+    if (ReadbackHybrid::Enabled() && !ReadbackHybrid::SmallFast() &&
+        !(ReadbackHybrid::IsFastPage(device_addr) &&
+          ((device_addr ^ (device_addr + size - 1)) < 4096 || ReadbackHybrid::IsFastPage(device_addr + size - 1)))) {
+        return;
+    }
     std::scoped_lock lk{g_mutex};
     g_noted.push_back({device_addr, size});
+}
+
+// readback_hybrid.h: a fast page's GPU bytes go into guest memory only where the GPU changed them since the shadow
+// and the game did not (both changed: the game's value stays and goes up with the next upload). Other pages: all of
+// them with `other_pages` (a readback), none without (a copy-back: a page no longer fast gets its bytes by readback).
+void BufferCache::MergeCopyBack(VAddr addr, const u8* gpu, u64 size, bool other_pages) {
+    // Page by page: pages that are not fast take the GPU's bytes as they are (or none), a fast page merges.
+    for (u64 k = 0; k < size;) {
+        const VAddr at = addr + k;
+        const VAddr page = at & ~VAddr(4095);
+        const u64 seg = std::min<u64>(size - k, page + 4096 - at);
+        u8 guest[4096], merged[4096];
+        bool fast = false;
+        if (ReadbackHybrid::IsFastPage(page)) {
+            memory->CopySparseMemory(at, guest, seg);
+            std::memcpy(merged, guest, seg);
+            fast = ReadbackHybrid::WithShadow(page, [&](u8* shadow) {
+                u8* sh = shadow + (at - page);
+                for (u64 j = 0; j < seg; ++j) {
+                    const u8 v = gpu[k + j];
+                    if (v != sh[j]) {
+                        if (guest[j] == sh[j]) {
+                            merged[j] = v;
+                        }
+                        sh[j] = v;
+                    }
+                }
+            });
+        }
+        if (fast) {
+            for (u64 j = 0; j < seg;) {
+                if (merged[j] == guest[j]) {
+                    ++j;
+                    continue;
+                }
+                u64 e = j;
+                while (e < seg && merged[e] != guest[e]) {
+                    ++e;
+                }
+                memory->TryWriteBacking(std::bit_cast<u8*>(at + j), merged + j, e - j);
+                j = e;
+            }
+        } else if (other_pages) {
+            memory->TryWriteBacking(std::bit_cast<u8*>(at), gpu + k, seg);
+        }
+        k += seg;
+    }
 }
 
 void BufferCache::WriteBackSmallWrites() {
@@ -132,8 +185,12 @@ void BufferCache::WriteBackSmallWrites() {
         Job& job = g_jobs.front();
         job.staging.buffer->Invalidate(job.staging.offset, job.staging.size);
         for (size_t i = 0; i < job.ranges.size(); ++i) {
-            memory->TryWriteBacking(std::bit_cast<u8*>(job.ranges[i].addr), job.staging.mapped + job.offsets[i],
-                                    job.ranges[i].size);
+            const u8* gpu = job.staging.mapped + job.offsets[i];
+            if (!ReadbackHybrid::Enabled()) {
+                memory->TryWriteBacking(std::bit_cast<u8*>(job.ranges[i].addr), gpu, job.ranges[i].size);
+                continue;
+            }
+            MergeCopyBack(job.ranges[i].addr, gpu, job.ranges[i].size, false);
         }
         staging_pool.FreeDeferred(job.staging);
         g_jobs.pop_front();

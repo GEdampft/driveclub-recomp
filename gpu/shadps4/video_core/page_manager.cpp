@@ -8,6 +8,7 @@
 #include "common/div_ceil.h"
 #include "common/error.h"
 #include "common/range_lock.h"
+#include "common/decoder.h"
 #include "common/signal_context.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
@@ -108,10 +109,105 @@ struct PageManager::Impl {
 
     virtual void Protect(VAddr address, size_t size, Core::MemoryPermission perms) = 0;
 
+#ifdef _WIN32
+    // VR fork (readback_hybrid.h): a guest access that touches only the game's own bytes on a page the GPU wrote runs
+    // with the page open for that one instruction (trap flag); StepHandler then puts the page's protection back. It
+    // needs no GPU data, so it neither reads back nor waits. A write first marks the page CPU modified.
+    inline static Impl* instance;
+    inline static thread_local u64 t_step_pages[4];
+    inline static thread_local u32 t_num_step_pages;
+
+    bool StepOwnAccess(void* context, VAddr addr, bool write) {
+        const u64 page = addr >> PM_PAGE_BITS;
+        if (page >= NUM_ADDRESS_PAGES || t_num_step_pages >= std::size(t_step_pages) ||
+            cached_pages[page].num_read_watchers == 0 || !ReadbackHybrid::OwnBytes(addr) ||
+            !ReadbackHybrid::GpuWroteBytes(page << PM_PAGE_BITS, PM_PAGE_SIZE)) {
+            // No GPU data on the page (a plain write fault, or a readback would only unprotect it), or the access
+            // may touch some.
+            return false;
+        }
+        switch (ReadbackHybrid::LearnStep(addr)) {
+        case ReadbackHybrid::StepAction::Step:
+            break;
+        case ReadbackHybrid::StepAction::ReadBack:
+            return false; // an exact page over its stepping budget: one readback instead
+        case ReadbackHybrid::StepAction::Promote: {
+            // Learned fast: read back (guest memory then holds the GPU's bytes), take the shadow, and let this access
+            // go the usual way.
+            const VAddr base = page << PM_PAGE_BITS;
+            rasterizer->ReadMemory(base, PM_PAGE_SIZE, false);
+            u8 guest[PM_PAGE_SIZE];
+            Core::Memory::Instance()->CopySparseMemory(base, guest, PM_PAGE_SIZE);
+            ReadbackHybrid::PromoteFastPage(base, guest);
+            return false;
+        }
+        }
+        if (write) {
+            ReadbackHybrid::t_own_write = true;
+            rasterizer->OnWriteFault(addr, false);
+            ReadbackHybrid::t_own_write = false;
+        }
+        {
+            std::scoped_lock lk(locks[page / PAGES_PER_LOCK]);
+            Protect(page << PM_PAGE_BITS, PM_PAGE_SIZE,
+                    Core::MemoryPermission::Read | cached_pages[page].WritePerm());
+        }
+        t_step_pages[t_num_step_pages++] = page;
+        static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord->EFlags |= 0x100;
+        ReadbackHybrid::NoteStep(write, addr);
+        return true;
+    }
+
+    /// The bytes the faulting instruction accesses in memory (its widest memory operand); 32 when not decoded, and for
+    /// gathers (their addresses are elsewhere).
+    static u32 AccessSize(void* context) {
+        ZydisDecodedInstruction inst;
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+        const u64 rip = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord->Rip;
+        if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(inst, operands, reinterpret_cast<void*>(rip)))) {
+            return 32;
+        }
+        u32 size = 0;
+        for (u32 i = 0; i < inst.operand_count; ++i) {
+            const auto& op = operands[i];
+            if (op.type != ZYDIS_OPERAND_TYPE_MEMORY || op.mem.type != ZYDIS_MEMOP_TYPE_MEM) {
+                continue;
+            }
+            if (op.mem.index >= ZYDIS_REGISTER_XMM0 && op.mem.index <= ZYDIS_REGISTER_ZMM31) {
+                return 32; // a gather or scatter
+            }
+            size = std::max<u32>(size, op.size / 8);
+        }
+        return size ? std::min<u32>(size, 64) : 32;
+    }
+
+    static LONG CALLBACK StepHandler(EXCEPTION_POINTERS* info) {
+        if (info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP || t_num_step_pages == 0) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        for (u32 i = 0; i < t_num_step_pages; ++i) {
+            const u64 page = t_step_pages[i];
+            std::scoped_lock lk(instance->locks[page / PAGES_PER_LOCK]);
+            instance->Protect(page << PM_PAGE_BITS, PM_PAGE_SIZE, instance->cached_pages[page].Perms());
+        }
+        t_num_step_pages = 0;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+#endif
+
     static bool GuestFaultSignalHandler(void* context, void* fault_address) {
         const auto addr = reinterpret_cast<VAddr>(fault_address);
         // bbport: the draw recording thread handles its faults inline too (vk_draw_pipe.h).
         const auto is_gpu_thread = rasterizer->IsGpuSideThread();
+#ifdef _WIN32
+        if (!is_gpu_thread && instance && ReadbackHybrid::Enabled()) { // VR fork
+            ReadbackHybrid::t_access_size = AccessSize(context);
+            ReadbackHybrid::t_fault_rip = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord->Rip;
+            if (instance->StepOwnAccess(context, addr, Common::IsWriteError(context))) {
+                return true;
+            }
+        }
+#endif
         if (is_gpu_thread) {
             BbStats::gpu_signal_faults.fetch_add(1, std::memory_order_relaxed);
         }
@@ -428,12 +524,21 @@ struct SignalImpl : public PageManager::Impl {
         constexpr auto priority = std::numeric_limits<u32>::min();
         Core::Signals::Instance()->RegisterAccessViolationHandler(GuestFaultSignalHandler,
                                                                   priority);
+#ifdef _WIN32
+        instance = this; // VR fork: StepOwnAccess
+        AddVectoredExceptionHandler(1, StepHandler);
+#endif
     }
 
     void Protect(VAddr address, size_t size, Core::MemoryPermission perms) override {
         RENDERER_TRACE;
         auto* memory = Core::Memory::Instance();
         auto& impl = memory->GetAddressSpace();
+        // VR fork: a page the GPU wrote that the game also wrote (its own bytes, readback_hybrid.h) is watched for
+        // reads but not writes; no access at all keeps the reads watched (the host has no write-only pages).
+        if (perms == Core::MemoryPermission::Write && ReadbackHybrid::Enabled()) {
+            perms = Core::MemoryPermission::None;
+        }
         ASSERT_MSG(perms != Core::MemoryPermission::Write,
                    "Attempted to protect region as write-only which is not a valid permission");
         impl.Protect(address, size, perms);

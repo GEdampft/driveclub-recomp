@@ -100,22 +100,37 @@ bool g_camlog = false;
 int g_fov_mode = 2; // BB_VR_FOV: 0 the game's projection, 1 symmetric headset field of view, 2 the headset's (asymmetric)
 std::atomic<int> g_log_next{0};
 
-// First prototype: manual F6 toggle. Do NOT switch game camera while enabled.
+// The game has five camera views. The button presses provide a relative cycle index.
+// F6 marks/unmarks the CURRENT view for a chase-camera offset; F5 clears markings.
+// This does not read the game's internal mode ID; menus/race loads may desynchronise it.
+std::atomic<unsigned> g_camera_slot{0};
+std::atomic<unsigned> g_camera_marks{0};
+void PollCameraCalibration() {
+#ifdef _WIN32
+    static bool f6_down = false, f5_down = false;
+    const bool f6 = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
+    const bool f5 = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+    if (f5 && !f5_down) {
+        g_camera_marks.store(0, std::memory_order_release);
+        std::puts("VR camera: all five view markings cleared (F5)");
+    }
+    if (f6 && !f6_down) {
+        const unsigned slot = g_camera_slot.load(std::memory_order_acquire);
+        const unsigned bit = 1u << slot;
+        const unsigned mask = g_camera_marks.fetch_xor(bit, std::memory_order_acq_rel) ^ bit;
+        std::printf("VR camera: view %u %s (F6), marked mask 0x%x\n",
+                    slot, mask & bit ? "MARKED" : "unmarked", mask);
+    }
+    if ((f5 && !f5_down) || (f6 && !f6_down)) std::fflush(stdout);
+    f5_down = f5;
+    f6_down = f6;
+#endif
+}
 bool FarCameraActive() {
     if (!UserConfig::Get().far_enabled) return false;
-#ifdef _WIN32
-    static bool down = false, active = false;
-    const bool pressed = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
-    if (pressed && !down) {
-        active = !active;
-        std::printf("VR far-camera offset: %s (F6)\n", active ? "ON" : "OFF");
-        std::fflush(stdout);
-    }
-    down = pressed;
-    return active;
-#else
-    return false;
-#endif
+    PollCameraCalibration();
+    return (g_camera_marks.load(std::memory_order_acquire) &
+        (1u << g_camera_slot.load(std::memory_order_acquire))) != 0;
 }
 
 std::atomic<float> g_near{0.f};
@@ -522,4 +537,16 @@ bool RenderedAt(const float* position, float (&layer_pose)[7], float (&tangents)
     return true;
 }
 
+void CameraModeAdvance() {
+    const unsigned next = (g_camera_slot.load(std::memory_order_relaxed) + 1u) % 5u;
+    g_camera_slot.store(next, std::memory_order_release);
+    std::printf("VR camera: view cycle to slot %u of 5\n", next);
+    std::fflush(stdout);
+}
+
 } // namespace Vulkan::Vr::Camera
+
+extern "C" void bbgpu_vr_camera_advance(void) {
+    Vulkan::Vr::Camera::CameraModeAdvance();
+}
+

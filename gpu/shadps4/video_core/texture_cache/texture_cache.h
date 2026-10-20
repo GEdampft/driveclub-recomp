@@ -377,6 +377,9 @@ private:
     void TouchImage(const Image& image);
 
     [[gnu::always_inline]] void FreeImage(ImageId image_id) {
+        if (!depth_twins.empty()) [[unlikely]] {
+            FreeDepthTwin(image_id);
+        }
         UntrackImage(image_id);
         UnregisterImage(image_id);
         DeleteImage(image_id);
@@ -439,6 +442,13 @@ private:
         s32 clear_mask = -1;
     };
     tsl::robin_map<VAddr, MetaDataInfo> surface_metas;
+    /// bbport: the other form (depth or color) of a registered image that switches between the two
+    /// (ResolveDepthOverlap), kept unregistered so that a switch back does not create an image again.
+    tsl::robin_map<u32, ImageId> depth_twins;
+    /// Turns registered image `image_id` into `new_info` (same memory, other form) in place: its
+    /// registration and page tracking stay; the Vulkan image comes from its twin.
+    void SwapDepthForm(ImageId image_id, const ImageInfo& new_info);
+    void FreeDepthTwin(ImageId image_id);
 };
 
 } // namespace VideoCore

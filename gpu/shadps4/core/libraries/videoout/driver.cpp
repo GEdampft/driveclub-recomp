@@ -16,6 +16,7 @@
 #include "video_core/renderer_vulkan/vr/vr_openxr.h" // VR
 
 extern "C" void BbDescribeAddress(unsigned long long rip, char* out, unsigned long size);
+extern "C" void runtime_benchmark_flip(void); // src/runtime_benchmark.c (BB_BENCHMARK)
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -301,6 +302,7 @@ void VideoOutDriver::Flip(const Request& req) {
     });
     Vulkan::FrameCapture::OnFlip(req.index >= 0 ? req.port->buffer_slots[req.index].address_left
                                                 : 0);
+    runtime_benchmark_flip();
 
     // bbport: BB_FRAME_STATS=1 prints flip rate and frame time spread every 5 seconds.
     static const bool frame_stats = EmulatorSettingsImpl::Flag("BB_FRAME_STATS", false);
@@ -757,8 +759,38 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     const auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
                                           : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
-    std::printf("VideoOut: vblank %u Hz, frame limit %u FPS\n",
-                EmulatorSettings.GetVblankFrequency(), frame_limit);
+    // bbport: BB_PACE_CREDIT=<percent of a period, default 0>: how much earlier than one
+    // period after a release the next release may come when frames run late. The slot after a
+    // release at `now` is max(slot + period, now + period - credit). 200 is the old rule
+    // (now - period: after a late frame the next one, and even a second, goes out at once:
+    // a long frame followed by a short one); 0 keeps every release at least one period after
+    // the one before (minimum spacing: a late frame only delays, it is never repaid).
+    // Default 0 (minimum spacing): measured in DriveClub's race at equal FPS, frame time sd
+    // 5.23 -> 3.66 ms, 1% low 29.1 -> 31.5 FPS, menus sd 5.07 -> 2.89 ms.
+    const long credit_pct =
+        std::clamp<long>(EmulatorSettingsImpl::Number("BB_PACE_CREDIT", 0), 0, 200);
+    const auto credit = frame_period * credit_pct / 100;
+    // Off the old rule the waits for a slot use the precise sleep: a release that wakes late
+    // would otherwise come out short of its period.
+    const bool precise_wait = credit_pct != 200;
+    std::printf("VideoOut: vblank %u Hz, frame limit %u FPS, pacing credit %ld%%\n",
+                EmulatorSettings.GetVblankFrequency(), frame_limit, credit_pct);
+    // The slot of the next flip after one released at `now`.
+    const auto advance = [&](std::chrono::steady_clock::time_point now) {
+        next_flip = std::max(next_flip + Vulkan::Vr::FramePeriod(frame_period), now + frame_period - credit); // VR
+    };
+    const auto sleep_to = [&](std::chrono::steady_clock::time_point until) {
+        if (precise_wait) {
+            const auto now = std::chrono::steady_clock::now();
+            if (until > now) {
+                Common::AccurateSleep(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(until - now), nullptr,
+                    false);
+            }
+        } else {
+            std::this_thread::sleep_until(until);
+        }
+    };
 
     const auto receive_request = [this] -> Request {
         std::scoped_lock lk{mutex};
@@ -793,7 +825,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         if (flip_slot && vblank_status.count % (flip_rate + 1) == 0) {
             const auto request = receive_request();
             if (request && frame_limit) {
-                next_flip = std::max(next_flip + Vulkan::Vr::FramePeriod(frame_period), now - frame_period); // VR
+                advance(now);
             }
             if (!request) {
                 if (timer.GetTotalWait().count() < 0) { // Dont draw too fast
@@ -849,7 +881,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 if (next_flip >= tick_deadline) {
                     break;
                 }
-                std::this_thread::sleep_until(next_flip);
+                sleep_to(next_flip);
             }
             if (!Vulkan::Vr::FlipAllowed()) {
                 break; // VR: the headset's next frame (the next vblank tick looks again)
@@ -857,12 +889,12 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             const auto now = std::chrono::steady_clock::now();
             const auto request = receive_request();
             if (request) {
-                next_flip = std::max(next_flip + Vulkan::Vr::FramePeriod(frame_period), now - frame_period); // VR
+                advance(now);
                 Flip(request);
                 FRAME_END;
             }
         }
-        std::this_thread::sleep_until(tick_deadline);
+        sleep_to(tick_deadline);
     }
 }
 

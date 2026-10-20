@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <cstdio>
+#include <unordered_map>
 #include <xxhash.h>
 
 #include "bbport_toggles.h"
@@ -218,6 +221,45 @@ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
     }
 }
 
+namespace {
+// bbport: BB_FRAME_STATS - images recreated because one address is used as a depth and as a color
+// image, by address, binding and shape; printed every 5 s with the time they took.
+struct DepthRecreate {
+    u64 count = 0, ns = 0;
+    u32 binding = 0, width = 0, height = 0, bits = 0;
+    bool from_depth = false;
+    vk::Format format{};
+};
+std::unordered_map<VAddr, DepthRecreate> depth_recreates;
+u64 depth_recreate_ns = 0, depth_recreate_count = 0;
+std::chrono::steady_clock::time_point depth_recreate_window = std::chrono::steady_clock::now();
+
+void PrintDepthRecreates() {
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - depth_recreate_window).count();
+    if (seconds < 5.0) {
+        return;
+    }
+    std::vector<std::pair<VAddr, DepthRecreate>> top(depth_recreates.begin(), depth_recreates.end());
+    std::ranges::sort(top, [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
+    static constexpr const char* bindings[] = {"texture", "storage", "color target", "depth target",
+                                               "video out"};
+    std::printf("Depth overlap recreates: %.0f/s, %.1f ms/s, %zu addresses\n",
+                depth_recreate_count / seconds, depth_recreate_ns / 1e6 / seconds, top.size());
+    for (size_t i = 0; i < top.size() && i < 8; ++i) {
+        const auto& [address, r] = top[i];
+        std::printf("  %#llx: %.1f/s, %.0f us each, %s to %s for %s, %ux%u %u bits %s\n",
+                    static_cast<unsigned long long>(address), r.count / seconds,
+                    r.count ? r.ns / 1e3 / r.count : 0.0, r.from_depth ? "depth" : "color",
+                    r.from_depth ? "color" : "depth", bindings[std::min<u32>(r.binding, 4)],
+                    r.width, r.height, r.bits, vk::to_string(r.format).c_str());
+    }
+    depth_recreates.clear();
+    depth_recreate_ns = depth_recreate_count = 0;
+    depth_recreate_window = now;
+}
+} // namespace
+
 ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, BindingType binding,
                                           ImageId cache_image_id) {
     auto& cache_image = slot_images[cache_image_id];
@@ -264,6 +306,10 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
     }
 
     if (recreate) {
+        const auto stats_start = BbStats::enabled ? std::chrono::steady_clock::now()
+                                                  : std::chrono::steady_clock::time_point{};
+        const bool from_depth = cache_image.info.props.is_depth;
+        const VAddr stats_address = cache_image.info.guest_address;
         auto new_info = requested_info;
         new_info.resources = std::max(requested_info.resources, cache_image.info.resources);
         new_info.UpdateSize();
@@ -272,25 +318,131 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
             BbStats::mirror_img_created[0].fetch_add(1, std::memory_order_relaxed);
             BbStats::mirror_img_created_stale.fetch_add(BbStats::MirrorStale(new_info.guest_address), std::memory_order_relaxed);
         }
-        const auto new_image_id = slot_images.insert(instance, runtime, slot_image_views, new_info);
-        RegisterImage(new_image_id);
+        ImageId new_image_id;
+        // bbport: DriveClub switches a few images between the two forms twice per frame (a depth
+        // target that a pass renders as color or uses as storage). Creating and freeing an image
+        // each time, with its registration and page tracking, was ~8% of the GPU thread. The same
+        // memory keeps its registered image; the Vulkan image of the other form is kept aside.
+        if (!BbToggle::Disabled(BbToggle::DepthFormSwap) && !cache_image.scene_proxy &&
+            new_info.guest_address == cache_image.info.guest_address &&
+            new_info.guest_size == cache_image.info.guest_size) {
+            SwapDepthForm(cache_image_id, new_info);
+            new_image_id = cache_image_id;
+        } else {
+            new_image_id = slot_images.insert(instance, runtime, slot_image_views, new_info);
+            RegisterImage(new_image_id);
 
-        // Inherit image usage (the insert may have moved the storage: take both images again)
-        auto& new_image = slot_images[new_image_id];
-        auto& old_image = slot_images[cache_image_id];
-        new_image.usage = old_image.usage;
-        new_image.flags &= ~ImageFlagBits::Dirty;
-        // When creating a depth buffer through overlap resolution don't clear it on first use.
-        new_image.info.meta_info.htile_clear_mask = 0;
-        runtime.CopyColorAndDepth(&old_image, &new_image);
+            // Inherit image usage (the insert may have moved the storage: take both images again)
+            auto& new_image = slot_images[new_image_id];
+            auto& old_image = slot_images[cache_image_id];
+            new_image.usage = old_image.usage;
+            new_image.flags &= ~ImageFlagBits::Dirty;
+            // When creating a depth buffer through overlap resolution don't clear it on first use.
+            new_image.info.meta_info.htile_clear_mask = 0;
+            runtime.CopyColorAndDepth(&old_image, &new_image);
 
-        // Free the cache image.
-        FreeImage(cache_image_id);
+            // Free the cache image.
+            FreeImage(cache_image_id);
+        }
+        if (BbStats::enabled) {
+            const u64 ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - stats_start)
+                               .count();
+            auto& r = depth_recreates[stats_address];
+            r.count++;
+            r.ns += ns;
+            r.binding = static_cast<u32>(binding);
+            r.from_depth = from_depth;
+            r.width = new_info.size.width;
+            r.height = new_info.size.height;
+            r.bits = new_info.num_bits;
+            r.format = new_info.pixel_format;
+            depth_recreate_ns += ns;
+            ++depth_recreate_count;
+            PrintDepthRecreates();
+        }
         return new_image_id;
     }
 
     // Will be handled by view
     return cache_image_id;
+}
+
+namespace {
+/// The twin can stand in for an image made from `info`: the same Vulkan image shape.
+bool SameDepthForm(const ImageInfo& a, const ImageInfo& b) {
+    return a.guest_address == b.guest_address && a.guest_size == b.guest_size &&
+           a.pixel_format == b.pixel_format && a.type == b.type && a.size == b.size &&
+           a.resources == b.resources && a.num_samples == b.num_samples &&
+           a.num_bits == b.num_bits && a.pitch == b.pitch && a.tile_mode == b.tile_mode &&
+           a.props.is_depth == b.props.is_depth && a.props.has_stencil == b.props.has_stencil &&
+           a.props.is_tiled == b.props.is_tiled && a.props.is_block == b.props.is_block;
+}
+} // namespace
+
+void TextureCache::SwapDepthForm(ImageId image_id, const ImageInfo& new_info) {
+    ImageId twin_id{};
+    if (const auto it = depth_twins.find(image_id.index); it != depth_twins.end()) {
+        twin_id = it->second;
+        if (!SameDepthForm(slot_images[twin_id].info, new_info)) {
+            DeleteImage(twin_id);
+            depth_twins.erase(it);
+            twin_id = {};
+        }
+    }
+    if (!twin_id) {
+        twin_id = slot_images.insert(instance, runtime, slot_image_views, new_info);
+    }
+    // The insert may have moved the storage: take both images after it.
+    Image& image = slot_images[image_id];
+    Image& twin = slot_images[twin_id];
+    // The Vulkan shape matches (SameDepthForm); the guest description (tiling, bank swizzle, mip layout,
+    // metadata) is the new one in full: a reused twin kept the old guest fields.
+    twin.info = new_info;
+    // When creating a depth buffer through overlap resolution don't clear it on first use.
+    twin.info.meta_info.htile_clear_mask = 0;
+    runtime.CopyColorAndDepth(&image, &twin);
+
+    // The metadata of the form that goes away is dropped, as when its image was freed.
+    const auto& meta_info = image.info.meta_info;
+    if (meta_info.cmask_addr) {
+        surface_metas.erase(meta_info.cmask_addr);
+    }
+    if (meta_info.fmask_addr) {
+        surface_metas.erase(meta_info.fmask_addr);
+    }
+    if (meta_info.htile_addr) {
+        surface_metas.erase(meta_info.htile_addr);
+    }
+
+    // Everything that belongs to the Vulkan image changes hands; the registration, page tracking,
+    // usage, LRU entry and the CPU/GPU state of the memory stay with the registered image.
+    std::swap(image.info, twin.info);
+    std::swap(image.aspect_mask, twin.aspect_mask);
+    std::swap(image.supported_samples, twin.supported_samples);
+    std::swap(image.usage_flags, twin.usage_flags);
+    std::swap(image.format_features, twin.format_features);
+    std::swap(image.backing_images, twin.backing_images);
+    std::swap(image.backing, twin.backing);
+    std::swap(image.image_uid, twin.image_uid);
+    std::swap(image.mip_hashes, twin.mip_hashes);
+    std::swap(image.hash, twin.hash);
+    image.binding = {};
+    twin.binding = {};
+    // The kept form holds no metadata (dropped above), so deleting it later drops nothing in use.
+    twin.info.meta_info = {};
+    image.flags &= ~ImageFlagBits::Dirty;
+    depth_twins[image_id.index] = twin_id;
+    // Lookups memoized on the registry (bindings, targets, views) must not reuse the old form.
+    ++registry_generation;
+}
+
+void TextureCache::FreeDepthTwin(ImageId image_id) {
+    if (const auto it = depth_twins.find(image_id.index); it != depth_twins.end()) {
+        const ImageId twin_id = it->second;
+        depth_twins.erase(it);
+        DeleteImage(twin_id);
+    }
 }
 
 std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& image_info,

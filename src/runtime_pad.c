@@ -603,6 +603,12 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!data) return ERR_INVALID_ARG;
     pthread_mutex_lock(&lock);
     sample(data); ++reads;
+    /* Count change-camera presses after gamepad/keyboard binding. */
+    { static int triangle_down;
+      const int triangle = (data->buttons & BTN_TRIANGLE) != 0;
+      if (triangle && !triangle_down) bbgpu_vr_camera_advance();
+      triangle_down = triangle;
+    }
 #ifdef _WIN32
     { static int armed; if (data->buttons && !armed && getenv("DR_WATCH")) { armed=1; watch_install(data); } }
 #endif

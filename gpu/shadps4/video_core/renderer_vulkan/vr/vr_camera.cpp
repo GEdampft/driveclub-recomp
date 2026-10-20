@@ -25,6 +25,7 @@
 
 #include "video_core/renderer_vulkan/vr/vr_camera.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
+#include "video_core/renderer_vulkan/vr/vr_user_config.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -98,6 +99,25 @@ bool g_head_enabled = true;
 bool g_camlog = false;
 int g_fov_mode = 2; // BB_VR_FOV: 0 the game's projection, 1 symmetric headset field of view, 2 the headset's (asymmetric)
 std::atomic<int> g_log_next{0};
+
+// First prototype: manual F6 toggle. Do NOT switch game camera while enabled.
+bool FarCameraActive() {
+    if (!UserConfig::Get().far_enabled) return false;
+#ifdef _WIN32
+    static bool down = false, active = false;
+    const bool pressed = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
+    if (pressed && !down) {
+        active = !active;
+        std::printf("VR far-camera offset: %s (F6)\n", active ? "ON" : "OFF");
+        std::fflush(stdout);
+    }
+    down = pressed;
+    return active;
+#else
+    return false;
+#endif
+}
+
 std::atomic<float> g_near{0.f};
 
 void Multiply(const float* a, const float* b, float* out) {
@@ -235,12 +255,32 @@ extern "C" void SceneHandler(u64* regs) {
         g_rendered = g_head;
         g_rendered_valid = true;
     }
+    // The game's actual far/near mode is not identified yet; apply only while F6 toggled on.
+    float custom_world[16];
+    const float* camera_world = world;
+    if (FarCameraActive()) {
+        const auto& cfg = UserConfig::Get();
+        std::memcpy(custom_world, world, sizeof(custom_world));
+        // Row-vector world: third row is local backward, last row is position.
+        for (int i = 0; i < 3; ++i)
+            custom_world[12 + i] += world[8 + i] * cfg.far_distance_offset;
+        custom_world[13] += cfg.far_height_offset;
+        if (cfg.far_pitch_offset != 0.f) {
+            const float radians = -cfg.far_pitch_offset * 0.01745329251994329577f;
+            const float co = std::cos(radians), si = std::sin(radians);
+            for (int i = 0; i < 3; ++i) {
+                custom_world[4 + i] = co * world[4 + i] + si * world[8 + i];
+                custom_world[8 + i] = -si * world[4 + i] + co * world[8 + i];
+            }
+        }
+        camera_world = custom_world;
+    }
     g_near = proj[14];
     CameraDesc& copy = g_ring[g_ring_next.fetch_add(1) % RingSize];
     std::memcpy(copy.bytes, desc, sizeof(copy.bytes));
     auto* new_world = reinterpret_cast<float*>(copy.bytes);
     auto* new_proj = new_world + 16;
-    Multiply(head.pose, world, new_world);
+    Multiply(head.pose, camera_world, new_world);
 
     // The headset's field of view, the game's depth terms kept (reversed infinite: P[3][2] = near).
     float l = head.tan[0], r = head.tan[1], u = head.tan[2], d = head.tan[3];

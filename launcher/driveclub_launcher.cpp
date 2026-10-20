@@ -119,6 +119,8 @@ bool OnPage(const Card& card) { return card.tab == g_tab; }
 std::wstring g_status;
 std::wstring g_gpu_problem;  // from CheckGpu() at start; Play stays off while it is set, unless the check is skipped
 bool g_skip_gpu_check = false;  // "Skip the graphics card check" in the launcher (skip_gpu_check= in launcher.ini)
+bool g_allow_overlays = false;  // "Let overlay programs into the game" (overlays= in launcher.ini)
+bool g_auto_play = false;  // "Start the game without this window" (auto_play= in launcher.ini)
 bool GpuBlocked() { return !g_gpu_problem.empty() && !g_skip_gpu_check; }
 Color g_status_color = kMuted;
 RectF g_btn[3];  // reset, save, play
@@ -412,11 +414,14 @@ void BuildModel() {
                         00));
   const int wide = (g_wide = int(g_c.size()), seg(L"Widescreen (render and output)",
                        L"Ultrawide sizes. These change both the render and the output size. The needed memory patch is added for you.",
-                       {L"Off", L"21:9 2560x1080", L"32:9 3840x1080", L"21:9 3440x1440", L"32:9 5120x1440"},
+                       {L"Off", L"2560x1080", L"3440x1080", L"3840x1080", L"3440x1440",
+                        L"5120x1440", L"5120x2160"},
                        {"", "1080p 21:9 [2560x1080] Internal + Output resolution [DEPTH BUG]",
+                        "1080p 32:10 [3440x1080] Internal + Output resolution [DEPTH BUG]",
                         "1080p 32:9 [3840x1080] Internal + Output resolution [DEPTH BUG]",
                         "1440p 21:9 [3440x1440] Internal + Output resolution [DEPTH BUG]",
-                        "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]"},
+                        "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]",
+                        "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]"},
                        00));
   const int fov = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
                          "FOV fix for wide resolutions", false);
@@ -452,6 +457,13 @@ void BuildModel() {
   const int skipgpu = toggle(L"Skip the hardware check",
                              L"The launcher checks that your processor and graphics card can run the game (Vulkan 1.3). If it refuses hardware that does work, turn this on to start anyway.",
                              "@skipgpu", false);
+  const int autoplay = toggle(L"Start the game without this window",
+                              L"Double-clicking DriveClub.exe goes straight to the game. When it cannot start, "
+                              L"this window opens anyway with the reason.", "@autoplay", false);
+  const int overlays = toggle(L"Let overlay programs into the game",
+                              L"Steam, Epic, Discord, OBS and tuning tools add themselves to the game's graphics. "
+                              L"A part of the crashes players report comes from those additions, so the launcher keeps them "
+                              L"out. Turn this on if you want the in-game overlay while playing.", "@overlays", false);
   const int showfps = toggle(L"Show FPS counter", L"Draws the frame rate in the top right corner while playing.", "@fps", false);
   const int full = toggle(L"Fullscreen", L"Plays borderless fullscreen. Turn off for a window.", "@full", true);
   const int unlock = toggle(L"Unlock DLC content",
@@ -520,7 +532,7 @@ void BuildModel() {
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_aniso}, 0, kTabGraphics});
   g_tex_card = int(g_cards.size());
   g_cards.push_back({L"TEXTURE FILTERING", {g_aniso}, 0, kTabGraphics});
-  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0, kTabGameplay});
+  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, overlays, autoplay}, 0, kTabGameplay});
   g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0, kTabGameplay,
                      L"Community patches for DriveClub version 1.28."});
   g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen}, 0, kTabBench});
@@ -578,6 +590,8 @@ void LoadSettings() {
     if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = line.substr(9) == "1";
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
+    if (line.rfind("overlays=", 0) == 0) g_allow_overlays = line.substr(9) == "1";
+    if (line.rfind("auto_play=", 0) == 0) g_auto_play = line.substr(10) == "1";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("vr_dlss=", 0) == 0) vrdlss_saved = atoi(line.substr(8).c_str());  // VR fork
     if (line.rfind("vr_sharpness=", 0) == 0) vrsharp_saved = atoi(line.substr(13).c_str());  // VR fork
@@ -608,6 +622,14 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@fast") {
       c.sel = fast_render ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") {
+      c.sel = g_allow_overlays ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") {
+      c.sel = g_auto_play ? 1 : 0;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") {
@@ -702,8 +724,9 @@ int RenderMemoryTier() {
     return rh <= 1080 ? 0 : rh <= 1440 ? 1 : rh <= 2160 ? 2 : 3;
   }
   if (g_inres < 0 || g_wide < 0) return 0;
-  const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + 3 sizes
+  const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
   if (r >= 5) return 3;
+  if (w == 6) return 3;  // 5120x2160 is 11 megapixels
   if (w > 0 || r >= 3) return 2;
   return r == 2 ? 1 : 0;
 }
@@ -730,9 +753,11 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@fast") fast_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@full") full_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") g_allow_overlays = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_model=" << (g_vrmodel >= 0 ? g_c[g_vrmodel].sel : 0) << "\r\nvr_experimental=" << (ExperimentalOn() ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_model=" << (g_vrmodel >= 0 ? g_c[g_vrmodel].sel : 0) << "\r\nvr_experimental=" << (ExperimentalOn() ? 1 : 0) << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
         << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
@@ -2272,26 +2297,28 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_status_color = kBad;
   }
 
-  const bool play_now = wcsstr(GetCommandLineW(), L"--play") != nullptr;
+  const bool asked = wcsstr(GetCommandLineW(), L"--play") != nullptr;
+  const bool play_now = asked || g_auto_play;  // the row that starts the game straight away
   if (play_now) {
-    if (!FoldersOk()) {
-      MessageBoxW(nullptr, L"Open DriveClub.exe once and choose the game folders.", L"DriveClub", MB_OK | MB_ICONERROR);
-      return 1;
-    }
-    if (!g_skip_gpu_check) {
-      if (const std::wstring gpu = CheckGpu(); !gpu.empty()) {
-        MessageBoxW(nullptr, gpu.c_str(), L"DriveClub", MB_OK | MB_ICONERROR);
-        return 1;
+    const std::wstring stop = [] {
+      if (!FoldersOk()) return std::wstring(L"Open DriveClub.exe once and choose the game folders.");
+      if (!g_skip_gpu_check) {
+        if (const std::wstring gpu = CheckGpu(); !gpu.empty()) return gpu;
       }
-    }
-    SaveSettings();
-    const std::wstring error = [] {
+      SaveSettings();
       SetProgress(0, L"");
       std::wstring e = RunPrepare();
       return e.empty() ? StartGame() : e;
     }();
-    if (!error.empty()) MessageBoxW(nullptr, error.c_str(), L"DriveClub", MB_OK | MB_ICONERROR);
-    return error.empty() ? 0 : 1;
+    if (stop.empty()) return 0;
+    if (asked) {
+      MessageBoxW(nullptr, stop.c_str(), L"DriveClub", MB_OK | MB_ICONERROR);
+      return 1;
+    }
+    // The straight-away setting could not start the game: the window opens with the reason, so the
+    // player is never left with a double click that appears to do nothing.
+    g_status = stop;
+    g_status_color = kBad;
   }
 
   GdiplusStartupInput gsi;

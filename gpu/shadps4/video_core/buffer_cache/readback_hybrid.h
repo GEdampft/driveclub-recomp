@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// VR fork: precise readbacks without most of their cost (BB_READBACK_HYBRID, on by default with precise readbacks).
+// VR fork: precise readbacks without most of their cost (BB_READBACK_HYBRID=1; off by default, see below).
 //
 // With precise readbacks every page the GPU writes is protected, and a guest access to it waits for the GPU to finish
 // the work that wrote it. Driveclub keeps its own hot data in the same 4 KB pages as some of the GPU's output: small
@@ -9,8 +9,14 @@
 // Pages whose guest faults only ever hit the game's own bytes are learned (LearnFault) and marked "fast": they stay
 // GPU modified but are not protected (RegionManager::small_gpu), and small_writeback.cpp copies their GPU bytes back
 // after each submit, as with readbacks off. Written ranges of up to 1 KB are fast from the start. A page where a guest
-// access touched GPU bytes (the crowd's ground heights) stays exact for good. BB_READBACK_HYBRID=0 turns it off;
-// BB_READBACK_CLASSIFY=1 logs the faults per page.
+// access touched GPU bytes (the crowd's ground heights) stays exact for good. BB_READBACK_CLASSIFY=1 logs the faults
+// per page.
+//
+// Off by default (2026-10-20): with it on, from its first commit (3e3b4c7) and with or without the draw thread, grass
+// clumps float at random places and the game crashes on race load or on quitting a race in Matt's save (garbage
+// pointers read from 0x3000425000-0x3000435000, game +0x8825a0); off, neither. Suspected: a fast page's GPU bytes
+// reach the game a submit or more late (the grass flag at 0x400220ff50 read stale), and the copy-back writes the whole
+// GPU range over guest memory, bytes the game wrote after their upload included.
 
 #pragma once
 
@@ -38,7 +44,7 @@ constexpr u32 LearnFaults = 32;
 inline bool Enabled() {
     static const bool on = [] {
         const char* v = std::getenv("BB_READBACK_HYBRID");
-        return !(v && v[0] == '0') && EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled;
+        return v && v[0] == '1' && EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled;
     }();
     return on;
 }

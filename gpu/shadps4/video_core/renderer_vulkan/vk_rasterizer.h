@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
 #include "video_core/renderer_vulkan/vk_draw_pipe.h"
+#include "video_core/renderer_vulkan/pipe_reads.h" // VR fork
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -98,6 +99,9 @@ public:
     /// `line`/`function`: the caller, for the statistics of where stage A waits.
     void DrainDrawPipe(u32 reason = DrawPipe::ReasonRasterizer, u32 line = __builtin_LINE(),
                        const char* function = __builtin_FUNCTION());
+    /// VR fork (pipe_reads.h): before the GPU command thread writes guest memory, drains only when a packet still in
+    /// flight reads that memory directly.
+    void DrainDrawPipeForWrite(VAddr address, u64 size);
     /// Runs `task(rasterizer, copy of data)` in order with the draws: on the draw recording
     /// thread while the draw pipeline is in use (PipelinedTasks), else here after a drain.
     using OrderedTask = void (*)(Rasterizer& rasterizer, const u8* data);
@@ -510,6 +514,8 @@ private:
     float sampler_lod_bias = 0.0f; ///< bbport: extra bias of this draw's samplers
     bool scene_debug_frame = false; ///< BB_SCENE_DEBUG: this frame's passes are printed
     bool PendingWriteOverlaps(VAddr address, u64 size);
+    PipeReads pipe_reads; // VR fork: guest memory packets in flight read directly
+    void NoteDrawInputReads(const GraphicsPipeline* pipeline, bool is_indexed, u32 index_offset);
     /// Stage B: the ring bindings of the stages of the packet being recorded.
     struct RingStage {
         const Shader::Info* info;

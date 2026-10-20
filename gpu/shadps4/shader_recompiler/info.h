@@ -162,6 +162,12 @@ struct Info : InfoPersistent {
     /// bbport: user data of this stage as a draw saw it. The GPU command thread refreshes
     /// user_data/flattened_ud_buf for every draw it decodes, while the draw recording thread
     /// (vk_draw_pipe.h) may still work on an earlier draw: that thread installs snapshots here.
+    /// VR fork: a sharp the GPU command thread read through a user data pointer (the fetch shader's vertex buffer
+    /// table), for the draw recording thread: guest memory may hold a later draw's table by the time it runs.
+    struct UdMemoryCopy {
+        VAddr address;
+        u32 data[4];
+    };
     struct UdSnapshot {
         const Info* info;
         const u32* user_data;
@@ -169,6 +175,8 @@ struct Info : InfoPersistent {
         const u32* flat;
         u32 flat_size;
         VAddr pgm_base;
+        const UdMemoryCopy* memory; // VR fork
+        u32 memory_count;
     };
     static constexpr u32 MaxUdSnapshots = 6;
     static inline thread_local UdSnapshot ud_snapshots[MaxUdSnapshots];
@@ -215,6 +223,18 @@ struct Info : InfoPersistent {
         if (ptr_index != IR::NumScalarRegs) {
             std::memcpy(&base, &ud[ptr_index], sizeof(base));
             base = reinterpret_cast<const u32*>(VAddr(base) & 0xFFFFFFFFFFFFULL);
+            if constexpr (sizeof(T) <= sizeof(UdMemoryCopy::data)) {
+                // VR fork: the copy the GPU command thread took for this packet.
+                if (const auto* snapshot = Snapshot(); snapshot && snapshot->memory_count) [[unlikely]] {
+                    const VAddr address = reinterpret_cast<VAddr>(base + dword_offset);
+                    for (u32 i = 0; i < snapshot->memory_count; ++i) {
+                        if (snapshot->memory[i].address == address) {
+                            std::memcpy(&data, snapshot->memory[i].data, sizeof(T));
+                            return data;
+                        }
+                    }
+                }
+            }
         }
         std::memcpy(&data, base + dword_offset, sizeof(T));
         return data;

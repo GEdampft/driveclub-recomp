@@ -105,11 +105,14 @@ Liverpool::~Liverpool() {
 }
 
 void Liverpool::ProcessCommands() {
-    if (num_commands && rasterizer) {
-        rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCommands); // bbport: commands touch the caches
-    }
     // Process incoming commands with high priority
     while (num_commands) {
+        // bbport: commands touch the caches. VR fork: drained here, per command: a guest thread can send one after a
+        // check before the loop saw none (an offloaded readback then recorded on this thread while the draw
+        // recording thread recorded into the same chunk: corrupted commands, crashes while a race loads).
+        if (rasterizer) {
+            rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCommands);
+        }
         Common::UniqueFunction<void> callback{};
         {
             std::scoped_lock lk{submit_mutex};

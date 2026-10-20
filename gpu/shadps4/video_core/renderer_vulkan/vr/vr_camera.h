@@ -13,6 +13,9 @@ namespace Vulkan::Vr::Camera {
 /// Installs the hooks once the game image is in memory (checks the setters' bytes first). Safe to call every frame.
 void Install();
 
+/// Advance learned camera view slot on the game camera-cycle button (five slots).
+void CameraModeAdvance();
+
 /// The head pose to apply (row-vector 4x4: rows are the head's axes and position in the recentred tracking space,
 /// metres), and the field of view to render (tangents of the half angles). From the frame loop.
 /// `layer_pose` (orientation x, y, z, w, position x, y, z): the same head in the headset layer's space.

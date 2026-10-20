@@ -20,7 +20,7 @@ static bool wheel_as_stick, wheel_hat_dpad=true;
 static struct { int index; uint8_t out_kind; uint32_t button; int touch_side; } wheel_buttons[32];
 static int wheel_button_count;
 static bool ffb_enabled=true, ffb_invert;  /* force feedback (runtime_logiwheel.inc) */
-static int ffb_gain=100, ffb_vibration=100;   /* percent; above 100 the forces clip at the wheel's maximum */
+static int ffb_gain=100, ffb_vibration=100;   /* percent; the strongest forces clip at the wheel's maximum */
 
 static SDL_Joystick *wheel;
 static SDL_JoystickID wheel_id;
@@ -71,7 +71,7 @@ static void wheel_parse(const char *lhs, char *rhs) {
     }
     if (!strcmp(key,"rotation")) { int v=atoi(rhs); wheel_rotation=v<90 ? 90 : v>3600 ? 3600 : v; return; }
     if (!strcmp(key,"ffb_gain") || !strcmp(key,"ffb_vibration")) {
-        int v=atoi(rhs); v=v<0 ? 0 : v>400 ? 400 : v;
+        int v=atoi(rhs); v=v<0 ? 0 : v>2000 ? 2000 : v;
         if (!strcmp(key,"ffb_gain")) ffb_gain=v; else ffb_vibration=v;
         return;
     }
@@ -141,9 +141,10 @@ static const char wheel_default_config[]=
     "# true also moves the left stick and the l2/r2 triggers with the wheel and pedals.\n"
     "wheel_as_stick = false\n"
     "# Force feedback: the game is told a Logitech wheel is connected and its forces go to this wheel.\n"
-    "# wheel_ffb = off goes back to a wheel without forces. wheel_ffb_gain: percent of the game's forces (0..400;\n"
-    "# above 100 the weaker forces get stronger and the strongest clip at the wheel's maximum).\n"
-    "# wheel_ffb_vibration: the same for the road and kerb vibrations, which the game keeps weak (at most 25%).\n"
+    "# wheel_ffb = off goes back to a wheel without forces. wheel_ffb_gain: percent of the game's forces (0..2000;\n"
+    "# the game's steering forces are light on most wheels, so several hundred is normal; the strongest forces clip\n"
+    "# at the wheel's maximum). wheel_ffb_vibration: the same for the road and kerb vibrations (0..2000), which the\n"
+    "# game keeps weak (at most 25%).\n"
     "# wheel_ffb_invert = true if the wheel pulls the wrong way.\n"
     "# H-pattern shifter: wheel_shifter = auto (a controller named \"Shifter\"), wheel (its buttons are on the wheel),\n"
     "# off, or part of its name; then one line per gear: wheel_gear = <button number>, <1..6 or r>. WheelSetup.exe\n"

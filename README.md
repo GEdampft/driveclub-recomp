@@ -69,7 +69,7 @@ Any wheel that Windows lists as a game controller works: the game sees it as a P
 2. Run `WheelSetup.exe` next to `DriveClub.exe` once: it asks you to turn the wheel, press each pedal and button and put the shifter in each gear, and writes the result to `default.ini`.
 3. Set the **rotation** in the wheel's own software (Pit House, G HUB, ...) and give `WheelSetup.exe` the same number.
 
-The force feedback follows the game's own setting. In `default.ini`, `wheel_ffb_gain` and `wheel_ffb_vibration` make the forces and the road vibrations stronger or weaker (100 = as the game sends them, up to 400), `wheel_ffb_invert = true` turns them around if the wheel pulls the wrong way, and `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
+The force feedback follows the game's own setting. In `default.ini`, `wheel_ffb_gain` and `wheel_ffb_vibration` make the forces and the road vibrations stronger or weaker (100 = as the game sends them, up to 2000; the steering forces are light on most wheels, so a few hundred is normal), `wheel_ffb_invert = true` turns them around if the wheel pulls the wrong way, and `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
 
 Tested with a Moza R3 and a Logitech Driving Force Shifter. On some PCs Windows takes a long time to list game controllers; the game then starts later and pauses when a controller is plugged in while it runs.
 

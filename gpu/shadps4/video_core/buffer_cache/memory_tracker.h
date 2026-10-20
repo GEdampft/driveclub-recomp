@@ -154,7 +154,12 @@ public:
         // VR fork (readback_hybrid.h): a small range's pages, and a larger range's first and last pages once learned
         // fast, are marked as fast (not protected).
         const bool hybrid = ReadbackHybrid::Enabled();
-        const bool small = hybrid && query_size <= ReadbackHybrid::SmallWrite;
+        const bool small = hybrid && query_size <= ReadbackHybrid::SmallWrite && ReadbackHybrid::SmallFast() &&
+                           !ReadbackHybrid::ExactPage(query_cpu_range) &&
+                           !ReadbackHybrid::ExactPage(query_cpu_range + query_size - 1);
+        if (small) {
+            ReadbackHybrid::NoteSmallFast(query_cpu_range, query_size);
+        }
         IteratePages<false>(query_cpu_range, query_size,
                             [&](RegionManager* manager, u64 offset, size_t size) {
                                 const VAddr begin = manager->GetCpuAddr() + offset, end = begin + size;

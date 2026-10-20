@@ -3,6 +3,11 @@ on:
   workflow_dispatch:
   push:
     branches: [vr-hud-camera-test]
+    paths-ignore:
+      - '.github/workflows/build-driveclub-vr-custom.yml'
+concurrency:
+  group: 'vr-hud-camera-${{ github.ref }}'
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-latest

@@ -1558,8 +1558,15 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   SetEnvironmentVariableW(L"BB_GPU_USER_DIR", user.c_str());
   SetEnvironmentVariableW(L"BB_PREFLIGHT_NOTE", g_preflight_note.empty() ? nullptr : std::wstring(g_preflight_note.begin(), g_preflight_note.end()).c_str());
   SetEnvironmentVariableW(L"BB_CRASH_DIR", (g_home + L"\\logs").c_str());
-  // The switchable-graphics layer of AMD laptops gives a black window on some of them.
-  if (GetEnvironmentVariableW(L"VK_LOADER_LAYERS_DISABLE", nullptr, 0) == 0) SetEnvironmentVariableW(L"VK_LOADER_LAYERS_DISABLE", L"VK_LAYER_AMD_switchable_graphics");
+  // Programs that add themselves to the Vulkan loader (Steam, Epic, Discord, OBS, tuning tools) sit under a
+  // part of the crashes players report, and the switchable-graphics layer of AMD laptops gives a black window
+  // on some of them. "~implicit~" drops every layer that installs itself; the launcher row that names the
+  // overlays back in keeps only the AMD one out.
+  if (GetEnvironmentVariableW(L"VK_LOADER_LAYERS_DISABLE", nullptr, 0) == 0) {
+    SetEnvironmentVariableW(L"VK_LOADER_LAYERS_DISABLE",
+                            g_allow_overlays ? L"VK_LAYER_AMD_switchable_graphics"
+                                             : L"~implicit~,VK_LAYER_AMD_switchable_graphics");
+  }
   {
     // With the deltatime patch the game times itself by the wall clock, so each frame must be shown as soon as
     // it is finished; waiting for the next 60 Hz tick alternates 16 and 33 ms frames and shakes the camera.

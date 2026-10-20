@@ -1,6 +1,6 @@
 // DriveClub (PC) - launcher.
 //
-// One native window: the two game folders, the game patches, Play. The look follows a dark card layout
+// One native window: the two game folders, the game patches, a benchmark, Play. The look follows a dark card layout
 // (rounded cards, pill switches, segmented choices, a footer with a red Play button).
 // Play prepares the game once (a few minutes the first time, seconds afterwards), then starts it; this
 // program closes. Settings live next to this program (launcher.ini, data\), nothing is installed.
@@ -22,7 +22,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
+#include <cwchar>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -51,7 +53,8 @@ constexpr float kWinW = 960.f;
 // ------------------------------------------------------------------------------------------
 // model
 // ------------------------------------------------------------------------------------------
-enum class Kind { Segmented, Toggle };
+// Picker: one box that opens a menu (benchmark track and car). Action: the benchmark's Run button and its result.
+enum class Kind { Segmented, Toggle, Picker, Action };
 
 struct Ctl {
   const wchar_t* label;
@@ -69,6 +72,7 @@ struct Card {
   std::vector<int> ctls;
   int column;
   const wchar_t* note = nullptr;
+  float note_h = 0;  // the note's height at the current column width (LayoutPass)
   RectF rect{};
 };
 
@@ -230,6 +234,98 @@ std::wstring g_name = L"Player";  // in-game player name, from "name=" in launch
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 bool unlocked_saved = false;  // "Unlocked" frame rate choice, from launcher.ini  // indices of the render resolution and widescreen choices
 
+// ------------------------------------------------------------------------------------------
+// benchmark: the game's AI drives one event and the runtime measures the frame times (BB_BENCHMARK, see
+// src/runtime_benchmark.c). The ids are the game's own: "Track Name" in newdata/tracks.csv and "Vehicle Name" in
+// newdata/vehicles.csv, all from the base game (no add-on content needed). The ones marked "not run" are taken
+// from the game data; the others were run to a result. Circuits only: a point-to-point route can end before the
+// measurement does.
+// ------------------------------------------------------------------------------------------
+struct BenchChoice {
+  const char* id;
+  const wchar_t* name;
+  const wchar_t* group;  // the submenu: location or car class
+};
+const BenchChoice kBenchTracks[] = {
+    {"canada_road_circuit_02_n", L"Fraser Valley", L"Canada"},
+    {"canada_road_circuit_01_n", L"Oliver's Landing", L"Canada"},
+    {"canada_dlc_road_circuit_03_n", L"Sinclair Point", L"Canada"},
+    {"canada_race_track_v1", L"Maplewood Motorsport Park", L"Canada"},
+    {"chile_road_circuit_01_n", L"Chungará Lake", L"Chile"},
+    {"chile_road_circuit_02_n", L"Salar de Surire", L"Chile"},
+    {"chile_race_track_v1", L"Autodromo Frontera", L"Chile"},
+    {"india_road_circuit_01_n", L"Glenmorgan", L"India"},
+    {"india_road_circuit_02_n", L"Bandipur", L"India"},
+    {"india_dlc_road_circuit_03_n", L"Yedappalli", L"India"},
+    {"india_race_track_v1", L"Tamil Nadu Circuit", L"India"},  // not run
+    {"norway_road_circuit_01_n", L"Sentraltind", L"Norway"},
+    {"norway_road_circuit_02_n", L"Skjolden", L"Norway"},
+    {"norway_dlc_road_circuit_03_n", L"Atlanterhavsvegen", L"Norway"},  // not run
+    {"norway_race_track_01_v1", L"Sognefjord Raceway", L"Norway"},
+    {"uk_road_circuit_01_n", L"Loch Duich", L"Scotland"},  // not run
+    {"uk_road_circuit_02_n", L"Kinloch", L"Scotland"},
+    {"uk_race_track_v1", L"Black Hills Circuit", L"Scotland"},
+    {"japan_road_circuit_01_n", L"Takahagi Hills", L"Japan"},
+    {"japan_road_circuit_02_n", L"Lake Shoji", L"Japan"},
+    {"japan_dlc_road_circuit_03_n", L"Kobago", L"Japan"},
+    {"japan_race_track_01_v1", L"Asigiri Highland Raceway", L"Japan"},  // not run
+};
+const BenchChoice kBenchCars[] = {
+    {"mc_p1", L"McLaren P1", L"Hyper"},
+    {"pa_hu", L"Pagani Huayra", L"Hyper"},
+    {"ko_ag", L"Koenigsegg Agera R", L"Hyper"},
+    {"he_ve_gt", L"Hennessey Venom GT", L"Hyper"},
+    {"pa_zo", L"Pagani Zonda R", L"Hyper"},
+    {"fe_458", L"Ferrari 458 Italia", L"Super"},
+    {"fe_f12", L"Ferrari F12berlinetta", L"Super"},
+    {"au_r8", L"Audi R8 V10 plus", L"Super"},
+    {"mc_mp_12", L"McLaren 12C", L"Super"},
+    {"as_ma_177", L"Aston Martin One-77", L"Super"},
+    {"me_sl_am", L"Mercedes-Benz SLS AMG Black Series", L"Super"},  // not run
+    {"bm_m4", L"BMW M4", L"Performance"},
+    {"me_gt_am", L"Mercedes-AMG GT S", L"Performance"},
+    {"au_rs6", L"Audi RS 6 Avant", L"Performance"},  // not run
+    {"ma_mc_st", L"Maserati GranTurismo MC Stradale", L"Performance"},
+    {"lo_ex", L"Lotus Exige S", L"Performance"},  // not run
+    {"au_rs5", L"Audi RS 5 Coupé", L"Sports"},
+    {"bm_m2", L"BMW M235i", L"Sports"},
+    {"ren_dez", L"Renault DeZir", L"Sports"},
+    {"vw_golf_gti", L"Volkswagen Golf GTI", L"Hot hatch"},
+    {"mi_jcw", L"MINI John Cooper Works GP", L"Hot hatch"},
+    {"ren_cl", L"Renault Clio RS", L"Hot hatch"},  // not run
+};
+constexpr int kBenchTrackCount = int(sizeof(kBenchTracks) / sizeof(kBenchTracks[0]));
+constexpr int kBenchCarCount = int(sizeof(kBenchCars) / sizeof(kBenchCars[0]));
+constexpr int kBenchDefaultCar = 5;  // Ferrari 458 Italia
+const int kBenchTod[] = {8, 12, 18, 22};
+const char* const kBenchWeather[] = {"Clear", "Cloudy", "Overcast", "Stormy"};
+const char* const kBenchRain[] = {"", "Light", "Heavy", "Wet"};
+const int kBenchSeconds[] = {30, 60, 120, 300};
+int g_bench_track = 0, g_bench_car = kBenchDefaultCar;
+int g_btrack = -1, g_bcar = -1, g_bmode = -1, g_btod = -1, g_bweather = -1, g_brain = -1, g_blen = -1, g_brun = -1;
+bool IsBenchRow(const Ctl& c) { return c.patches[0].rfind("@bench", 0) == 0; }
+
+// The last result, from data\user\benchmark\result.txt.
+struct BenchResult {
+  bool ok = false;
+  std::wstring fps, lows, about;  // "87.3", "1% low 71.2  0.1% low 60.4", "Fraser Valley, Ferrari 458 Italia, ..."
+};
+BenchResult g_bench_result;
+bool g_bench_running = false;
+bool g_bench_ran_hover = false;  // the pointer is over the result: the panel with every setting the game ran with is shown
+std::wstring g_bench_ran_short;               // one line: what the game actually ran with (render -> output, frame limit, ...)
+std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported (result.txt line "ran ...")
+
+// The game options the launcher sets for every start that were already set when it started: the player's own
+// overrides (BB_FPS_LIMIT=40, ...). Only these are left alone; the launcher's own values are replaced each time.
+std::vector<std::wstring> g_user_env;
+void SnapshotUserEnv() {
+  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER"}) {
+    if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
+  }
+}
+bool UserEnv(const wchar_t* name) { return std::find(g_user_env.begin(), g_user_env.end(), name) != g_user_env.end(); }
+
 void BuildModel() {
   g_folder[0].label = L"Update folder (version 1.28)";
   g_folder[0].hint = L"The DriveClub v1.28 update dump: the folder that contains eboot.bin. If your dump is already 1.28, leave this empty and choose it below.";
@@ -256,14 +352,14 @@ void BuildModel() {
                       L"Fixed tick uses the engine's own 60 Hz mode (works with every feature, speed follows the frame rate).",
                       {L"30 FPS", L"60 FPS", L"60 FPS (fixed tick)", L"Unlocked"},
                       {"", "60 FPS with deltatime", "60 FPS with fixed tickrate", "@unlocked"}, 1));
-  const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the picture on screen.",
+  const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the game's finished picture (with the menus and HUD). It is then scaled to fill your screen, so the window and the signal to your display always stay at your screen's own size.",
                          {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"5K", L"8K"},
                          {"", "720p [1280x720] Output resolution", "1440p [2560x1440] Output resolution",
                           "1800p [3200x1800] Output resolution", "4K [3840x2160] Output resolution",
                           "5K [5120x2880] Output resolution", "8K [7680x4320] Output resolution"},
                          0));
   const int inres = (g_inres = int(g_c.size()), seg(L"Render resolution",
-                        L"What the game draws internally. Sizes above 1080p use more memory; the needed memory patch is added for you.",
+                        L"The size the game draws the 3D scene at, before it is scaled to the output resolution: lower is faster, higher is sharper. The game's dynamic resolution can lower it further under load. Sizes above 1080p use more memory; the needed memory patch is added for you.",
                         {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"8K"},
                         {"", "720p [1280x720] Internal resolution", "1440p [2560x1440] Internal resolution [DEPTH BUG]",
                          "1800p [3200x1800] Internal resolution [DEPTH BUG]", "4K [3840x2160] Internal resolution [DEPTH BUG]",
@@ -316,12 +412,54 @@ void BuildModel() {
   const int unlock = toggle(L"Unlock DLC content",
                             L"Unlocks the DLC content: add-on cars, bikes, tours and livery decals. Cars you earn by playing still unlock through normal progression. Built from your own game files; the game folders are not modified.",
                             "@unlock", false);
+  auto picker = [](const wchar_t* label, const wchar_t* hint, const char* tag) {
+    Ctl c{label, hint, Kind::Picker, {L""}, {tag}, 0, 0};
+    g_c.push_back(std::move(c));
+    return int(g_c.size()) - 1;
+  };
+  g_btrack = picker(L"Track", L"Where the benchmark drives. Click to choose a circuit.", "@bench_track");
+  g_bcar = picker(L"Car", L"The car the game's AI drives. Click to choose a car.", "@bench_car");
+  g_bmode = seg(L"Cars on track",
+                L"Alone is a time trial and gives the steadiest numbers. Race adds seven AI cars, which loads the processor more.",
+                {L"Alone", L"Race (8 cars)"}, {"@bench_mode", ""}, 0);
+  g_btod = seg(L"Time of day", L"Morning 8:00, noon 12:00, evening 18:00, night 22:00.",
+               {L"Morning", L"Noon", L"Evening", L"Night"}, {"@bench_tod", "", "", ""}, 1);
+  g_bweather = seg(L"Weather", L"The sky and the clouds.", {L"Clear", L"Cloudy", L"Overcast", L"Stormy"},
+                   {"@bench_weather", "", "", ""}, 0);
+  g_brain = seg(L"Rain", L"Rain and wet roads make the scene heavier to draw. Wet road is a wet track without rain.",
+                {L"Dry", L"Light", L"Heavy", L"Wet road"}, {"@bench_rain", "", "", ""}, 0);
+  g_blen = seg(L"Length", L"How long the frame times are measured, after 5 seconds of warm-up. Loading takes about half a minute more.",
+               {L"30 s", L"1 min", L"2 min", L"5 min"}, {"@bench_length", "", "", ""}, 1);
+  g_brun = int(g_c.size());
+  g_c.push_back(Ctl{L"Last result",
+                    L"Starts the event with all the settings on this page. The game's AI drives and the game closes by itself when it is done. "
+                    L"The 1% and 0.1% lows are the average frame rate of the slowest 1% and 0.1% of frames.",
+                    Kind::Action, {}, {"@bench_run"}, 0, 0});
   // The cards flow into as many columns as the window width allows (see LayoutPass).
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_aniso}, 0});
   g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps}, 0});
   g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0,
                      L"Community patches for DriveClub version 1.28."});
+  g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen, g_brun}, 0});
+}
+
+// The rows show the chosen track and car by name.
+void ShowBenchChoices() {
+  if (g_btrack >= 0) g_c[g_btrack].items[0] = std::wstring(kBenchTracks[g_bench_track].name) + L"  (" + kBenchTracks[g_bench_track].group + L")";
+  if (g_bcar >= 0) g_c[g_bcar].items[0] = kBenchCars[g_bench_car].name;
+}
+
+int FindBench(const BenchChoice* list, int count, const std::string& id, int fallback) {
+  for (int i = 0; i < count; ++i) {
+    if (id == list[i].id) return i;
+  }
+  return fallback;
+}
+
+std::wstring BenchName(const BenchChoice* list, int count, const std::string& id) {
+  const int i = FindBench(list, count, id, -1);
+  return i >= 0 ? std::wstring(list[i].name) : Widen(id);
 }
 
 bool fps_counter = false, fast_render = false, full_screen = true, unlock_dlc = false;  // the settings that are not patches
@@ -359,7 +497,19 @@ void LoadSettings() {
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
+    if (line.rfind("bench_track=", 0) == 0) g_bench_track = FindBench(kBenchTracks, kBenchTrackCount, line.substr(12), 0);
+    if (line.rfind("bench_car=", 0) == 0) g_bench_car = FindBench(kBenchCars, kBenchCarCount, line.substr(10), kBenchDefaultCar);
+    const struct { const char* key; int row; } bench_rows[] = {{"bench_mode=", g_bmode}, {"bench_tod=", g_btod},
+                                                                {"bench_weather=", g_bweather}, {"bench_rain=", g_brain},
+                                                                {"bench_length=", g_blen}};
+    for (const auto& b : bench_rows) {
+      const size_t n = std::strlen(b.key);
+      if (b.row < 0 || line.compare(0, n, b.key) != 0) continue;
+      const int v = atoi(line.substr(n).c_str());
+      if (v >= 0 && v < int(g_c[b.row].items.size())) g_c[b.row].sel = v;
+    }
   }
+  ShowBenchChoices();
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
   CheckFolders();
   const auto lines = ReadLines(SelectionPath());
@@ -385,7 +535,7 @@ void LoadSettings() {
       c.sel = unlock_dlc ? 1 : 0;
       continue;
     }
-    if (!has_selection) continue;  // defaults
+    if (!has_selection || IsBenchRow(c)) continue;  // defaults; the benchmark rows are in launcher.ini
     c.sel = 0;
     for (size_t i = 0; i < c.patches.size(); ++i) {
       if (c.patches[i].empty()) continue;
@@ -476,6 +626,9 @@ void SaveSettings() {
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
         << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\n";
+    ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
+        << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
+        << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -511,31 +664,31 @@ void ResetDefaults() {
     c.sel = c.def;
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") g_skip_gpu_check = c.sel != 0;
   }
+  g_bench_track = 0;
+  g_bench_car = kBenchDefaultCar;
+  ShowBenchChoices();
   g_changed = true;
 }
 
 // ------------------------------------------------------------------------------------------
 // layout
 // ------------------------------------------------------------------------------------------
-float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : 70.f) + g_row_extra; }
+float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : 70.f) + g_row_extra; }
 float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
+RectF g_folders_rect;          // the game folders card
+bool g_folders_in_flow = false;  // the folders card sits in a column (3+ columns) instead of across the top
 
 void LayoutPass(float bottom_extra) {
   g_cols = (std::clamp)(int((g_win_w - 2 * kMargin + kGap) / (380.f + kGap)), 2, 4);
   const float colw = (g_win_w - 2 * kMargin - float(g_cols - 1) * kGap) / float(g_cols);
-  // game folders: a full-width card on top
+  // Game folders: a full-width card on top with 2 columns. With 3 or 4 the benchmark card alone sets the height
+  // and the other columns have room, so the folders card goes into one of them instead of taking a full-width strip.
+  g_folders_in_flow = g_cols >= 3;
   const float folders_h = kTitleH + 2 * FolderRowHeight() + kPad * 0.4f + 8.f;
-  const RectF folders_rect(kMargin, kHeaderH, g_win_w - 2 * kMargin, folders_h);
-  float fy = folders_rect.Y + kTitleH;
-  for (auto& f : g_folder) {
-    f.row = RectF(folders_rect.X + kPad, fy, folders_rect.Width - 2 * kPad, FolderRowHeight());
-    f.browse = RectF(f.row.X + f.row.Width - 104.f, fy + 24.f, 104.f, 36.f);
-    fy += FolderRowHeight();
-  }
   float y[4];
-  for (float& v : y) v = kHeaderH + folders_h + kGap;
+  for (float& v : y) v = kHeaderH + (g_folders_in_flow ? 0.f : folders_h + kGap);
   // Card heights; the tallest cards are placed first, each into the shortest column.
   std::vector<float> heights(g_cards.size());
   std::vector<size_t> order(g_cards.size());
@@ -543,22 +696,65 @@ void LayoutPass(float bottom_extra) {
     float h = kTitleH + kPad * 0.4f;
     for (int i : g_cards[k].ctls) h += RowHeight(g_c[i]);
     h += kPad * 0.6f;
-    if (g_cards[k].note) h += 46.f;
+    if (g_cards[k].note) {
+      // The note wraps to as many lines as the column width needs (about 6.3 units per character of the hint font).
+      const float per_line = (std::max)(1.f, std::floor((colw - 2 * kPad) / 6.3f));
+      const float lines = (std::max)(1.f, std::ceil(float(wcslen(g_cards[k].note)) / per_line));
+      g_cards[k].note_h = lines * 17.f + 4.f;
+      h += g_cards[k].note_h + 10.f;
+    }
     heights[k] = h;
     order[k] = k;
   }
-  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return heights[a] > heights[b]; });
-  float fill[4] = {0, 0, 0, 0};
-  for (size_t k : order) {
-    int col = 0;
-    for (int c = 1; c < g_cols; ++c) {
-      if (fill[c] < fill[col] - 1.f) col = c;
-    }
-    g_cards[k].column = col;
-    fill[col] += heights[k] + kGap;
+  // The folders card, when in a column, takes part as index g_cards.size() and goes on top of its column.
+  const size_t folders_k = g_cards.size();
+  if (g_folders_in_flow) {
+    heights.push_back(folders_h);
+    order.push_back(folders_k);
   }
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return heights[a] > heights[b]; });
+  // Every split of the cards into columns is tried (at most 4^6 with 7 cards) and the one with the shortest tallest
+  // column is kept, so the window needs the least height. The tallest card stays in the first column.
+  const size_t n = heights.size();
+  size_t splits = 1;
+  for (size_t i = 1; i < n; ++i) splits *= size_t(g_cols);
+  std::vector<int> col_of(n, 0), best(n, 0);
+  float best_h = 1e30f;
+  for (size_t m = 0; m < splits; ++m) {
+    float fill[4] = {0, 0, 0, 0};
+    size_t r = m;
+    for (size_t i = 0; i < n; ++i) {
+      const int c = i == 0 ? 0 : int(r % size_t(g_cols));
+      if (i) r /= size_t(g_cols);
+      col_of[order[i]] = c;
+      fill[c] += heights[order[i]] + kGap;
+    }
+    const float tallest = *std::max_element(fill, fill + g_cols);
+    if (tallest < best_h - 1.f) {
+      best_h = tallest;
+      best = col_of;
+    }
+  }
+  int folders_col = 0;
+  for (size_t k = 0; k < n; ++k) (k == folders_k ? folders_col : g_cards[k].column) = best[k];
+  // Top to bottom in each column: the tallest card (the benchmark: top left), the folders card, then the others in
+  // their usual order.
+  std::vector<size_t> seq{order[0]};
+  if (g_folders_in_flow && order[0] != folders_k) seq.push_back(folders_k);
   for (size_t k = 0; k < g_cards.size(); ++k) {
+    if (k != order[0]) seq.push_back(k);
+  }
+  if (!g_folders_in_flow) g_folders_rect = RectF(kMargin, kHeaderH, g_win_w - 2 * kMargin, folders_h);
+  int last[4] = {-1, -1, -1, -1};  // the lowest card in each column: it is stretched to the common bottom
+  for (size_t k : seq) {
+    if (k == folders_k) {
+      g_folders_rect = RectF(kMargin + folders_col * (colw + kGap), y[folders_col], colw, folders_h);
+      y[folders_col] += folders_h + kGap;
+      last[folders_col] = -1;
+      continue;
+    }
     auto& card = g_cards[k];
+    last[card.column] = int(k);
     const float h = heights[k];
     card.rect = RectF(kMargin + card.column * (colw + kGap), y[card.column], colw, h);
     float cy = y[card.column] + kTitleH + kPad * 0.4f;
@@ -566,21 +762,26 @@ void LayoutPass(float bottom_extra) {
       Ctl& c = g_c[i];
       const float rh = RowHeight(c);
       c.row = RectF(card.rect.X + kPad, cy, colw - 2 * kPad, rh);
-      c.ctl = c.kind == Kind::Toggle ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
-                                     : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
+      c.ctl = c.kind == Kind::Toggle   ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
+              : c.kind == Kind::Action ? RectF(c.row.X, cy + 8.f, c.row.Width, 44.f)
+                                       : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
       cy += rh;
     }
     y[card.column] += h + kGap;
+  }
+  float fy = g_folders_rect.Y + kTitleH;
+  for (auto& f : g_folder) {
+    f.row = RectF(g_folders_rect.X + kPad, fy, g_folders_rect.Width - 2 * kPad, FolderRowHeight());
+    // In a column the Browse button moves up beside the label, so the path gets the whole width.
+    f.browse = g_folders_in_flow ? RectF(f.row.X + f.row.Width - 104.f, fy, 104.f, 28.f)
+                                 : RectF(f.row.X + f.row.Width - 104.f, fy + 24.f, 104.f, 36.f);
+    fy += FolderRowHeight();
   }
   float bottom_y = y[0];
   for (int col = 1; col < g_cols; ++col) bottom_y = (std::max)(bottom_y, y[col]);
   const float bottom = bottom_y - kGap + bottom_extra;
   for (int col = 0; col < g_cols; ++col) {
-    for (int k = int(g_cards.size()) - 1; k >= 0; --k) {
-      if (g_cards[k].column != col) continue;
-      g_cards[k].rect.Height += bottom - (y[col] - kGap);
-      break;
-    }
+    if (last[col] >= 0) g_cards[size_t(last[col])].rect.Height += bottom - (y[col] - kGap);
   }
   g_content_h = bottom + kGap;
   const float bar_y = g_content_h + 2.f;
@@ -703,7 +904,8 @@ void Paint(HDC hdc, int w, int h) {
 
   // game folders card
   {
-    const RectF cr = Scaled(RectF(kMargin, kHeaderH, g_win_w - 2 * kMargin, kTitleH + 2 * FolderRowHeight() + kPad * 0.4f + 8.f));
+    const RectF cr = Scaled(g_folders_rect);
+    const float path_w = g_folders_in_flow ? 16 * S : 130 * S;  // in a column the Browse button is beside the label, not the path
     FillRound(g, cr, 12 * S, kCard);
     StrokeRound(g, cr, 12 * S, kCardLine);
     Text(g, L"GAME FILES", fCard, RectF(cr.X + kPad * S, cr.Y + 6 * S, cr.Width - 2 * kPad * S, (kTitleH - 6) * S), kMuted);
@@ -714,12 +916,12 @@ void Paint(HDC hdc, int w, int h) {
       SolidBrush dot(f.ok ? kOk : (f.path.empty() ? kOff : kWarn));
       g.FillEllipse(&dot, row.X, row.Y + 38 * S, 8 * S, 8 * S);
       const std::wstring shown = f.path.empty() ? std::wstring(L"Not chosen yet") : f.path;
-      Text(g, shown, fHint, RectF(row.X + 16 * S, row.Y + 28 * S, row.Width - 130 * S, 28 * S),
+      Text(g, shown, fHint, RectF(row.X + 16 * S, row.Y + 28 * S, row.Width - path_w, 28 * S),
            f.path.empty() ? kMuted : kText);
       if (const std::wstring problem = FolderProblem(i); !problem.empty()) {
         SolidBrush bad(kBad);
         g.FillEllipse(&bad, row.X, row.Y + 38 * S, 8 * S, 8 * S);
-        Text(g, problem, fHint, RectF(row.X + 16 * S, row.Y + 50 * S, row.Width - 130 * S, 22 * S), kBad);
+        Text(g, problem, fHint, RectF(row.X + 16 * S, row.Y + 50 * S, row.Width - path_w, 22 * S), kBad);
       }
       const bool over = g_hover_browse == i;
       FillRound(g, br, 10 * S, over ? Color(255, 66, 73, 88) : Color(255, 50, 56, 68));
@@ -734,7 +936,7 @@ void Paint(HDC hdc, int w, int h) {
     StrokeRound(g, cr, 12 * S, kCardLine);
     Text(g, card.title, fCard, RectF(cr.X + kPad * S, cr.Y + 6 * S, cr.Width - 2 * kPad * S, (kTitleH - 6) * S), kMuted);
     if (card.note) {
-      Text(g, card.note, fHint, RectF(cr.X + kPad * S, cr.Y + cr.Height - 54 * S, cr.Width - 2 * kPad * S, 44 * S), kMuted,
+      Text(g, card.note, fHint, RectF(cr.X + kPad * S, cr.Y + cr.Height - (card.note_h + 10) * S, cr.Width - 2 * kPad * S, card.note_h * S), kMuted,
            StringAlignmentNear, StringAlignmentFar, true);
     }
     for (int i : card.ctls) {
@@ -747,6 +949,39 @@ void Paint(HDC hdc, int w, int h) {
         SolidBrush knob(kWhite);
         const float d = ct.Height - 6 * S;
         g.FillEllipse(&knob, c.sel ? ct.X + ct.Width - d - 3 * S : ct.X + 3 * S, ct.Y + 3 * S, d, d);
+      } else if (c.kind == Kind::Picker) {
+        // A box with the chosen name and a down arrow: a click opens the menu of choices.
+        Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S), kText);
+        FillRound(g, ct, 9 * S, hot ? kTrackHover : kTrack);
+        Text(g, c.items[0], fSegBold, RectF(ct.X + 12 * S, ct.Y, ct.Width - 44 * S, ct.Height), kText);
+        SolidBrush arrow(kMuted);
+        const float ax = ct.X + ct.Width - 22 * S, ay = ct.Y + ct.Height / 2 - 2 * S;
+        const PointF tri[3] = {PointF(ax - 5 * S, ay), PointF(ax + 5 * S, ay), PointF(ax, ay + 6 * S)};
+        g.FillPolygon(&arrow, tri, 3);
+      } else if (c.kind == Kind::Action) {
+        // The benchmark: Run, then the last result.
+        Text(g, c.label, fLabel, RectF(row.X, row.Y + 64 * S, row.Width, 22 * S), kText);
+        const RectF res(row.X, row.Y + 88 * S, row.Width, row.Height - 88 * S);
+        if (g_bench_running) {
+          Text(g, L"Running. The game closes by itself when it is done.", fHint, res, kText,
+               StringAlignmentNear, StringAlignmentNear, true);
+        } else if (g_bench_result.ok) {
+          Font fBig(&fam, 24 * S, FontStyleBold, UnitPixel);
+          const std::wstring big = g_bench_result.fps + L" FPS";
+          Text(g, big, fBig, RectF(res.X, res.Y, res.Width, 32 * S), kWhite);
+          Text(g, g_bench_result.lows, fSeg, RectF(res.X, res.Y + 32 * S, res.Width, 20 * S), kText);
+          Text(g, g_bench_result.about, fHint, RectF(res.X, res.Y + 56 * S, res.Width, 38 * S), kMuted,
+               StringAlignmentNear, StringAlignmentNear, true);
+          if (!g_bench_ran_short.empty())
+            Text(g, g_bench_ran_short, fHint, RectF(res.X, res.Y + 96 * S, res.Width, res.Height - 96 * S),
+                 g_bench_ran_hover ? kText : kMuted, StringAlignmentNear, StringAlignmentNear, true);
+        } else {
+          Text(g, L"No result yet.", fHint, res, kMuted, StringAlignmentNear,
+               StringAlignmentNear, true);
+        }
+        const bool disabled = g_busy || !FoldersOk() || GpuBlocked();
+        FillRound(g, ct, 10 * S, disabled ? kOff : hot && g_hover_seg == 0 ? kAccentHover : kAccent);
+        Text(g, L"Run benchmark", fBtn, ct, disabled ? kMuted : kWhite, StringAlignmentCenter);
       } else {
         Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S), kText);
         FillRound(g, ct, 9 * S, kTrack);
@@ -826,6 +1061,21 @@ void Paint(HDC hdc, int w, int h) {
     Text(g, kBtnText[i], fBtn, br, disabled ? kMuted : kWhite, StringAlignmentCenter);
   }
   g_oy = ContentOy();
+  // The benchmark result under the pointer: every setting the game ran with, in a panel over the page.
+  if (g_bench_ran_hover && g_brun >= 0 && !g_bench_running && g_bench_result.ok && !g_bench_ran_lines.empty()) {
+    const RectF row = Scaled(g_c[g_brun].row);
+    const float line_h = 19 * S, pad = 12 * S;
+    const float ph = pad * 2 + line_h * float(g_bench_ran_lines.size()), pw = row.Width;
+    float py = row.Y + 88 * S - ph - 8 * S;  // above the result, where the page has room
+    if (py < 8 * S) py = row.Y + row.Height + 4 * S;
+    if (py + ph > float(h) - 8 * S) py = (std::max)(8 * S, float(h) - 8 * S - ph);
+    const RectF panel(row.X, py, pw, ph);
+    FillRound(g, panel, 10 * S, Color(250, 30, 34, 42));
+    for (size_t i = 0; i < g_bench_ran_lines.size(); ++i) {
+      Text(g, g_bench_ran_lines[i], i == 0 ? fCard : fHint,
+           RectF(panel.X + pad, panel.Y + pad + line_h * float(i), panel.Width - 2 * pad, line_h), i == 0 ? kWhite : kText);
+    }
+  }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1056,12 +1306,16 @@ std::wstring Preflight() {
   return L"";
 }
 
-std::wstring StartGame() {
+std::wstring g_game_log;  // the log file of the game started last
+
+// Starts the game. With `process` the caller gets the game's process handle (and closes it).
+std::wstring StartGame(HANDLE* process = nullptr) {
   const std::wstring exe = GameExe();
   if (!Exists(exe)) return L"The game program (DriveClubGame.exe) was not found.";
   MakeDirs(g_home + L"\\logs");
   SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-  HANDLE log = CreateFileW((g_home + L"\\logs\\driveclub_" + Timestamp() + L".log").c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+  g_game_log = g_home + L"\\logs\\driveclub_" + Timestamp() + L".log";
+  HANDLE log = CreateFileW(g_game_log.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
                            &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   MakeDirs(g_home + L"\\mods");
   const std::wstring prep = g_data + L"\\prep", user = g_data + L"\\user";
@@ -1099,22 +1353,26 @@ std::wstring StartGame() {
     const bool unlocked = g_fps >= 0 && g_c[g_fps].sel == 3;
     SetEnvironmentVariableW(L"BB_FPS_LIMIT", unlocked ? L"1000" : delta ? L"60" : nullptr);
   }
-  if (g_lang >= 0 && GetEnvironmentVariableW(L"BB_LANGUAGE", nullptr, 0) == 0) {
+  // A value set before the launcher started is the player's override and is kept. Checking the environment
+  // itself is not enough: the launcher sets these for every start, so a second start (Play, or Run benchmark
+  // again) would keep the first start's values and ignore every choice changed since.
+  if (g_lang >= 0 && !UserEnv(L"BB_LANGUAGE")) {
     SetEnvironmentVariableW(L"BB_LANGUAGE", std::to_wstring(g_lang_id).c_str());
   }
-  if (g_up >= 0 && GetEnvironmentVariableW(L"BB_AA_SCALE", nullptr, 0) == 0) {
+  if (g_up >= 0 && !UserEnv(L"BB_AA_SCALE")) {
     const int u = UpscaleActive() ? g_c[g_up].sel : 0;
     SetEnvironmentVariableW(L"BB_AA_SCALE", u == 0 ? L"native" : u == 1 ? L"quality" : u == 2 ? L"balanced" : L"performance");
   }
-  if (g_aa >= 0 && GetEnvironmentVariableW(L"BB_AA", nullptr, 0) == 0) {
+  if (g_aa >= 0 && !UserEnv(L"BB_AA")) {
     const int a = g_c[g_aa].sel;
     SetEnvironmentVariableW(L"BB_AA", a == 0 ? L"off" : a == 1 ? L"fsr3" : L"dlss");
   }
-  if (g_fgen < 0 && GetEnvironmentVariableW(L"BB_FRAME_GEN", nullptr, 0) == 0) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
-  if (g_fgen >= 0 && GetEnvironmentVariableW(L"BB_FRAME_GEN", nullptr, 0) == 0) {
+  if (g_fgen < 0 && !UserEnv(L"BB_FRAME_GEN")) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
+  if (g_fgen >= 0 && !UserEnv(L"BB_FRAME_GEN")) {
     const int f = g_c[g_fgen].sel;
     SetEnvironmentVariableW(L"BB_FRAME_GEN", f == 0 ? L"off" : f == 1 ? L"fsr3" : L"dlss");
-    if (f >= 2) SetEnvironmentVariableW(L"BB_FRAME_GEN_MULTIPLIER", f == 2 ? L"2" : f == 3 ? L"3" : L"4");
+    if (!UserEnv(L"BB_FRAME_GEN_MULTIPLIER"))
+      SetEnvironmentVariableW(L"BB_FRAME_GEN_MULTIPLIER", f == 2 ? L"2" : f == 3 ? L"3" : f == 4 ? L"4" : nullptr);
   }
   if (g_aniso >= 0 && g_c[g_aniso].sel >= 1) {
     static const wchar_t* const kAniso[] = {L"", L"0", L"2", L"4", L"8", L"16"};
@@ -1139,7 +1397,7 @@ std::wstring StartGame() {
     }
     std::wstring summary = L"release " + (version.empty() ? std::wstring(L"unknown") : version) + L":";
     for (const auto& c : g_c) {
-      if (c.patches.empty() || c.patches[0] == "@name" || c.patches[0] == "@lang" || c.sel < 0) continue;
+      if (c.patches.empty() || c.patches[0] == "@name" || c.patches[0] == "@lang" || IsBenchRow(c) || c.sel < 0) continue;
       summary += L" ";
       summary += c.label;
       summary += L"=";
@@ -1170,7 +1428,8 @@ std::wstring StartGame() {
     return L"Could not start the game.";
   }
   CloseHandle(pi.hThread);
-  CloseHandle(pi.hProcess);
+  if (process) *process = pi.hProcess;
+  else CloseHandle(pi.hProcess);
   return L"";
 }
 
@@ -1206,6 +1465,206 @@ void Play() {
   g_busy = true;
   g_status.clear();
   std::thread(PlayWorker).detach();
+}
+
+// ------------------------------------------------------------------------------------------
+// benchmark: runs the game with BB_BENCHMARK, waits for it and shows data\user\benchmark\result.txt
+// ------------------------------------------------------------------------------------------
+std::wstring BenchResultPath() { return g_data + L"\\user\\benchmark\\result.txt"; }
+
+// The BB_BENCHMARK value for the choices on the page (keys: src/runtime_benchmark.c).
+std::string BenchSpec() {
+  char spec[400];
+  std::snprintf(spec, sizeof spec, "track=%s,car=%s,mode=%s,tod=%d,weather=%s,rain=%s,laps=20,warmup=5,seconds=%d,timeout=420",
+                kBenchTracks[g_bench_track].id, kBenchCars[g_bench_car].id, g_c[g_bmode].sel == 1 ? "Race" : "TimeTrial",
+                kBenchTod[g_c[g_btod].sel], kBenchWeather[g_c[g_bweather].sel], kBenchRain[g_c[g_brain].sel],
+                kBenchSeconds[g_c[g_blen].sel]);
+  return spec;
+}
+
+// result.txt is one line of key=value pairs (runtime_benchmark.c, finish()).
+void LoadBenchResult() {
+  g_bench_result = BenchResult{};
+  const auto lines = ReadLines(BenchResultPath());
+  if (lines.empty()) return;
+  auto value = [&](const char* key) -> std::string {
+    const std::string& l = lines[0];
+    const std::string k = std::string(key) + "=";
+    for (size_t p = l.find(k); p != std::string::npos; p = l.find(k, p + 1)) {
+      if (p != 0 && l[p - 1] != ' ') continue;
+      const size_t b = p + k.size(), e = l.find(' ', b);
+      return l.substr(b, e == std::string::npos ? std::string::npos : e - b);
+    }
+    return "";
+  };
+  auto one = [](const std::string& v) {
+    char b[32];
+    std::snprintf(b, sizeof b, "%.1f", std::atof(v.c_str()));
+    return Widen(b);
+  };
+  if (value("avg_fps").empty()) return;
+  g_bench_result.ok = true;
+  g_bench_result.fps = one(value("avg_fps"));
+  g_bench_result.lows = L"1% low " + one(value("low1_fps")) + L"    0.1% low " + one(value("low01_fps"));
+  const std::string weather = value("weather");
+  std::string rain = value("rain");  // the game's preset name with '_' for each space
+  std::replace(rain.begin(), rain.end(), '_', ' ');
+  std::wstring about = BenchName(kBenchTracks, kBenchTrackCount, value("track")) + L", " +
+                       BenchName(kBenchCars, kBenchCarCount, value("car")) + (value("mode") == "Race" ? L", race" : L"") + L", " +
+                       Widen(value("tod")) + L":00 " + Widen(weather) + (rain.empty() || rain == "dry" ? L"" : L", rain " + Widen(rain)) +
+                       L", " + Widen(std::to_string(int(std::atof(value("seconds").c_str()) + 0.5))) + L" s measured";
+  WIN32_FILE_ATTRIBUTE_DATA info;
+  if (GetFileAttributesExW(BenchResultPath().c_str(), GetFileExInfoStandard, &info)) {
+    FILETIME local;
+    SYSTEMTIME t;
+    FileTimeToLocalFileTime(&info.ftLastWriteTime, &local);
+    FileTimeToSystemTime(&local, &t);
+    wchar_t when[40];
+    wsprintfW(when, L", %04d-%02d-%02d %02d:%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
+    about += when;
+  }
+  g_bench_result.about = about;
+
+  // The second line: what the game itself ran with ("ran key=value ...", runtime_benchmark.c ran_with()).
+  g_bench_ran_short.clear();
+  g_bench_ran_lines.clear();
+  if (lines.size() < 2 || lines[1].rfind("ran ", 0) != 0) return;
+  auto ran = [&](const char* key) -> std::string {
+    const std::string& l = lines[1];
+    const std::string k = std::string(" ") + key + "=";
+    const size_t p = l.find(k);
+    if (p == std::string::npos) return "";
+    const size_t b = p + k.size(), e = l.find(' ', b);
+    return l.substr(b, e == std::string::npos ? std::string::npos : e - b);
+  };
+  const std::string fps = ran("fps_limit"), aa = ran("aa"), scale = ran("aa_scale"), fgen = ran("frame_gen");
+  const int limit = std::atoi(fps.c_str());
+  const std::wstring cap = fps == "none" || limit >= 1000 ? L"no frame cap" : Widen(fps) + L" FPS cap";
+  const std::wstring aa_name = aa == "dlss" ? L"DLAA" : aa == "fsr3" ? L"FSR 3.1" : L"game AA";
+  const std::wstring up_name = scale.empty() || scale == "native" ? L"" : L" (" + Widen(scale) + L" upscaling)";
+  const std::wstring fg_name = fgen.empty() || fgen == "off" ? L"off" : Widen(fgen) + L" " + Widen(ran("frame_gen_x")) + L"x";
+  const bool live = ran("mirror_rate") != "0";
+  auto onoff = [&](const char* key) { return ran(key) == "1" ? std::wstring(L"on") : std::wstring(L"off"); };
+  std::wstring aniso = Widen(ran("aniso"));
+  if (aniso != L"auto") aniso += L"x";
+  g_bench_ran_short = L"Ran at " + Widen(ran("render")) + L" \x2192 " + Widen(ran("output")) + L", " + cap + L", " + aa_name +
+                      L". Point here for every setting.";
+  g_bench_ran_lines = {
+      L"What the game ran with (read by the game itself)",
+      L"Render resolution (the 3D scene): " + Widen(ran("render")),
+      L"Output resolution (the finished picture): " + Widen(ran("output")),
+      L"The window is always your screen's size; dynamic resolution can lower the render size further under load.",
+      L"Frame limit: " + cap + L", vblank " + Widen(ran("vblank_hz")) + L" Hz, present mode " + Widen(ran("present")),
+      L"Anti-aliasing: " + aa_name + up_name + L", frame generation " + fg_name,
+      L"Texture filtering: " + aniso + L", mirrors and reflections: " + (live ? L"live" : L"static"),
+      L"Your car full detail: " + onoff("car_detail") + L", other cars full detail: " + onoff("opponent_detail"),
+      L"More scenery detail: " + onoff("scenery_detail") + L", high-quality reflections: " + onoff("hq_reflections"),
+      L"Dynamic resolution: " + onoff("dynamic_res") + L", add-on content: " + (ran("dlc") == "1" ? L"unlocked" : L"not unlocked"),
+  };
+}
+
+// The game's own reason when it stopped the benchmark ("Benchmark: FAILED, ..." in its log), or "".
+// The game's output can interleave with other lines, so the text is searched for anywhere in a line.
+std::wstring BenchFailure() {
+  std::string why;
+  for (const auto& l : ReadLines(g_game_log)) {
+    const size_t p = l.find("Benchmark: FAILED, ");
+    if (p == std::string::npos) continue;
+    const size_t b = p + 19, e = l.find(" (", b);  // without the note for developers in brackets
+    why = l.substr(b, e == std::string::npos ? std::string::npos : e - b);
+  }
+  return Widen(why);
+}
+
+// When result.txt was last written (0 = not there).
+unsigned long long ResultTime() {
+  WIN32_FILE_ATTRIBUTE_DATA info;
+  if (!GetFileAttributesExW(BenchResultPath().c_str(), GetFileExInfoStandard, &info)) return 0;
+  return (static_cast<unsigned long long>(info.ftLastWriteTime.dwHighDateTime) << 32) | info.ftLastWriteTime.dwLowDateTime;
+}
+
+void BenchWorker() {
+  SetProgress(0, L"Preparing the game...");
+  LauncherLog("Run benchmark pressed: " + BenchSpec());
+  std::wstring error = Preflight();
+  if (error.empty()) error = RunPrepare();
+  HANDLE game = nullptr;
+  unsigned long long before = 0;
+  if (error.empty()) {
+    SetProgress(100, L"Benchmark running. The game closes by itself when it is done.");
+    before = ResultTime();  // the last result stays on show if this run fails
+    const std::wstring spec = Widen(BenchSpec());
+    SetEnvironmentVariableW(L"BB_BENCHMARK", spec.c_str());
+    SetEnvironmentVariableW(L"BB_BENCHMARK_OUT", BenchResultPath().c_str());
+    error = StartGame(&game);
+    SetEnvironmentVariableW(L"BB_BENCHMARK", nullptr);  // a later Play is an ordinary game
+    SetEnvironmentVariableW(L"BB_BENCHMARK_OUT", nullptr);
+  }
+  DWORD code = 1;
+  if (error.empty() && game) {
+    WaitForSingleObject(game, INFINITE);
+    GetExitCodeProcess(game, &code);
+    CloseHandle(game);
+    if (code == 0 && ResultTime() > before) {
+      const auto lines = ReadLines(BenchResultPath());
+      LauncherLog("benchmark result: " + (lines.empty() ? std::string("(empty)") : lines[0]));
+    } else {
+      std::wstring why = BenchFailure();
+      if (why.empty() && code == 3) why = L"the race did not start, or the game stopped drawing";
+      error = why.empty() ? L"The benchmark stopped before the end: the game was closed or crashed. The log is in the logs folder."
+                          : L"The benchmark failed: " + why + L". The log is in the logs folder.";
+      LauncherLog("benchmark: exit code " + std::to_string(code) + ", " + Narrow(error));
+    }
+  } else {
+    LauncherLog("benchmark: " + Narrow(error));
+  }
+  g_bench_running = false;
+  g_busy = false;
+  if (!error.empty()) {
+    g_status = error;
+    g_status_color = kWarn;
+  } else {
+    g_status = L"Benchmark done.";
+    g_status_color = kOk;
+  }
+  if (g_hwnd) PostMessageW(g_hwnd, WM_APP + 3, 0, 0);  // show the result
+}
+
+void RunBenchmark() {
+  if (g_busy || !FoldersOk()) return;
+  if (GpuBlocked()) {
+    g_status = g_gpu_problem;
+    g_status_color = kBad;
+    return;
+  }
+  SaveSettings();
+  g_busy = true;
+  g_bench_running = true;
+  g_status.clear();
+  std::thread(BenchWorker).detach();
+}
+
+// The menu of tracks or cars, grouped by location or class. Returns the chosen index or -1.
+int BenchMenu(HWND h, const RectF& at, const BenchChoice* list, int count, int current) {
+  HMENU menu = CreatePopupMenu();
+  std::vector<std::pair<std::wstring, HMENU>> groups;
+  for (int i = 0; i < count; ++i) {
+    auto it = std::find_if(groups.begin(), groups.end(), [&](const auto& g) { return g.first == list[i].group; });
+    if (it == groups.end()) {
+      groups.push_back({list[i].group, CreatePopupMenu()});
+      it = groups.end() - 1;
+    }
+    AppendMenuW(it->second, MF_STRING | (i == current ? MF_CHECKED : 0), UINT_PTR(1 + i), list[i].name);
+  }
+  for (const auto& g : groups) {
+    const bool has_current = current >= 0 && g.first == list[current].group;
+    AppendMenuW(menu, MF_POPUP | (has_current ? MF_CHECKED : 0), UINT_PTR(g.second), g.first.c_str());
+  }
+  POINT pt{LONG(at.X), LONG(at.Y + at.Height)};
+  ClientToScreen(h, &pt);
+  const int pick = int(TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, pt.x, pt.y, 0, h, nullptr));
+  DestroyMenu(menu);  // and its submenus
+  return pick - 1;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1266,6 +1725,10 @@ int HitControl(float x, float y, int* seg) {
     Ctl& c = g_c[i];
     RectF r = Scaled(c.row);
     if (x < r.X || x > r.X + r.Width || y < r.Y || y > r.Y + r.Height) continue;
+    if (c.kind == Kind::Action) {
+      const RectF ct = Scaled(c.ctl);
+      if (x >= ct.X && x <= ct.X + ct.Width && y >= ct.Y && y <= ct.Y + ct.Height) *seg = 0;  // over the Run button
+    }
     if (c.kind == Kind::Segmented) {
       RectF ct = Scaled(c.ctl);
       if (x >= ct.X && x <= ct.X + ct.Width && y >= ct.Y && y <= ct.Y + ct.Height) {
@@ -1310,7 +1773,9 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         float s = g_dpi;
         for (int i = 0; i < 12; ++i) {
           g_scale = s;
-          g_win_w = (std::max)(kWinW, (std::min)(kMaxW, cw / s));
+          // The layout fills the window at any scale: a window shrunk to fit its height gets wider columns,
+          // not an empty strip on the right (the window itself is at most kMaxW wide at full scale).
+          g_win_w = (std::max)(kWinW, cw / s);
           g_win_h = g_client_h / s;
           Layout();
           const float need = TotalHeight() * s;
@@ -1375,6 +1840,16 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       int seg;
       const int c = HitControl(x, y, &seg), b = HitButton(x, y), br = HitBrowse(x, y);
+      // Over the benchmark's result (its row below the Run button): the panel of settings the game ran with.
+      bool ran_hover = false;
+      if (c >= 0 && c == g_brun && seg != 0) {
+        const RectF row = Scaled(g_c[c].row);
+        ran_hover = y >= row.Y + 88 * g_scale;
+      }
+      if (ran_hover != g_bench_ran_hover) {
+        g_bench_ran_hover = ran_hover;
+        InvalidateRect(h, nullptr, FALSE);
+      }
       if (c != g_hover_ctl || seg != g_hover_seg || b != g_hover_btn || br != g_hover_browse) {
         g_hover_ctl = c;
         g_hover_seg = seg;
@@ -1388,6 +1863,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_MOUSELEAVE:
       g_hover_ctl = g_hover_seg = g_hover_btn = g_hover_browse = -1;
+      g_bench_ran_hover = false;
       InvalidateRect(h, nullptr, FALSE);
       return 0;
     case WM_LBUTTONDOWN: {
@@ -1407,6 +1883,23 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         Ctl& ctl = g_c[c];
         if (ctl.patches[0] == "@name") {
           StartNameEdit(h, ctl);
+          return 0;
+        }
+        if (ctl.kind == Kind::Picker) {
+          const bool track = c == g_btrack;
+          const int pick = BenchMenu(h, Scaled(ctl.ctl), track ? kBenchTracks : kBenchCars, track ? kBenchTrackCount : kBenchCarCount,
+                                     track ? g_bench_track : g_bench_car);
+          if (pick >= 0) {
+            (track ? g_bench_track : g_bench_car) = pick;
+            ShowBenchChoices();
+            g_changed = true;
+          }
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
+        if (ctl.kind == Kind::Action) {
+          if (seg == 0) RunBenchmark();
+          InvalidateRect(h, nullptr, FALSE);
           return 0;
         }
         if (ctl.patches[0] == "@lang") {
@@ -1464,6 +1957,12 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_APP + 2:
       DestroyWindow(h);
       return 0;
+    case WM_APP + 3:  // the benchmark has ended: show its result in front of the other windows
+      LoadBenchResult();
+      if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+      SetForegroundWindow(h);
+      InvalidateRect(h, nullptr, FALSE);
+      return 0;
     case WM_DESTROY:
       PostQuitMessage(0);
       return 0;
@@ -1484,6 +1983,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   }
   SetProcessDPIAware();
   CoInitialize(nullptr);
+  SnapshotUserEnv();
   wchar_t selfbuf[MAX_PATH * 2];
   GetModuleFileNameW(nullptr, selfbuf, MAX_PATH * 2);
   g_home = Dir(selfbuf);
@@ -1492,6 +1992,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   BuildModel();
   MakeDirs(g_data + L"\\user");
   LoadSettings();
+  LoadBenchResult();
   StartLauncherLog();
   if (!g_skip_gpu_check) {
     g_gpu_problem = CheckCpu();

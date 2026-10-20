@@ -15,6 +15,7 @@
 #include "bbport_toggles.h"
 
 extern "C" void BbDescribeAddress(unsigned long long rip, char* out, unsigned long size);
+extern "C" void runtime_benchmark_flip(void); // src/runtime_benchmark.c (BB_BENCHMARK)
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "common/debug.h"
 #include "common/thread.h"
@@ -300,6 +301,7 @@ void VideoOutDriver::Flip(const Request& req) {
     });
     Vulkan::FrameCapture::OnFlip(req.index >= 0 ? req.port->buffer_slots[req.index].address_left
                                                 : 0);
+    runtime_benchmark_flip();
 
     // bbport: BB_FRAME_STATS=1 prints flip rate and frame time spread every 5 seconds.
     static const bool frame_stats = EmulatorSettingsImpl::Flag("BB_FRAME_STATS", false);

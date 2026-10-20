@@ -39,7 +39,11 @@ jobs:
             mingw-w64-clang-x86_64-miniupnpc
       - name: Compile game runtime
         shell: msys2 {0}
-        run: bash build.sh
+        run: |
+          pwd
+          command -v bash
+          command -v clang
+          bash -x ./build.sh
       - name: Upload runtime executable and settings
         uses: actions/upload-artifact@v4
         with:

@@ -288,12 +288,12 @@ inline thread_local u64 t_fault_rip = 0;
 /// page learned while the game was not reading its GPU bytes (the countdown on the grid) read them a frame late once
 /// it did (floating grass clumps in the sky past the start). Demotes a page already fast.
 inline void DemoteFastPage(VAddr page, VAddr begin, VAddr end);
-// Opt-in (BB_HYBRID_GDS_EXACT=1): each such read is a readback wait, and with the two-thread draw path on each wait
-// also waits for the draws queued in the pipe (313 -> 763 ms/s of waits a second, the draw thread slower than off).
-// vr1.1 served these counters a frame late (fast pages after 32 faults) with the clumps not drawn, and that is the
-// default again; the clump flag read late only matters when the clumps are drawn (BB_VR_GRASS_CLUMPS=1).
+// On by default (BB_HYBRID_GDS_EXACT=0 serves them a frame late, as vr1.1 did): read late, every vegetation type
+// that takes its clusters' visibility bits from the counter floats (Matt, 2026-10-21 afternoon, one corner in: the
+// grass clump skip covers one shader only). Each read is a readback wait; Rasterizer::CopyBuffer submits right after
+// a GDS copy so that wait covers the copy, not the frame queued behind it.
 inline void MarkGdsCopyTarget(VAddr address, u64 size) {
-    static const bool exact = std::getenv("BB_HYBRID_GDS_EXACT") && std::getenv("BB_HYBRID_GDS_EXACT")[0] == '1';
+    static const bool exact = !(std::getenv("BB_HYBRID_GDS_EXACT") && std::getenv("BB_HYBRID_GDS_EXACT")[0] == '0');
     if (!exact || !Enabled() || !size) {
         return;
     }

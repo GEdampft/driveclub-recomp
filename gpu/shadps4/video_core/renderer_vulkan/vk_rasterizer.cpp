@@ -3701,6 +3701,13 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         .size = num_bytes,
     };
     runtime.CopyBuffer(src_buffer, dst_buffer, std::span{&copy, 1});
+    // VR fork: a GDS counter copied to memory is polled by the game right after (the vegetation clusters' visibility
+    // bits among them); its page stays exact (readback_hybrid.h MarkGdsCopyTarget), and submitting now lets that
+    // poll wait for this copy alone instead of the frame's draws queued behind it. BB_GDS_FLUSH=0 turns it off.
+    static const bool gds_flush = !(std::getenv("BB_GDS_FLUSH") && std::getenv("BB_GDS_FLUSH")[0] == '0');
+    if (src_gds && !dst_gds && gds_flush && VideoCore::ReadbackHybrid::Enabled()) {
+        scheduler.Flush();
+    }
 }
 
 u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {

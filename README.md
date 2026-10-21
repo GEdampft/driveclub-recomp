@@ -114,7 +114,7 @@ The settings are kept in `default.ini` (`wheel_ffb_physics_*`), and the game pic
 **Field of view**
 The **Field of view** slider on the **Assists and view** page sets the view from 50% to 150% of the game's own, for every camera. While playing, **F5** narrows it and **F6** widens it in 5% steps; the new value shows at the top of the screen and is kept for the next start (`data\user\camera.ini`). At 100% the view is left as the game and the patches have it. Any other value counts from the game's own view and takes the place of the widescreen field-of-view fix (which is about 131%).
 
-Tested with a Moza R3, a Fanatec 8 Nm direct drive base with ClubSport Pedals, and a Logitech Driving Force Shifter. On some PCs Windows takes a long time to list game controllers; the game then starts later and pauses when a controller is plugged in while it runs.
+Tested with a Moza R3, a Fanatec 8 Nm direct drive base with ClubSport Pedals and a Fanatec handbrake plugged into the pedals, and a Logitech Driving Force Shifter. On some PCs Windows takes a long time to list game controllers; the game then starts later and pauses when a controller is plugged in while it runs.
 
 ## Settings
 The window that opens when you start `DriveClub.exe` has every setting. Press **Play** to save them; they are kept for later starts.

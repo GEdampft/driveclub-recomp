@@ -659,6 +659,117 @@ static void ffb_hook_install(void) {
     printf("Runtime: FFB physics: reading the car's simulation\n");
 }
 #endif
+
+/* Driving options from the launcher: BB_GEARBOX (automatic, manual), BB_BRAKE_ASSIST (0 off .. 3 high),
+ * BB_HARDCORE (0, 1: hardcore handling), BB_WHEEL_ASSIST (0, 1); unset: the game's own choice. They are set with the
+ * game's own setters, on its thread, once its options exist and again whenever they differ (the profile loads a
+ * little later; while the launcher sets one, it wins over the game's menu). The options (eboot 1.28, its options
+ * menu +0x2e18d0..+0x2e20db): S = *(*(*(image+0x1911100)+0x970)+0x788); S+0x10 gearbox (int, 1 automatic; setter
+ * +0x1a33c0, which also tells the game), S+0x14 brake assist (float 0, 1/3, 2/3, 1; setter +0x1a3490), S+0x24 hardcore
+ * handling (byte; setter +0x1a3a00, which also sets the byte the handling code reads), S+0x1f8 and S+0x258 wheel assist
+ * (a byte in the wheel settings of each of the two controller kinds, see +0x1a83b0). */
+typedef ABI void (*game_int_setter)(void *, int);
+typedef ABI void (*game_float_setter)(void *, float);
+static int env_choice(const char *name, const char *const *words, int count) {
+    const char *e=getenv(name);
+    if (!e || !*e) return -1;
+    for (int i=0;i<count;++i) if (!SDL_strcasecmp(e,words[i])) return i;
+    const int v=atoi(e);
+    return v>=0 && v<count ? v : -1;
+}
+static void game_options_apply(void) {
+    static int gearbox=-2, brake, hardcore, wheel_assist;
+    if (gearbox==-2) {
+        static const char *const gear[]={"manual","automatic"}, *const level[]={"off","low","medium","high"}, *const onoff[]={"off","on"};
+        gearbox=env_choice("BB_GEARBOX",gear,2); brake=env_choice("BB_BRAKE_ASSIST",level,4);
+        hardcore=env_choice("BB_HARDCORE",onoff,2); wheel_assist=env_choice("BB_WHEEL_ASSIST",onoff,2);
+        if (gearbox>=0 || brake>=0 || hardcore>=0 || wheel_assist>=0)
+            printf("Runtime: driving options from the launcher: gearbox %d, brake assist %d, hardcore handling %d, wheel assist %d (-1: the game's)\n",
+                   gearbox,brake,hardcore,wheel_assist);
+    }
+    if (gearbox<0 && brake<0 && hardcore<0 && wheel_assist<0) return;
+    static uint64_t last;
+    const uint64_t now=now_us();
+    if (now-last<250000 || !runtime_image_base) return;
+    last=now;
+    const unsigned char *g=*(unsigned char *const *)(runtime_image_base+0x1911100);
+    const unsigned char *p=g ? *(const unsigned char *const *)(g+0x970) : NULL;
+    unsigned char *s=p ? *(unsigned char *const *)(p+0x788) : NULL;
+    if (!s) return;
+    unsigned char *d=s+0x10;
+    static unsigned changes;
+    /* the gearbox setter tells the game through its event queue (*(G+0x970)+0x590), which comes a little later */
+    const unsigned char *events=*(const unsigned char *const *)(p+0x590);
+    if (gearbox>=0 && *(const int *)d!=gearbox && events && *(const void *const *)(events+8)) {
+        ((game_int_setter)(runtime_image_base+0x1a33c0))(d,gearbox);
+        if (changes++<20) printf("Runtime: gearbox set to %s\n",gearbox ? "automatic" : "manual");
+    }
+    if (brake>=0 && fabsf(*(const float *)(d+4)-(float)brake/3.0f)>0.01f) {
+        ((game_float_setter)(runtime_image_base+0x1a3490))(d,(float)brake/3.0f);
+        if (changes++<20) printf("Runtime: brake assist set to %d of 3\n",brake);
+    }
+    const unsigned char *handling=(const unsigned char *)(runtime_image_base+0x274be46);
+    if (hardcore>=0 && (d[0x14]!=hardcore || *handling!=hardcore)) {
+        ((game_int_setter)(runtime_image_base+0x1a3a00))(d,hardcore);
+        if (changes++<20) printf("Runtime: hardcore handling %s\n",hardcore ? "on" : "off");
+    }
+    if (wheel_assist>=0 && (s[0x1f8]!=wheel_assist || s[0x258]!=wheel_assist)) {
+        s[0x1f8]=s[0x258]=(unsigned char)wheel_assist;
+        if (changes++<20) printf("Runtime: wheel assist %s\n",wheel_assist ? "on" : "off");
+    }
+}
+/* Field of view: data/user/camera.ini fov=<percent of the game's own> (the launcher's slider), F5 narrower and F6
+ * wider while playing (saved there). The game builds every camera's projection from half its angle, the angle times
+ * the float at +0x12efac4 (0.5; the "FOV fix for wide resolutions" patch makes it 0.65625), read each frame
+ * (+0x731cb0): percent/100 x 0.5 goes there. At 100% (or with no file) the value is left as the game and patches
+ * have it. */
+#ifdef _WIN32
+static void camera_fov_set(int percent) {
+    float *k=(float *)(runtime_image_base+0x12efac4);
+    DWORD old;
+    if (!VirtualProtect(k,4,PAGE_READWRITE,&old)) return;
+    *k=0.5f*(float)percent/100.0f;
+    VirtualProtect(k,4,old,&old);
+}
+static void camera_fov_path(char *path, size_t size) {
+    const char *user=runtime_file_user_dir();
+    snprintf(path,size,"%s/camera.ini",user && *user ? user : ".");
+}
+static void camera_fov_apply(void) {
+    static int percent=-1; static bool loaded;
+    if (!runtime_image_base) return;
+    if (!loaded) {
+        loaded=true;
+        char path[600]; camera_fov_path(path,sizeof path);
+        FILE *f=fopen(path,"rb");
+        if (f) {
+            char line[64];
+            while (fgets(line,sizeof line,f)) if (!strncmp(line,"fov=",4)) percent=atoi(line+4);
+            fclose(f);
+        }
+        if (percent<50 || percent>150) percent=-1;
+        if (percent>0 && percent!=100) { camera_fov_set(percent); printf("Runtime: field of view %d%% of the game's\n",percent); }
+    }
+    /* F5 and F6 while the game's window is in front */
+    static bool f5, f6;
+    const bool f5_now=(GetAsyncKeyState(VK_F5)&0x8000)!=0, f6_now=(GetAsyncKeyState(VK_F6)&0x8000)!=0;
+    const int step=(f6_now && !f6) ? 5 : (f5_now && !f5) ? -5 : 0;
+    f5=f5_now; f6=f6_now;
+    if (!step) return;
+    DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(),&pid);
+    if (pid!=GetCurrentProcessId()) return;
+    if (percent<0) percent=(int)lroundf(*(const float *)(runtime_image_base+0x12efac4)/0.5f*100.0f);   /* from the game's (or the patch's) */
+    percent=percent+step<50 ? 50 : percent+step>150 ? 150 : percent+step;   /* the launcher slider's range */
+    camera_fov_set(percent);
+    char path[600]; camera_fov_path(path,sizeof path);
+    FILE *f=fopen(path,"wb");
+    if (f) { fprintf(f,"fov=%d\n",percent); fclose(f); }
+    char note[96]; snprintf(note,sizeof note,"Field of view %d%%   (F5 narrower, F6 wider)",percent);
+    bbgpu_overlay_note(note);
+}
+#else
+static void camera_fov_apply(void) {}
+#endif
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
@@ -670,6 +781,8 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
 #endif
     { static unsigned nz; if (data->buttons && nz++<40) printf("Runtime: game read buttons 0x%x at %p from +0x%llx\n",data->buttons,(void *)data,(unsigned long long)((uintptr_t)__builtin_return_address(0)-runtime_image_base)); }
     pthread_mutex_unlock(&lock);
+    game_options_apply();   /* the game's thread, outside the lock: the setters tell the rest of the game */
+    camera_fov_apply();
     return 0;
 }
 /* Buffered read: the port samples once per call, so one entry is returned. */

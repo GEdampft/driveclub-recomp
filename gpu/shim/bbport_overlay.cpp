@@ -63,6 +63,10 @@ constexpr bool menu_open = false;
 // The game's text dialog (SetTextEntry), guarded by imgui_mutex.
 bool text_entry_active = false;
 std::string text_entry_prompt, text_entry_text;
+// A hotkey's note (Note), guarded by imgui_mutex: shown until note_until.
+std::string note_text;
+std::chrono::steady_clock::time_point note_until{};
+std::atomic<bool> note_active{false};
 float base_scale = 1.0f;
 
 // Present rate for the FPS counter.
@@ -191,6 +195,20 @@ void PollHotkeys() {
     }
     f8_down = f8;
 #endif
+}
+
+void NoteBox() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + 40.0f * base_scale),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.75f);
+    ImGui::Begin("##note", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::SetWindowFontScale(1.3f);
+    ImGui::Text("%s", note_text.c_str());
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::End();
 }
 
 void FpsCounter() {
@@ -395,7 +413,14 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || text_entry_active || BbSettings::Get().show_fps);
+    return initialized && (menu_open || text_entry_active || note_active || BbSettings::Get().show_fps);
+}
+
+void Note(const std::string& text) {
+    std::scoped_lock lock{imgui_mutex};
+    note_text = text;
+    note_until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    note_active = true;
 }
 
 bool CapturesInput() {
@@ -447,6 +472,13 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (text_entry_active) {
         TextEntryBox();
+    }
+    if (note_active) {
+        if (now < note_until) {
+            NoteBox();
+        } else {
+            note_active = false;
+        }
     }
     ImGui::Render();
 

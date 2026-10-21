@@ -42,4 +42,7 @@ bool CapturesInput();
 /// `active` is false; typing goes to the window (sdl_window), the box only displays it.
 void SetTextEntry(bool active, const std::string& prompt, const std::string& text);
 
+/// Any thread: a short line shown at the top of the screen for a few seconds (a hotkey's new value).
+void Note(const std::string& text);
+
 } // namespace BbOverlay

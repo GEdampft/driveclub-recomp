@@ -8,12 +8,23 @@
 #include <sched.h>
 #include <errno.h>
 #include <time.h>
-typedef struct { int type; } GuestAttr;
-/* magic: set while the mutex lives. A handle that does not point at a live mutex (the game's memory before its
- * init, or after its destroy) took the boot down inside pthread_mutex_trylock (libwinpthread +0x3643, about one
- * boot in twenty); it is refused with EINVAL instead, as the PS4 does, and logged. */
+typedef struct { int type; uint8_t guest_fields[0x40 - sizeof(int)]; } GuestAttr; /* PS4-sized, as GuestMutex */
+/* The objects behind guest handles are as large as the PS4's own (libthr's struct pthread_mutex / pthread_cond):
+ * the game's libc writes their fields itself. Right after pthread_mutex_init it sets PMUTEX_FLAG_PRIVATE,
+ * `or dword [*handle + 0x20], 0x100` (guest +0x24d52 in the first linked module); with an 8-byte object that write
+ * landed in the next heap block: bit 8 of whatever lived there (the renderer's submit callback, whose vtable pointer
+ * then pointed 0x100 too far, or another mutex's handle, which crashed inside pthread_mutex_trylock), about one boot
+ * in eighty (found with a hardware write watchpoint on the callback). The host object stays at the start; the rest
+ * is the game's (zeroed).
+ * magic: set while the mutex lives. A handle that does not point at a live mutex (the game's memory before its
+ * init, or after its destroy) is refused with EINVAL, as the PS4 does, and logged. */
+#define GUEST_OBJECT_BYTES 0x100
 #define GUEST_MUTEX_MAGIC UINT64_C(0x5845545547554d42)
-typedef struct { pthread_mutex_t native; uint64_t magic; } GuestMutex;
+typedef struct {
+    pthread_mutex_t native;
+    uint8_t guest_fields[GUEST_OBJECT_BYTES - sizeof(pthread_mutex_t) - sizeof(uint64_t)];
+    uint64_t magic;
+} GuestMutex;
 static size_t created, locks, unlocks;
 static int32_t orbis_error(int e) {
     if (!e) return 0;
@@ -31,7 +42,7 @@ static int32_t orbis_error(int e) {
 }
 static ABI int32_t attr_init(GuestAttr **out) {
     if (!out) return orbis_error(EINVAL);
-    GuestAttr *attr = malloc(sizeof(*attr));
+    GuestAttr *attr = calloc(1, sizeof(*attr));
     if (!attr) return orbis_error(ENOMEM);
     attr->type = 1; *out = attr; return 0;
 }
@@ -53,7 +64,7 @@ static ABI int32_t mutex_init(GuestMutex **out, GuestAttr **attr, const char *na
     if (!out || (attr && !*attr)) return orbis_error(EINVAL);
     int type = attr ? (*attr)->type : 1;
     if (type < 1 || type > 4) return orbis_error(EINVAL);
-    GuestMutex *mutex = malloc(sizeof(*mutex));
+    GuestMutex *mutex = calloc(1, sizeof(*mutex));
     if (!mutex) return orbis_error(ENOMEM);
     pthread_mutexattr_t native_attr;
     int e = pthread_mutexattr_init(&native_attr);
@@ -148,12 +159,15 @@ static ABI int32_t mutex_timedlock(GuestMutex **mutex, uint32_t usec) {
 }
 /* Condition variables: opaque handles over host pthread_cond (CLOCK_REALTIME,
  * like FreeBSD's default), sharing the host mutex behind GuestMutex. */
-typedef struct { pthread_cond_t native; } GuestCond;
+typedef struct {
+    pthread_cond_t native;
+    uint8_t guest_fields[GUEST_OBJECT_BYTES - sizeof(pthread_cond_t)]; /* as GuestMutex */
+} GuestCond;
 static size_t conds, waits, wakeups;
 static ABI int32_t cond_init(GuestCond **out, void **attr, const char *name) {
     (void)attr; (void)name;
     if (!out) return orbis_error(EINVAL);
-    GuestCond *c = malloc(sizeof(*c));
+    GuestCond *c = calloc(1, sizeof(*c));
     if (!c) return orbis_error(ENOMEM);
     int e = pthread_cond_init(&c->native, NULL);
     if (e) { free(c); return orbis_error(e); }

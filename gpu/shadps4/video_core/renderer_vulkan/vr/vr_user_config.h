@@ -21,6 +21,7 @@ struct Settings {
     float far_distance_offset = 1.50f;
     float far_height_offset = 0.50f;
     float far_pitch_offset = 0.0f;
+    std::string camera_toggle_button = "l3"; // l3, pad_up, pad_down, pad_left, pad_right, off
 };
 inline std::string Trim(std::string s) {
     const auto a = s.find_first_not_of(" \t\r\n");
@@ -73,6 +74,11 @@ inline Settings Load() {
             else if (key == "DistanceOffset") SetNumber(s.far_distance_offset, val, -10.f, 15.f);
             else if (key == "HeightOffset") SetNumber(s.far_height_offset, val, -5.f, 10.f);
             else if (key == "PitchOffset") SetNumber(s.far_pitch_offset, val, -35.f, 35.f);
+            else if (key == "ToggleButton") {
+                if (val == "l3" || val == "pad_up" || val == "pad_down" ||
+                    val == "pad_left" || val == "pad_right" || val == "off")
+                    s.camera_toggle_button = val;
+            }
         }
     }
     std::printf("VR settings: HUD %.2fm width, %.2fm up, %.2fm away; chase enabled %d, back %.2fm up %.2fm pitch %.2f deg\n",

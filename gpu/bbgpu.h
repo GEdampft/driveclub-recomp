@@ -34,6 +34,8 @@ int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
 int bbgpu_overlay_captures_input(void);
 /* VR camera offset toggling from a controller button. */
 void bbgpu_vr_camera_toggle(void);
+/* 0 disabled, 1 L3, 2 up, 3 down, 4 left, 5 right. */
+int bbgpu_vr_camera_button(void);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned bbgpu_symbol_count(void);
 /* Frames presented so far (a freeze watchdog reads it). */

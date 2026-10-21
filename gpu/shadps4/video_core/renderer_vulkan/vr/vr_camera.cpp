@@ -527,6 +527,17 @@ void RequestCameraToggle() { g_pad_toggle.store(true, std::memory_order_release)
 
 } // namespace Vulkan::Vr::Camera
 
+extern "C" int bbgpu_vr_camera_button(void) {
+    const auto& c = Vulkan::Vr::UserConfig::Get();
+    if (!c.far_enabled) return 0;
+    if (c.camera_toggle_button == "off") return 0;
+    if (c.camera_toggle_button == "pad_up") return 2;
+    if (c.camera_toggle_button == "pad_down") return 3;
+    if (c.camera_toggle_button == "pad_left") return 4;
+    if (c.camera_toggle_button == "pad_right") return 5;
+    return 1;
+}
+
 extern "C" void bbgpu_vr_camera_toggle(void) {
     Vulkan::Vr::Camera::RequestCameraToggle();
 }

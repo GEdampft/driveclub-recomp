@@ -114,6 +114,16 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     if (DrawPipeWanted()) {
         constant_ring = std::make_unique<ConstantRing>(instance, scheduler);
         draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this);
+        // VR fork: the draw recording thread runs dry before a new pipeline is compiled. Compiling on this thread
+        // while it recorded built pipelines wrong for good on a cold shader cache (2026-10-21, a first run at an
+        // unused size with the draw thread: red polygons over the fly-over and a red sky for the whole race; clean
+        // with this). New pipelines only, so a warm cache costs nothing. BB_COMPILE_DRAIN=0 turns it off.
+        if (!(std::getenv("BB_COMPILE_DRAIN") && std::getenv("BB_COMPILE_DRAIN")[0] == '0')) {
+            pipeline_cache.before_compile_context = this;
+            pipeline_cache.before_compile = [](void* self) {
+                static_cast<Rasterizer*>(self)->DrainDrawPipe(DrawPipe::ReasonRasterizer);
+            };
+        }
     }
     // bbport: this thread joins the texture binding helper before it changes image state.
     runtime.SetImageAccessHook(&JoinBindHelper, this);

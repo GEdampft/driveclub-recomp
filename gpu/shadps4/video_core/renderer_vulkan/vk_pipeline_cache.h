@@ -197,6 +197,11 @@ private:
     tsl::robin_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_pipelines;
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
     PipelineSelection sel{}; ///< GPU thread selection state
+public:
+    /// VR fork: called before a new pipeline is compiled (the rasterizer drains the draw recording thread).
+    void (*before_compile)(void* context) = nullptr;
+    void* before_compile_context = nullptr;
+private:
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
 

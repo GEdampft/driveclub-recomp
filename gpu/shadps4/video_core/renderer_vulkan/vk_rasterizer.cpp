@@ -535,6 +535,7 @@ void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size) {
     if (!draw_pipe || !size) {
         return;
     }
+    buffer_cache.NoteQueuedGpuWrite(address, size); // VR fork: readbacks finishing before stage B marks it
     // Draws write the same buffers over and over: an entry for the range only moves on.
     const u64 position = draw_pipe->Head();
     const VAddr end = address + size;

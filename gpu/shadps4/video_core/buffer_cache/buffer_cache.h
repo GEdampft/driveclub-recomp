@@ -120,6 +120,7 @@ public:
     void NoteSmallGpuWrite(VAddr device_addr, u64 size);
     void WriteBackSmallWrites();
     void PopFinishedSmallWrites(bool gpu_thread); // VR fork: small_writeback.cpp
+    void NoteQueuedGpuWrite(VAddr device_addr, u64 size); // VR fork: the draw pipe, before the write is recorded
     void StageSmallWrites(bool fenced = false);   // VR fork: small_writeback.cpp
     static bool GdsFencesEnabled();                                                   // VR fork: gds_fence.cpp
     void NoteGdsCopy(const Buffer* dst_buffer, u64 dst_offset, VAddr dst, u32 size); // VR fork: gds_fence.cpp

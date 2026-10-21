@@ -151,7 +151,15 @@ private:
     }
 
     void WaitForSpace(u64 at, u64 size) {
-        while (at + size - consumed.load(std::memory_order_acquire) > Capacity) {
+        // VR fork, development: BB_PIPE_MAX_BYTES bounds how far stage A may run ahead of stage B (the ring's
+        // capacity otherwise): a test for races between the game's rewrites of transient buffers and stage B's
+        // late reads of them.
+        static const u64 limit = [] {
+            const char* env = std::getenv("BB_PIPE_MAX_BYTES");
+            const u64 v = env ? std::strtoull(env, nullptr, 10) : Capacity;
+            return std::clamp<u64>(v, Capacity / 256, Capacity);
+        }();
+        while (at + size - consumed.load(std::memory_order_acquire) > limit) {
             __builtin_ia32_pause();
         }
     }

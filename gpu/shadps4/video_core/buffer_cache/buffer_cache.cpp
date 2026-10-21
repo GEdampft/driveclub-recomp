@@ -355,6 +355,17 @@ void BufferCache::StampGpuWrite(VAddr device_addr, u64 size) {
     scheduler.RequestHostReadBarrier();
 }
 
+// VR fork: a GPU write the command thread queued for the recording thread. A readback finishing in between would
+// find the window's write sequence unchanged, unmark it and let the next upload put the readback's older bytes over
+// the buffer the GPU had rewritten (vertex buffers rewritten every frame: exploded polygons through the fly-over
+// and the race, worse the deeper the pipe lag). The sequence advances here, at the queueing.
+void BufferCache::NoteQueuedGpuWrite(VAddr device_addr, u64 size) {
+    if (size == 0) {
+        return;
+    }
+    memory_tracker->StampQueuedGpuWrite(device_addr, size);
+}
+
 struct DirectSpan {
     const u8* src;
     VAddr dst;
@@ -396,7 +407,15 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
             ++attempts;
             if (!job.copies.empty()) {
                 scheduler.GetWorkSemaphore()->Wait(job.tick);
-                FinishReadback(job);
+                // VR fork, development (BB_FINISH_ON_GPU=1): finished on the GPU thread, which drains the recording
+                // thread first (Liverpool::ProcessCommands); the proof that the draw thread's corruption was a
+                // readback unmarking a window with a write still queued (NoteQueuedGpuWrite is the cheap fix).
+                static const bool on_gpu = std::getenv("BB_FINISH_ON_GPU") && std::getenv("BB_FINISH_ON_GPU")[0] == '1';
+                if (on_gpu && !BbToggle::Disabled(BbToggle::DrawPipeline)) {
+                    liverpool->SendCommand<true>([this, &job] { FinishReadback(job); });
+                } else {
+                    FinishReadback(job);
+                }
             }
         }
         bool resolved = true;

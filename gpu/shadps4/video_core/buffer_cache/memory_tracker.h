@@ -44,6 +44,14 @@ public:
             });
     }
 
+    /// VR fork: a GPU write queued for the recording thread (RegionManager::BumpGpuWriteSeq).
+    void StampQueuedGpuWrite(VAddr cpu_addr, u64 size) noexcept {
+        IteratePages<false>(cpu_addr, size, [](RegionManager* manager, u64 offset, size_t size) {
+            std::scoped_lock lk{manager->lock};
+            manager->BumpGpuWriteSeq(offset, size);
+        });
+    }
+
     /// A value that changes whenever a GPU write is marked in a range inside one tracker region.
     u64 GpuWriteSeq(VAddr cpu_addr, u64 size) noexcept {
         auto* manager = top_tier[cpu_addr >> TRACKER_HIGHER_PAGE_BITS];

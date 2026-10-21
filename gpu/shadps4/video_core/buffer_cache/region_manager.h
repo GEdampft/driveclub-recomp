@@ -225,6 +225,20 @@ public:
         return (gpu & ~small_gpu).AnyInRange(start_page, end_page);
     }
 
+    /// VR fork: advances the sequence of a range a queued draw will write (the GPU command thread, when it hands the
+    /// draw to the recording thread): a readback finishing before the recording thread marks the write then keeps
+    /// the window GPU modified instead of putting its older bytes over it.
+    void BumpGpuWriteSeq(u64 offset, u64 size) noexcept {
+        const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
+        const size_t end_page = Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
+        if (start_page >= NUM_PAGES_PER_REGION || end_page <= start_page) {
+            return;
+        }
+        for (size_t chunk = start_page / GPU_SEQ_PAGES; chunk <= (end_page - 1) / GPU_SEQ_PAGES; ++chunk) {
+            ++gpu_write_seq[chunk];
+        }
+    }
+
     /// Changes whenever a GPU write is marked in the range (one counter per page: VR fork, for page by page unmarking
     /// after a readback, MemoryTracker::TryUnmarkPagesAsGpuModified).
     u64 GpuWriteSeq(u64 offset, u64 size) const noexcept {

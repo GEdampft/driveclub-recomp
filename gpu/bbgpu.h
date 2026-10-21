@@ -36,6 +36,10 @@ int bbgpu_overlay_captures_input(void);
 void bbgpu_vr_camera_toggle(void);
 /* 0 disabled, 1 L3, 2 up, 3 down, 4 left, 5 right. */
 int bbgpu_vr_camera_button(void);
+/* Recenter the seated VR origin, equivalent to keyboard F8. */
+void bbgpu_vr_camera_recenter(void);
+/* Long-press duration in milliseconds, from driveclub_vr.ini. */
+int bbgpu_vr_camera_hold_ms(void);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned bbgpu_symbol_count(void);
 /* Frames presented so far (a freeze watchdog reads it). */

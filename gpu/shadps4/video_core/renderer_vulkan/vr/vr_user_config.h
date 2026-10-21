@@ -22,6 +22,7 @@ struct Settings {
     float far_height_offset = 0.50f;
     float far_pitch_offset = 0.0f;
     std::string camera_toggle_button = "l3"; // l3, pad_up, pad_down, pad_left, pad_right, off
+    int camera_hold_ms = 800; // a long press recentres the HMD, same as keyboard F8
 };
 inline std::string Trim(std::string s) {
     const auto a = s.find_first_not_of(" \t\r\n");
@@ -78,6 +79,10 @@ inline Settings Load() {
                 if (val == "l3" || val == "pad_up" || val == "pad_down" ||
                     val == "pad_left" || val == "pad_right" || val == "off")
                     s.camera_toggle_button = val;
+            } else if (key == "LongPressMs") {
+                float ms = float(s.camera_hold_ms);
+                SetNumber(ms, val, 350.f, 2500.f);
+                s.camera_hold_ms = int(ms);
             }
         }
     }

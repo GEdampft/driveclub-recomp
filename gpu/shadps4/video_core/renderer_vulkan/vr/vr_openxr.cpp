@@ -1186,3 +1186,7 @@ void SubmitFrame(VkSemaphore semaphore, u64 tick) {
 }
 
 } // namespace Vulkan::Vr
+
+extern "C" void bbgpu_vr_camera_recenter(void) {
+    Vulkan::Vr::Recenter();
+}

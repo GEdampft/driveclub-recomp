@@ -615,8 +615,26 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
             case 4: toggle_button = BTN_LEFT; break;
             case 5: toggle_button = BTN_RIGHT; break;
         }
+        static uint64_t pressed_at_us;
+        static int long_press_fired;
         const int is_down = toggle_button && !!(data->buttons & toggle_button);
-        if (is_down && !was_down) bbgpu_vr_camera_toggle();
+        const uint64_t now = now_us();
+        const uint64_t hold_us = (uint64_t)bbgpu_vr_camera_hold_ms() * 1000u;
+        if (is_down && !was_down) {
+            pressed_at_us = now;
+            long_press_fired = 0;
+        }
+        if (is_down && !long_press_fired && now - pressed_at_us >= hold_us) {
+            /* Long press: recenter immediately and suppress the short-press toggle. */
+            bbgpu_vr_camera_recenter();
+            long_press_fired = 1;
+        }
+        if (!is_down && was_down && !long_press_fired) {
+            if (now - pressed_at_us >= hold_us)
+                bbgpu_vr_camera_recenter(); /* Long press ended between pad polls. */
+            else
+                bbgpu_vr_camera_toggle();   /* Short press, only on release. */
+        }
         was_down = is_down;
         if (toggle_button) data->buttons &= ~toggle_button;
     }

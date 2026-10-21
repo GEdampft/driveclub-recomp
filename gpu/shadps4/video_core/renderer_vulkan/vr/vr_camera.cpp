@@ -538,6 +538,10 @@ extern "C" int bbgpu_vr_camera_button(void) {
     return 1;
 }
 
+extern "C" int bbgpu_vr_camera_hold_ms(void) {
+    return Vulkan::Vr::UserConfig::Get().camera_hold_ms;
+}
+
 extern "C" void bbgpu_vr_camera_toggle(void) {
     Vulkan::Vr::Camera::RequestCameraToggle();
 }

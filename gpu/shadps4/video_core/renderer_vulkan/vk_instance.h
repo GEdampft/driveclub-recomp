@@ -161,6 +161,7 @@ public:
 
     /// Prints what is known about a lost device (recent work, memory, driver fault report).
     void LogDeviceLost() const;
+    void LogMemoryUse() const; // VR fork: BB_MEM_LOG=1
 
     /// Returns true when VK_EXT_depth_clip_enable is supported
     bool IsDepthClipEnableSupported() const {

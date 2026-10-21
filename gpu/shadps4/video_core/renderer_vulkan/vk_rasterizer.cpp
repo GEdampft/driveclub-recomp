@@ -1862,6 +1862,7 @@ void Rasterizer::OnSubmit() {
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
     buffer_cache.WriteBackSmallWrites(); // VR fork: small_writeback.cpp
+    instance.LogMemoryUse();             // VR fork: BB_MEM_LOG=1
     runtime.TickFrame();
 }
 

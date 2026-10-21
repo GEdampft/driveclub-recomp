@@ -13,6 +13,8 @@
 #include "core/devtools/widget/gpu_memory.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include <windows.h>
+#include <cstdio>
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 
 namespace Vulkan {
@@ -158,6 +160,18 @@ void StagingBufferPool::FreeDeferred(const StagingBufferRef& ref) {
     auto& cache = large_caches[u32(ref.type)];
     const auto it = std::ranges::find_if(
         cache, [&](const LargeBuffer& entry) { return entry.buffer.get() == ref.buffer; });
+    if (it == cache.end() || !it->held) { // TEMP: which thread, and was the entry found
+        PWSTR name{};
+        GetThreadDescription(GetCurrentThread(), &name);
+        std::printf("StagingBufferPool::FreeDeferred: %s (buffer %p, size %llu, type %u) on thread %lu '%ls'; %zu entries\n",
+                    it == cache.end() ? "not in the cache" : "not held", static_cast<void*>(ref.buffer),
+                    (unsigned long long)ref.size, u32(ref.type), (unsigned long)GetCurrentThreadId(), name ? name : L"",
+                    cache.size());
+        std::fflush(stdout);
+        if (name) {
+            LocalFree(name);
+        }
+    }
     ASSERT_MSG(it != cache.end() && it->held, "FreeDeferred on an allocation that is not held");
     it->held = false;
     it->tick = scheduler.CurrentTick();
@@ -166,6 +180,7 @@ void StagingBufferPool::FreeDeferred(const StagingBufferRef& ref) {
 
 void StagingBufferPool::TickFrame() {
     ++frame;
+    LogLarge();
     for (Ring& ring : rings) {
         TrimRing(ring);
     }
@@ -200,6 +215,29 @@ void StagingBufferPool::TrimLarge(std::vector<LargeBuffer>& cache) {
         return !entry.held && frame - entry.last_used_frame >= LARGE_IDLE_FRAMES &&
                scheduler.IsFree(entry.tick);
     });
+}
+
+// VR fork, development (BB_MEM_LOG=1): the large caches' entries and how many are held, every 5 s with the heaps.
+void StagingBufferPool::LogLarge() const {
+    static const bool on = std::getenv("BB_MEM_LOG") && std::getenv("BB_MEM_LOG")[0] == '1';
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (!on || now - last < std::chrono::seconds(5)) {
+        return;
+    }
+    last = now;
+    std::printf("Staging large:");
+    for (size_t i = 0; i < NUM_TYPES; ++i) {
+        u64 bytes = 0, held = 0;
+        for (const auto& entry : large_caches[i]) {
+            bytes += entry.buffer->SizeBytes();
+            held += entry.held;
+        }
+        std::printf(" type %zu: %zu entries (%llu held) %llu MiB;", i, large_caches[i].size(), (unsigned long long)held,
+                    (unsigned long long)(bytes >> 20));
+    }
+    std::printf("\n");
+    std::fflush(stdout);
 }
 
 void StagingBufferPool::PublishStats() const {

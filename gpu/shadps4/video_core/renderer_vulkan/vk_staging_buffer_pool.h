@@ -45,6 +45,7 @@ public:
 
     /// Releases a deferred allocation. It becomes reusable once the current tick completes.
     void FreeDeferred(const StagingBufferRef& ref);
+    void LogLarge() const; // VR fork: BB_MEM_LOG=1
 
     /// Releases idle memory.
     void TickFrame();

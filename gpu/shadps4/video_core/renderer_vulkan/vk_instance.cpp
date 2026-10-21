@@ -988,6 +988,30 @@ extern "C" void bbgpu_print_recent_passes(void);
 extern "C" void bbgpu_note_device_lost(void);
 extern "C" const char* bbgpu_sibling_path(const char* name);
 
+// VR fork, development (BB_MEM_LOG=1): the heaps' use every 5 s (Rasterizer::OnSubmit).
+void Instance::LogMemoryUse() const {
+    static const bool on = std::getenv("BB_MEM_LOG") && std::getenv("BB_MEM_LOG")[0] == '1';
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (!on || !supports_memory_budget || now - last < std::chrono::seconds(5)) {
+        return;
+    }
+    last = now;
+    vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    vk::PhysicalDeviceMemoryProperties2 props = {.pNext = &budget};
+    physical_device.getMemoryProperties2(&props);
+    std::string text = "GPU memory:";
+    for (u32 i = 0; i < props.memoryProperties.memoryHeapCount; ++i) {
+        const auto& heap = props.memoryProperties.memoryHeaps[i];
+        text += fmt::format(" heap {} ({}) {} of {} MiB;", i,
+                            (heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) ? "device" : "host",
+                            budget.heapUsage[i] >> 20, budget.heapBudget[i] >> 20);
+    }
+    std::fputs(text.c_str(), stdout);
+    std::fputc(10, stdout);
+    std::fflush(stdout);
+}
+
 // bbport: everything the driver and the process can say about a lost device, written once.
 void Instance::LogDeviceLost() const {
     const auto line = [](const std::string& text) {

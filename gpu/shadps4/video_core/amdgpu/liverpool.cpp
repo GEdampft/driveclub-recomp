@@ -312,18 +312,28 @@ void RunEventWriteEop(Vulkan::Rasterizer& rasterizer, const u8* data) {
         const char* env = std::getenv("BB_ASYNC_FENCES");
         return env && env[0] == '1';
     }();
+    // VR fork (gds_fence.cpp): the fence after a GDS counter copy into the ring is written once the GPU has done the
+    // copy; its worker signals after the copy threads' work queued so far, as the asynchronous fences do. Every
+    // branch asks, so the pending copies are always taken (their staging held them: 200k entries, 50 GB, a lost
+    // device in the fourth race with the draw thread on, 2026-10-21).
+    const VAddr fence = reinterpret_cast<VAddr>(eop.Address<u32>());
+    const auto after_copies = [eop] { BbCopy::AfterCopies([eop] { SignalEop(eop); }); };
     if (async_fences && !BbToggle::Disabled(BbToggle::AsyncFences)) {
-        BbCopy::AfterCopies([eop] { SignalEop(eop); });
+        if (!rasterizer.GetBufferCache().DeferGdsFence(fence, after_copies)) {
+            BbCopy::AfterCopies([eop] { SignalEop(eop); });
+        }
     } else if (Vulkan::DrawPipe::OnStageB() && !BbToggle::Disabled(BbToggle::RecorderFences)) {
         // The draw recording thread does not wait: the Vulkan recording thread signals the
         // fence after the copies queued before it.
-        rasterizer.SignalAfterHostCopies([eop] { SignalEop(eop); });
+        if (!rasterizer.GetBufferCache().DeferGdsFence(fence, after_copies)) {
+            rasterizer.SignalAfterHostCopies([eop] { SignalEop(eop); });
+        }
     } else {
         // Labels are written in order: not before the ones deferred to the recording thread.
         rasterizer.WaitHostCopies();
         rasterizer.WaitDeferredSignals();
-        if (rasterizer.GetBufferCache().DeferGdsFence(reinterpret_cast<VAddr>(eop.Address<u32>()), [eop] { SignalEop(eop); })) {
-            return; // VR fork: gds_fence.cpp
+        if (rasterizer.GetBufferCache().DeferGdsFence(fence, [eop] { SignalEop(eop); })) {
+            return;
         }
         SignalEop(eop);
     }

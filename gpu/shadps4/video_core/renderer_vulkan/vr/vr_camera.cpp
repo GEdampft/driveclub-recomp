@@ -100,13 +100,14 @@ bool g_camlog = false;
 int g_fov_mode = 2; // BB_VR_FOV: 0 the game's projection, 1 symmetric headset field of view, 2 the headset's (asymmetric)
 std::atomic<int> g_log_next{0};
 
-// First prototype: manual F6 toggle. Do NOT switch game camera while enabled.
+// Manual F6 or controller toggle; the offset remains mode-independent by design.
+std::atomic<bool> g_pad_toggle{false};
 bool FarCameraActive() {
     if (!UserConfig::Get().far_enabled) return false;
 #ifdef _WIN32
     static bool down = false, active = false;
     const bool pressed = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
-    if (pressed && !down) {
+    if ((pressed && !down) || g_pad_toggle.exchange(false)) {
         active = !active;
         std::printf("VR far-camera offset: %s (F6)\n", active ? "ON" : "OFF");
         std::fflush(stdout);
@@ -522,4 +523,10 @@ bool RenderedAt(const float* position, float (&layer_pose)[7], float (&tangents)
     return true;
 }
 
+void RequestCameraToggle() { g_pad_toggle.store(true, std::memory_order_release); }
+
 } // namespace Vulkan::Vr::Camera
+
+extern "C" void bbgpu_vr_camera_toggle(void) {
+    Vulkan::Vr::Camera::RequestCameraToggle();
+}

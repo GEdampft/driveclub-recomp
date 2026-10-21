@@ -215,9 +215,9 @@ public:
                                 } else {
                                     const VAddr first_end = std::min(end, (begin | 4095) + 1);
                                     const VAddr last_begin = std::max(first_end, (end - 1) & ~VAddr(4095));
-                                    mark(begin, first_end, ReadbackHybrid::FastFor(begin, first_end));
+                                    mark(begin, first_end, ReadbackHybrid::LargePartFast(begin, first_end));
                                     mark(first_end, last_begin, false);
-                                    mark(last_begin, end, last_begin < end && ReadbackHybrid::FastFor(last_begin, end));
+                                    mark(last_begin, end, last_begin < end && ReadbackHybrid::LargePartFast(last_begin, end));
                                 }
                                 RegionManager::t_small_gpu_write = false;
                                 manager->lock.unlock();

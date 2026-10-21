@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+﻿// SPDX-License-Identifier: GPL-2.0-or-later
 // VR fork: small GPU writes written back to guest memory without readbacks.
 //
 // VR runs with readbacks off (BB_READBACKS=0): the game keeps CPU data in the same 4 KB pages as a few tiny GPU writes,
@@ -14,7 +14,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <map>
 #include <mutex>
+#include <set>
 #include <vector>
 
 #include "core/emulator_settings.h"
@@ -119,6 +121,28 @@ void BufferCache::NoteSmallGpuWrite(VAddr device_addr, u64 size) {
         const VAddr end = device_addr + size;
         const VAddr first_end = std::min(end, (device_addr | 4095) + 1);
         const VAddr last_begin = std::max(first_end, (end - 1) & ~VAddr(4095));
+        { // Development: BB_BIG_FAST_LOG=1 prints large GPU writes touching fast pages, once per distinct range
+            static const bool log = std::getenv("BB_BIG_FAST_LOG") && std::getenv("BB_BIG_FAST_LOG")[0] == '1';
+            if (log) {
+                static std::mutex m;
+                static std::set<std::pair<VAddr, u64>> seen;
+                static std::map<std::pair<VAddr, u64>, u32> hits;
+                u32 fast_first = ReadbackHybrid::IsFastPage(device_addr), fast_last = 0, fast_mid = 0, pages = 0;
+                for (VAddr p = (device_addr & ~VAddr(4095)) + 4096; p < (end & ~VAddr(4095)); p += 4096, ++pages) {
+                    fast_mid += ReadbackHybrid::IsFastPage(p);
+                }
+                if (last_begin < end && last_begin >= first_end) {
+                    fast_last = ReadbackHybrid::IsFastPage(last_begin);
+                }
+                std::scoped_lock lk{m};
+                const auto key = std::make_pair(device_addr, u64(size));
+                if ((fast_first || fast_mid || fast_last) && ++hits[key] == 1 && seen.size() < 400 && seen.insert(key).second) {
+                    std::printf("Big GPU write on fast pages: %#llx +%llu first %u mid %u/%u last %u\n", (unsigned long long)device_addr,
+                                (unsigned long long)size, fast_first, fast_mid, pages, fast_last);
+                    std::fflush(stdout);
+                }
+            }
+        }
         std::scoped_lock lk{g_mutex};
         if (ReadbackHybrid::IsFastPage(device_addr)) {
             g_noted.push_back({device_addr, first_end - device_addr});

@@ -288,6 +288,7 @@ inline thread_local u64 t_fault_rip = 0;
 /// page learned while the game was not reading its GPU bytes (the countdown on the grid) read them a frame late once
 /// it did (floating grass clumps in the sky past the start). Demotes a page already fast.
 inline void DemoteFastPage(VAddr page, VAddr begin, VAddr end);
+inline bool FastFor(VAddr begin, VAddr end);
 // On by default (BB_HYBRID_GDS_EXACT=0 serves them a frame late, as vr1.1 did): read late, every vegetation type
 // that takes its clusters' visibility bits from the counter floats (Matt, 2026-10-21 afternoon, one corner in: the
 // grass clump skip covers one shader only). Each read is a readback wait; Rasterizer::CopyBuffer submits right after
@@ -523,6 +524,32 @@ inline void DemoteFastPage(VAddr page, VAddr begin, VAddr end) {
                     (unsigned long long)page, (unsigned long long)(begin - page), (unsigned long long)(end - page));
         std::fflush(stdout);
     }
+}
+
+/// The first or last page's part of a GPU write larger than SmallWrite (a visible-cluster list, say): never fast,
+/// and its page is exact for good from the first such write. A page learned fast on the game's own data that also
+/// held the head or tail of such a list gave the game those bytes a frame late or never: clumps of vegetation
+/// floating in the sky (2026-10-21, every build since vr1.1). Demoting a page only once it is fast was one read too
+/// late (new list heads kept landing on freshly learned pages), and since the game's hot pages are the ones that
+/// host these heads, no page learns fast in practice: the hybrid then runs at precise-readback speed (66-67 FPS at
+/// 3200 against 74, same 1% lows). BB_HYBRID_LARGE_FAST=1 keeps the old rule (FastFor) for comparison.
+inline bool LargePartFast(VAddr begin, VAddr end) {
+    static const bool old = std::getenv("BB_HYBRID_LARGE_FAST") && std::getenv("BB_HYBRID_LARGE_FAST")[0] == '1';
+    if (old) {
+        return FastFor(begin, end);
+    }
+    const VAddr page = begin & ~VAddr(4095);
+    bool was_fast = false;
+    {
+        std::scoped_lock lk{g_learn_mutex};
+        PageLearn& p = g_learn[page];
+        was_fast = p.fast || IsFastPage(page);
+        p.exact = true;
+    }
+    if (was_fast) {
+        DemoteFastPage(page, begin, end);
+    }
+    return false;
 }
 
 /// [begin, end) (within one page) is a GPU write the fast page knows; a new one demotes the page.

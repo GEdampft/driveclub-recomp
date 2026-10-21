@@ -2486,7 +2486,11 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
 // pass; the eye offset comes from the main camera's constants among the stage's bindings (512 bytes, render size).
 bool Rasterizer::BindEyeSceneConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
                                        vk::WriteDescriptorSet& write) {
-    if (!Vr::Multiview::Enabled() || stage.sw_stage == Shader::SwStage::Compute || stage.buffers.size() <= buffer_index) {
+    // The binding's range (the buffer plus the offset adjustment, at most 256 bytes) rules out all but the scene
+    // constants before any other work: this runs for every buffer binding of every draw.
+    const u64 range = buffer_infos.empty() ? 0 : buffer_infos.back().range;
+    if (range < 1936 || range > 1936 + 256 || !Vr::Multiview::Enabled() ||
+        stage.sw_stage == Shader::SwStage::Compute || stage.buffers.size() <= buffer_index) {
         return false;
     }
     const auto range_of = [&](u32 i) -> std::pair<u64, u32> {

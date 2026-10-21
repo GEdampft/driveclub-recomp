@@ -477,6 +477,7 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
                 YIELD_CE();
                 RESUME_CE(task);
             }
+            task.handle.destroy(); // a finished nested task's frame (final_suspend keeps it)
             break;
         }
         default:
@@ -1291,6 +1292,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     YIELD_GFX();
                     RESUME_GFX(task);
                 }
+                task.handle.destroy(); // a finished nested task's frame (final_suspend keeps it)
                 break;
             }
             case PM4ItOpcode::IncrementDeCounter: {
@@ -1449,6 +1451,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 YIELD_ASC(vqid);
                 RESUME_ASC(task, vqid);
             }
+            // Its frame is kept by final_suspend: ~350 a second leaked (944 bytes each, ~20 MB a minute in VR).
+            task.handle.destroy();
             break;
         }
         case PM4ItOpcode::DmaData: {

@@ -12,6 +12,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 #include <optional>
 #include <span>
 
@@ -100,6 +101,15 @@ void SetEyeLights(int mode);
 /// The two copies (left, right) of a light's constants (`light`, `bytes` long, at most 256), given the player camera's
 /// constants (`camera`: the view-projection at dwords 0-15). False when they cannot be made.
 bool EyeLightConstants(const u32* light, u32 bytes, const float* camera, std::array<std::array<u32, 64>, 2>& out);
+
+/// The eye's offset from the centre camera in camera-relative units (`camera`: the view-projection at dwords 0-15).
+bool EyeOffset(const float* camera, int eye, float e[3]);
+/// The scene constants (1936 bytes: fog, sun, the sun's shadow matrix) per eye. The matrix maps camera-relative points
+/// to shadow space; with each eye's own ray a pixel's point is relative to that eye, so its translation moves by the
+/// matrix times the eye's offset. Without it each eye's sun shadow lookups were off by the eye offset: shadows came
+/// and went in the two eyes in tight places (a brake caliper lit in the right eye on the car select screen, dark in
+/// the left and in the flat game). BB_VR_EYE_SHADOW=0 turns it off.
+bool EyeSceneConstants(const u32* scene, u32 bytes, const float* camera, std::array<std::vector<u32>, 2>& out);
 
 /// The left eye's clip x shift (the right eye's is its negative).
 float Shift();

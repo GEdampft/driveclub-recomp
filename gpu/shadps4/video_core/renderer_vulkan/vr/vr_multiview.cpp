@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include <set>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -111,7 +112,15 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
         return v ? std::strtoull(v, nullptr, 16) : 0ull;
     }();
     static int watch_left = 400;
-    if (watch && hash == watch && watch_left > 0) {
+    // BB_VR_AUDIT_ADDR=<hex>: every pass that writes the image or buffer at that guest address.
+    static const u64 watch_addr = [] {
+        const char* v = std::getenv("BB_VR_AUDIT_ADDR");
+        return v ? std::strtoull(v, nullptr, 16) : 0ull;
+    }();
+    const bool writes_watched =
+        watch_addr && std::any_of(outputs.begin(), outputs.end(),
+                                  [](const AuditRes& r) { return r.address <= watch_addr && watch_addr < r.address + std::max<u64>(r.size, 1); });
+    if (((watch && hash == watch) || writes_watched) && watch_left > 0) {
         --watch_left;
         std::printf("VR audit: VS %#llx %s reads%s; writes%s\n", (unsigned long long)hash,
                     per_eye ? "both eyes" : "ONE EYE", AuditList(g_audit_reads).c_str(), AuditList(outputs).c_str());
@@ -398,6 +407,18 @@ void SetEyeLights(int mode) {
 }
 
 bool EyeLightBinding(u64 fs_hash, u32 buffer_index) {
+    // Development (BB_VR_EYE_LIGHTS_LOG=1): every pixel shader asked about, once.
+    static const bool log = std::getenv("BB_VR_EYE_LIGHTS_LOG") != nullptr;
+    if (log && buffer_index == 1 && g_draw_hash == 0xf719615a) {
+        static std::mutex m;
+        static std::set<u64> seen;
+        std::scoped_lock lk{m};
+        if (seen.insert(fs_hash).second) {
+            std::printf("VR multiview: light binding asked for ps %#llx%s\n", (unsigned long long)fs_hash,
+                        fs_hash == 0xd80f041b || fs_hash == 0x7b2b16ed ? " (corrected)" : "");
+            std::fflush(stdout);
+        }
+    }
     return g_enabled && g_eye_lights.load(std::memory_order_relaxed) != 0 && buffer_index == 1 &&
            (fs_hash == 0xd80f041b || fs_hash == 0x7b2b16ed);
 }
@@ -433,6 +454,57 @@ bool EyeLightConstants(const u32* light, u32 bytes, const float* camera, std::ar
             g[44 + i] = f[44 + i] + (f[24 + i] * e[0] + f[28 + i] * e[1] + f[32 + i] * e[2]);
         }
         std::memcpy(out[eye].data(), g, sizeof(g));
+    }
+    return true;
+}
+
+bool EyeOffset(const float* camera, int eye, float e[3]) {
+    // As EyeLightConstants: along row y x row w of the view-projection, scaled so that row x . e = -shift.
+    const float x[3] = {camera[0], camera[4], camera[8]};
+    const float y[3] = {camera[1], camera[5], camera[9]};
+    const float w[3] = {camera[3], camera[7], camera[11]};
+    const float d[3] = {y[1] * w[2] - y[2] * w[1], y[2] * w[0] - y[0] * w[2], y[0] * w[1] - y[1] * w[0]};
+    const float denom = x[0] * d[0] + x[1] * d[1] + x[2] * d[2];
+    if (!(std::abs(denom) > 1e-30f)) {
+        return false;
+    }
+    const float t = (eye == 0 ? g_shift : -g_shift) / denom;
+    for (int i = 0; i < 3; ++i) {
+        e[i] = -d[i] * t;
+    }
+    return true;
+}
+
+bool EyeSceneConstants(const u32* scene, u32 bytes, const float* camera, std::array<std::vector<u32>, 2>& out) {
+    static const bool on = !(std::getenv("BB_VR_EYE_SHADOW") && std::getenv("BB_VR_EYE_SHADOW")[0] == '0');
+    if (!on || bytes != 1936) {
+        return false;
+    }
+    const auto* f = reinterpret_cast<const float*>(scene);
+    // The sun's shadow matrix (column-major, camera-relative points to shadow space) at dwords 72-87, again at
+    // 196-211: its last row (0, 0, 0, 1) tells the layout.
+    const auto is_matrix = [&](u32 at) {
+        return f[at + 3] == 0.f && f[at + 7] == 0.f && f[at + 11] == 0.f && f[at + 15] == 1.f;
+    };
+    if (!is_matrix(72)) {
+        return false;
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        float e[3];
+        if (!EyeOffset(camera, eye, e)) {
+            return false;
+        }
+        out[eye].assign(scene, scene + bytes / 4);
+        auto* g = reinterpret_cast<float*>(out[eye].data());
+        for (const u32 at : {72u, 196u}) {
+            if (!is_matrix(at)) {
+                continue;
+            }
+            // With the eye's ray a point is relative to the eye: shadow space = M (p + e) + T = M p + (T + M e).
+            for (int i = 0; i < 3; ++i) {
+                g[at + 12 + i] = f[at + 12 + i] + f[at + i] * e[0] + f[at + 4 + i] * e[1] + f[at + 8 + i] * e[2];
+            }
+        }
     }
     return true;
 }

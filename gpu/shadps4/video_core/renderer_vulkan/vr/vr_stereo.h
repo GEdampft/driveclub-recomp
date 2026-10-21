@@ -70,6 +70,8 @@ void AdjustBlend(AmdGpu::BlendControl& control, u64 target_address);
 
 /// Development (DRAWLOG trigger): log the next 5000 single-target draws.
 void LogDraws();
+/// Development (DRAWLOG): compute dispatches are logged too (their shader).
+void LogDispatch(u64 cs_hash);
 
 /// Development (TSHOT trigger): during the next 3000 draws, the RGBA8 target at `guest_address` is saved before each
 /// draw whose vertex shader differs from the previous one (%TEMP%\dcvr\tshot_<n>_<vs>.raw: width, height, then RGBA).

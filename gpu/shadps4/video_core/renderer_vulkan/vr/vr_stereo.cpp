@@ -543,6 +543,13 @@ void SetSkippedShaders(const std::string& list) {
     std::fflush(stdout);
 }
 
+void LogDispatch(u64 cs_hash) {
+    if (g_log_draws.load(std::memory_order_relaxed) > 0 && g_log_draws.fetch_sub(1) > 0) {
+        std::printf("VR dispatch: cs %#llx\n", (unsigned long long)cs_hash);
+        std::fflush(stdout);
+    }
+}
+
 bool SkipDraw(u64 vs_hash, u64 fs_hash) {
     if (!g_skip_any.load(std::memory_order_relaxed)) {
         return false;

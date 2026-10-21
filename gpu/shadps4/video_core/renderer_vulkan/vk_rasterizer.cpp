@@ -3690,6 +3690,9 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         if (dst_gds) {
             return {gds_buffer, dst};
         }
+        if (src_gds) {
+            VideoCore::ReadbackHybrid::MarkGdsCopyTarget(dst, num_bytes); // VR fork: never a fast page
+        }
         return buffer_cache.ObtainBuffer(dst, num_bytes, true, true);
     }();
     const vk::BufferCopy copy = {

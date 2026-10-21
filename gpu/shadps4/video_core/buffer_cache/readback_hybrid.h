@@ -58,16 +58,13 @@ constexpr u64 SmallWrite = 1024;
 /// A page is learned as fast after this many guest faults, none of them on GPU bytes.
 constexpr u32 LearnFaults = 32;
 
-// Off by default (BB_READBACK_HYBRID=1 turns it on): a page learned fast while the game was not reading its GPU
-// bytes (the countdown on the grid: the grass flag's page, 0x400220f000, was made exact by a read of the flag after 1
-// own-byte access in one run; 2048 own-byte accesses first and it is fast) reads them a frame late once it does, and
-// the floating grass clumps come back in a full race. The learned pages also take in GPU-written halves the game may
-// read later. Until a fast page can be proven never read for its GPU bytes, precise readbacks (upstream's) are the
-// default again.
+// On by default (BB_READBACK_HYBRID=0 turns it off): the pages GDS counters are copied to (the flags the game polls,
+// the grass clumps' among them) are exact for good (MarkGdsCopyTarget), and the grass clumps are not drawn in VR
+// (vr_stereo.cpp). A page learned fast can still hold other GPU bytes the game reads later; nothing seen from that.
 inline bool Enabled() {
     static const bool on = [] {
         const char* v = std::getenv("BB_READBACK_HYBRID");
-        return v && v[0] == '1' && EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled;
+        return !(v && v[0] == '0') && EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled;
     }();
     return on;
 }
@@ -264,8 +261,12 @@ inline thread_local bool t_own_write = false;
 /// Pages learned from stepped accesses (PageManager::StepOwnAccess): one is made fast after StepLearnAccesses own-byte
 /// accesses over at least StepLearnMs with no access to GPU bytes (MarkExact). Every access to the page is seen while
 /// it learns (each faults), unlike the first version's learning, which saw only the first access after a GPU write.
-constexpr u64 StepLearnAccesses = 2048;
-constexpr s64 StepLearnMs = 4000;
+// 2048 over 4 s (2026-10-21 night) stepped a hot page 150k times before trusting it (31k trap-flag exceptions a
+// second on the game thread, the GPU thread stalled by the protection changes): no faster than the hybrid off on a
+// 7-car grid. vr1.1's hybrid trusted a page after 32 faults at once (64-67 FPS there): back to that, with the pages
+// GDS counters are copied to (MarkGdsCopyTarget) exact for good. BB_HYBRID_LEARN_STEPS / BB_HYBRID_LEARN_MS override.
+inline const u64 StepLearnAccesses = std::getenv("BB_HYBRID_LEARN_STEPS") ? std::strtoull(std::getenv("BB_HYBRID_LEARN_STEPS"), nullptr, 10) : 64;
+inline const s64 StepLearnMs = std::getenv("BB_HYBRID_LEARN_MS") ? std::atoll(std::getenv("BB_HYBRID_LEARN_MS")) : 0;
 /// An exact page (the game reads its GPU bytes too) steps at most this many own-byte accesses in a row; the next one
 /// reads back instead (one wait), and the page needs nothing until the GPU writes it again.
 constexpr u32 ExactStepBudget = 64;
@@ -281,6 +282,35 @@ inline std::map<VAddr, PageLearn> g_learn;
 
 /// The faulting instruction (PageManager), for the log.
 inline thread_local u64 t_fault_rip = 0;
+
+/// A page the GPU copies GDS counters into (Rasterizer::CopyBuffer from GDS): the flags and counters the game polls
+/// right after the GPU writes them (the grass flag at 0x400220ff50 among them). Such a page is never learned fast: a
+/// page learned while the game was not reading its GPU bytes (the countdown on the grid) read them a frame late once
+/// it did (floating grass clumps in the sky past the start). Demotes a page already fast.
+inline void DemoteFastPage(VAddr page, VAddr begin, VAddr end);
+inline void MarkGdsCopyTarget(VAddr address, u64 size) {
+    if (!Enabled() || !size) {
+        return;
+    }
+    static const bool log = std::getenv("BB_READBACK_CLASSIFY") != nullptr;
+    for (VAddr page = address & ~VAddr(4095); page < address + size; page += 4096) {
+        bool was_fast = false;
+        {
+            std::scoped_lock lk{g_learn_mutex};
+            PageLearn& p = g_learn[page];
+            was_fast = p.fast;
+            if (!p.exact && log) {
+                std::printf("Readback hybrid: page %#llx exact: GDS counters are copied to %#llx +%llu\n",
+                            (unsigned long long)page, (unsigned long long)address, (unsigned long long)size);
+                std::fflush(stdout);
+            }
+            p.exact = true;
+        }
+        if (was_fast) {
+            DemoteFastPage(page, address, address + size);
+        }
+    }
+}
 
 inline void MarkExact(VAddr address, bool write) {
     std::scoped_lock lk{g_learn_mutex};

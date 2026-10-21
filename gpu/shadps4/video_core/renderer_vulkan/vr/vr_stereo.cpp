@@ -550,7 +550,23 @@ void LogDispatch(u64 cs_hash) {
     }
 }
 
+// Instanced grass clumps (vs 0xb8b4c1cb, fs 0x5db503d3) are not drawn in VR, as in vr1.1 (8fc6409): the game reads a
+// GPU flag for them (game +0x758a2d) that any readback mode short of exact-per-page serves a frame late now and then,
+// and they were drawn floating at random places (the sky past the start); drawn, they also cost ~5 passes a frame at
+// 3200 per eye (f8e1d5e drew them: vr1.1 64-67 FPS on a 7-car grid, every later build 55-60). The roadside grass is
+// another shader and stays; Matt, with the clumps skipped: "road side grass is still visible, so it looks fine like
+// this". BB_VR_GRASS_CLUMPS=1 draws them.
+constexpr u64 GrassClumpsVs = 0xb8b4c1cb;
+const bool g_skip_grass_clumps = [] {
+    const char* vr = std::getenv("BB_VR");
+    const char* keep = std::getenv("BB_VR_GRASS_CLUMPS");
+    return vr && vr[0] == '1' && !(keep && keep[0] == '1');
+}();
+
 bool SkipDraw(u64 vs_hash, u64 fs_hash) {
+    if (g_skip_grass_clumps && vs_hash == GrassClumpsVs) {
+        return true;
+    }
     if (!g_skip_any.load(std::memory_order_relaxed)) {
         return false;
     }

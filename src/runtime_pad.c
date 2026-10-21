@@ -607,19 +607,13 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
        original controller behavior if VR is disabled. */
     if (getenv("BB_VR") && getenv("BB_VR")[0] == '1') {
         static int was_down;
-        static int button_initialized;
-        static uint32_t toggle_button;
-        if (!button_initialized) {
-            button_initialized = 1;
-            toggle_button = BTN_L3;
-            const char *config = getenv("BB_VR_CAMERA_BUTTON");
-            if (config) {
-                if (!strcmp(config, "off")) toggle_button = 0;
-                else if (!strcmp(config, "pad_up")) toggle_button = BTN_UP;
-                else if (!strcmp(config, "pad_down")) toggle_button = BTN_DOWN;
-                else if (!strcmp(config, "pad_left")) toggle_button = BTN_LEFT;
-                else if (!strcmp(config, "pad_right")) toggle_button = BTN_RIGHT;
-            }
+        uint32_t toggle_button = 0;
+        switch (bbgpu_vr_camera_button()) {
+            case 1: toggle_button = BTN_L3; break;
+            case 2: toggle_button = BTN_UP; break;
+            case 3: toggle_button = BTN_DOWN; break;
+            case 4: toggle_button = BTN_LEFT; break;
+            case 5: toggle_button = BTN_RIGHT; break;
         }
         const int is_down = toggle_button && !!(data->buttons & toggle_button);
         if (is_down && !was_down) bbgpu_vr_camera_toggle();

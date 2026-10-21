@@ -69,11 +69,16 @@ inline bool Enabled() {
     return on;
 }
 
-// Development switches: BB_HYBRID_SMALL=1 (small ranges are fast from the start: the game read GPU flags there stale,
-// floating grass clumps), BB_HYBRID_LEARN=0 (no page is learned fast), BB_HYBRID_EXACT=<hex page,...> (these pages
-// are never fast).
+// Small GPU writes (up to SmallWrite) are fast from the start: their pages are not protected and small_writeback.cpp
+// copies the bytes back once the GPU is done. vr1.1's rule; it was blamed for the floating clumps and turned off,
+// but those were the heads of large writes on fast pages (LargePartFast), and without it every access to the pages
+// the GDS counters are copied to is a fault and every 64th a window readback with a GPU wait (~300 ms/s of the
+// game thread at 3200, 2026-10-21). With the ring fences honest (gds_fence.cpp) and the list heads exact, judged
+// clean at 4800 at every moment the old build floated clumps. BB_HYBRID_SMALL=0 turns it off.
+// Other development switches: BB_HYBRID_LEARN=0 (no page is learned fast), BB_HYBRID_EXACT=<hex page,...> (these
+// pages are never fast).
 inline bool SmallFast() {
-    static const bool on = std::getenv("BB_HYBRID_SMALL") && std::getenv("BB_HYBRID_SMALL")[0] == '1';
+    static const bool on = !(std::getenv("BB_HYBRID_SMALL") && std::getenv("BB_HYBRID_SMALL")[0] == '0');
     return on;
 }
 inline bool Learning() {

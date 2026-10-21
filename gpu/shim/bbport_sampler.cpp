@@ -102,6 +102,10 @@ void Run() {
                     HANDLE h = OpenThread(THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT,
                                           FALSE, te.th32ThreadID);
                     if (!h) {
+                        static int shown = 0; // BB_PROFILE_SCAN=1
+                        if (std::getenv("BB_PROFILE_SCAN") && shown++ < 40) {
+                            std::printf("Profile: cannot open thread %lu (error %lu)\n", (unsigned long)te.th32ThreadID, (unsigned long)GetLastError());
+                        }
                         continue;
                     }
                     it = threads.emplace(te.th32ThreadID, Sampled{.handle = h}).first;
@@ -121,6 +125,18 @@ void Run() {
             }
             CloseHandle(snap);
             std::sort(load.rbegin(), load.rend());
+            { // BB_PROFILE_SCAN=1: the busiest threads each scan (note: sampling a thread that waits on a lock
+              // wakes it each sample and inflates its CPU time: the GPU command thread showed 90% while blocked)
+                static int scans = 0;
+                if (std::getenv("BB_PROFILE_SCAN") && ++scans % 5 == 0) {
+                    std::printf("Profile: scan");
+                    for (std::size_t i = 0; i < load.size() && i < 6; ++i) {
+                        std::printf(" | %lu '%ls' %.0f ms", (unsigned long)load[i].second, threads[load[i].second].name.c_str(), load[i].first / 10000.0);
+                    }
+                    std::printf("\n");
+                    std::fflush(stdout);
+                }
+            }
             busy.clear();
             for (std::size_t i = 0; i < load.size() && i < 4; ++i) {
                 if (load[i].first > 1000000) {  // over 10 ms of CPU in the last second

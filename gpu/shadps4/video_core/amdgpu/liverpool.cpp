@@ -153,6 +153,29 @@ void Liverpool::Process(std::stop_token stoken) {
         if (stoken.stop_requested()) {
             break;
         }
+        { // Development: BB_LOOP_STATS=1 prints the command thread's loop rates every 5 s
+            static const bool on = std::getenv("BB_LOOP_STATS") && std::getenv("BB_LOOP_STATS")[0] == '1';
+            static u64 wakes = 0, cmds = 0, subs = 0, dones = 0, faults0 = 0, gfaults0 = 0;
+            static auto since = std::chrono::steady_clock::now();
+            if (on) {
+                ++wakes;
+                cmds += num_commands.load();
+                subs += num_submits.load();
+                dones += submit_done ? 1 : 0;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - since >= std::chrono::seconds(5)) {
+                    const double s = std::chrono::duration<double>(now - since).count();
+                    const u64 f = BbStats::read_faults.load(), gf = BbStats::gpu_signal_faults.load();
+                    std::printf("Loop: %.0f wakes/s, %.0f commands/s, %.0f submits/s, %.0f submit-dones/s, %.0f guest read faults/s, %.0f GPU-thread faults/s\n",
+                                wakes / s, cmds / s, subs / s, dones / s, (f - faults0) / s, (gf - gfaults0) / s);
+                    std::fflush(stdout);
+                    faults0 = f;
+                    gfaults0 = gf;
+                    wakes = cmds = subs = dones = 0;
+                    since = now;
+                }
+            }
+        }
 
         VideoCore::StartCapture();
 

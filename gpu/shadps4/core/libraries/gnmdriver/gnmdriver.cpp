@@ -79,9 +79,23 @@ static VAddr tessellation_factors_ring_addr = -1;
 static constexpr u32 tessellation_offchip_buffer_size = 0x800000u;
 
 static void ResetSubmissionLock(Platform::InterruptId irq) {
-    std::unique_lock lock{m_wait_idle};
-    submission_lock = 0;
-    cv_lock.notify_all();
+    // Development: BB_LOOP_STATS=1 prints how often and how long (the GPU command thread signals GpuIdle per loop)
+    static const bool on = std::getenv("BB_LOOP_STATS") && std::getenv("BB_LOOP_STATS")[0] == '1';
+    static std::atomic<u64> calls{0}, ns{0};
+    const auto t0 = on ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    {
+        std::unique_lock lock{m_wait_idle};
+        submission_lock = 0;
+        cv_lock.notify_all();
+    }
+    if (on) {
+        const u64 c = calls.fetch_add(1) + 1;
+        const u64 n = ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+        if (c % 2000 == 0) {
+            std::printf("ResetSubmissionLock: %llu calls, %.1f us each on average\n", (unsigned long long)c, n / 1000.0 / c);
+            std::fflush(stdout);
+        }
+    }
 }
 
 static void WaitGpuIdle() {

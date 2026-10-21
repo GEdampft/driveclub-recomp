@@ -10,41 +10,56 @@ if (-not (Test-Path -LiteralPath $ini)) {
     exit 1
 }
 
-# Key, label, kind, range or choices, default, help (shown as a tooltip and under the sliders)
+# Key, label, kind, range or choices, default, help (shown as a tooltip and under the sliders). Group: physics (shown
+# with the physics model only), classic (with the software and game models only); no group: always shown.
 $settings = @(
-    @{ Key='wheel_ffb_model';          Label='Force model';                Kind='choice'; Choices=@('software','game'); Default='software'
-       Help='software: the steering force is worked out from the game''s values, smoothed and falling off past grip. game: the game''s own spring goes to the wheel.' }
-    @{ Key='wheel_ffb_strength';       Label='Steering strength %';        Kind='slider'; Min=0; Max=500;  Default=100
+    @{ Key='wheel_ffb_model';          Label='Force model';                Kind='choice'; Choices=@('physics','game'); Default='game'
+       Help='physics: the force comes from the car''s front tyres in the game''s simulation, as in a sim (Assetto Corsa style settings). game: the game''s own forces.' }
+    @{ Key='wheel_ffb_physics_gain';   Label='Gain %';                     Kind='slider'; Min=0; Max=300;  Default=100; Group='physics'
+       Help='The whole steering force. 100: a 1 g corner at about 60% of the wheel''s maximum. Keep the log''s "FFB clipping" lines low.' }
+    @{ Key='wheel_ffb_physics_filter'; Label='Filter %';                   Kind='slider'; Min=0; Max=100;  Default=0;   Group='physics'
+       Help='Smooths the force (100: 40 ms). 0 on a direct drive for every detail; raise it if the wheel feels grainy.' }
+    @{ Key='wheel_ffb_physics_min_force'; Label='Minimum force %';         Kind='slider'; Min=0; Max=30;   Default=0;   Group='physics'
+       Help='Lifts the smallest forces, for wheels that cannot make small forces (gear and belt wheels). 0 on a direct drive.' }
+    @{ Key='wheel_ffb_physics_kerbs';  Label='Kerb effects %';             Kind='slider'; Min=0; Max=200;  Default=50;  Group='physics'
+       Help='The kerb and rumble strip vibration (100: 30% of the wheel at the strongest kerb).' }
+    @{ Key='wheel_ffb_physics_road';   Label='Road effects %';             Kind='slider'; Min=0; Max=200;  Default=50;  Group='physics'
+       Help='Bumps from the front tyres'' loads and the road surface vibration.' }
+    @{ Key='wheel_ffb_physics_slip';   Label='Slip effects %';             Kind='slider'; Min=0; Max=200;  Default=30;  Group='physics'
+       Help='A buzz when the tyres slide past their grip, spin or lock (100: 25% of the wheel).' }
+    @{ Key='wheel_ffb_physics_damper'; Label='Damper %';                   Kind='slider'; Min=0; Max=100;  Default=10;  Group='physics'
+       Help='Resistance to turning the wheel quickly: strongest at a standstill (the tyres scrub), a third of that at speed. Steadies a direct drive.' }
+    @{ Key='wheel_ffb_strength';       Label='Steering strength %';        Kind='slider'; Min=0; Max=500;  Default=100; Group='classic'
        Help='Overall steering force (software model). Keep the log''s "FFB clipping" lines low.' }
-    @{ Key='wheel_ffb_center';         Label='Centre weight %';            Kind='slider'; Min=0; Max=100;  Default=0
+    @{ Key='wheel_ffb_center';         Label='Centre weight %';            Kind='slider'; Min=0; Max=100;  Default=0; Group='classic'
        Help='More force in the first degrees off centre, for a less dull centre. 0: in proportion, as the game.' }
-    @{ Key='wheel_ffb_slide';          Label='Slide lightness %';          Kind='slider'; Min=0; Max=100;  Default=0
+    @{ Key='wheel_ffb_slide';          Label='Slide lightness %';          Kind='slider'; Min=0; Max=100;  Default=0; Group='classic'
        Help='Follows the game''s grip: when the tyres slide, the wheel gets lighter than the game''s grip alone makes it. Higher: lighter drifts.' }
-    @{ Key='wheel_ffb_falloff';        Label='Falloff past grip %';        Kind='slider'; Min=0; Max=100;  Default=40
+    @{ Key='wheel_ffb_falloff';        Label='Falloff past grip %';        Kind='slider'; Min=0; Max=100;  Default=40; Group='classic'
        Help='Follows how far you steer past where the tyres want the wheel (big countersteer, sawing): the force drops off there. 0 holds it.' }
-    @{ Key='wheel_ffb_smoothing';      Label='Smoothing ms';               Kind='slider'; Min=0; Max=50;   Default=8
+    @{ Key='wheel_ffb_smoothing';      Label='Smoothing ms';               Kind='slider'; Min=0; Max=50;   Default=8; Group='classic'
        Help='Higher: smoother, slightly slower. Lower: sharper, maybe grainy.' }
     @{ Key='wheel_ffb_soft_lock';      Label='Soft lock';                  Kind='choice'; Choices=@('game','off','540','720','900','1080'); Default='game'
        Help='Stops the wheel at the car''s steering lock. game: the lock the game asks for.' }
-    @{ Key='wheel_ffb_spring';         Label='Centring stiffness %';       Kind='slider'; Min=0; Max=1000; Default=250
+    @{ Key='wheel_ffb_spring';         Label='Centring stiffness %';       Kind='slider'; Min=0; Max=1000; Default=250; Group='classic'
        Help='How quickly the force builds as the wheel moves off where the tyres want it.' }
-    @{ Key='wheel_ffb_spring_limit';   Label='Grip force limit %';         Kind='slider'; Min=5; Max=100;  Default=100
+    @{ Key='wheel_ffb_spring_limit';   Label='Grip force limit %';         Kind='slider'; Min=5; Max=100;  Default=100; Group='classic'
        Help='The most the grip force can be, percent of the wheel''s maximum.' }
-    @{ Key='wheel_ffb_damper';         Label='Damper %';                   Kind='slider'; Min=0; Max=300;  Default=30
+    @{ Key='wheel_ffb_damper';         Label='Damper %';                   Kind='slider'; Min=0; Max=300;  Default=30; Group='classic'
        Help='Resistance to turning at all. Lower: lighter and more detailed. Too low can oscillate.' }
-    @{ Key='wheel_ffb_vibration_limit'; Label='Vibration limit %';         Kind='slider'; Min=0; Max=50;   Default=10
+    @{ Key='wheel_ffb_vibration_limit'; Label='Vibration limit %';         Kind='slider'; Min=0; Max=50;   Default=10; Group='classic'
        Help='The strongest any vibration can be, percent of the wheel''s maximum torque. Kerbs and road texture are shares of this.' }
-    @{ Key='wheel_ffb_vibration_response'; Label='Vibration response %';   Kind='slider'; Min=20; Max=100; Default=100
+    @{ Key='wheel_ffb_vibration_response'; Label='Vibration response %';   Kind='slider'; Min=20; Max=100; Default=100; Group='classic'
        Help='100: in proportion to the game. Lower lifts the small vibrations (slow gravel, light texture) while the strongest stays at the limit.' }
-    @{ Key='wheel_ffb_kerbs';          Label='Kerbs % of limit';           Kind='slider'; Min=0; Max=100;  Default=100
+    @{ Key='wheel_ffb_kerbs';          Label='Kerbs % of limit';           Kind='slider'; Min=0; Max=100;  Default=100; Group='classic'
        Help='Kerbs and rumble strips (also wheelspin): 100 = the vibration limit at the game''s strongest kerb. Test on a circuit with kerbs.' }
-    @{ Key='wheel_ffb_texture';        Label='Road texture % of limit';    Kind='slider'; Min=0; Max=100;  Default=50
+    @{ Key='wheel_ffb_texture';        Label='Road texture % of limit';    Kind='slider'; Min=0; Max=100;  Default=50; Group='classic'
        Help='Road surface: 100 = the vibration limit on the roughest surface.' }
-    @{ Key='wheel_ffb_texture_mode';   Label='Road texture mode';          Kind='choice'; Choices=@('changes','full'); Default='changes'
+    @{ Key='wheel_ffb_texture_mode';   Label='Road texture mode';          Kind='choice'; Choices=@('changes','full'); Default='changes'; Group='classic'
        Help='changes: only rough patches and surface changes. full: the steady hum as well.' }
-    @{ Key='wheel_ffb_texture_floor';  Label='Texture floor % (changes)';  Kind='slider'; Min=0; Max=100;  Default=0
+    @{ Key='wheel_ffb_texture_floor';  Label='Texture floor % (changes)';  Kind='slider'; Min=0; Max=100;  Default=0; Group='classic'
        Help='In the changes mode: how much of a steady surface (gravel) stays. 0 removes it.' }
-    @{ Key='wheel_ffb_long_rumble';    Label='Long rumble kept %';         Kind='slider'; Min=0; Max=100;  Default=25
+    @{ Key='wheel_ffb_long_rumble';    Label='Long rumble kept %';         Kind='slider'; Min=0; Max=100;  Default=25; Group='classic'
        Help='Wheelspin and burnouts: the kerb vibration fades to this after half a second, so the wheel does not shake itself loose. Short kerbs keep their full strength.' }
     @{ Key='wheel_ffb_vibration_wave'; Label='Vibration wave';             Kind='choice'; Choices=@('sine','square'); Default='sine'
        Help='sine: smooth texture. square: harsher, as the game asks.' }
@@ -145,6 +160,14 @@ function Show-Value($key, $value) {
 
 # Presets: starting points that set every slider; fine-tune from there.
 $presets = [ordered]@{
+    'Physics model, direct drive (sim style)' = @{
+        wheel_ffb_model='physics'; wheel_ffb_physics_gain=100; wheel_ffb_physics_filter=0; wheel_ffb_physics_min_force=0
+        wheel_ffb_physics_kerbs=50; wheel_ffb_physics_road=50; wheel_ffb_physics_slip=30; wheel_ffb_physics_damper=10
+        wheel_ffb_soft_lock='game'; wheel_ffb_vibration_wave='sine' }
+    'Physics model, gear or belt wheel - untested' = @{
+        wheel_ffb_model='physics'; wheel_ffb_physics_gain=130; wheel_ffb_physics_filter=10; wheel_ffb_physics_min_force=8
+        wheel_ffb_physics_kerbs=80; wheel_ffb_physics_road=80; wheel_ffb_physics_slip=50; wheel_ffb_physics_damper=0
+        wheel_ffb_soft_lock='game'; wheel_ffb_vibration_wave='square' }
     'Direct drive (8 Nm Fanatec baseline)' = @{
         wheel_ffb_model='software'; wheel_ffb_strength=200; wheel_ffb_center=100; wheel_ffb_slide=2; wheel_ffb_falloff=5
         wheel_ffb_smoothing=0; wheel_ffb_soft_lock='game'; wheel_ffb_spring=90; wheel_ffb_spring_limit=100; wheel_ffb_damper=10
@@ -185,6 +208,18 @@ $live.Margin = New-Object Windows.Forms.Padding(0, 0, 0, 10)
 $live.Text = 'Changes apply LIVE: keep DriveClub running, drive, and move a slider. The wheel feels the change within a second, no restart needed.'
 $table.Controls.Add($live, 0, 0); $table.SetColumnSpan($live, 3)
 $table.Controls.Add($presetLabel, 0, 1); $table.Controls.Add($presetBox, 1, 1)
+# Only the chosen model's settings are shown.
+function Update-Groups {
+    if (-not $controls.ContainsKey('wheel_ffb_model')) { return }
+    $physics = (Value-Of 'wheel_ffb_model') -eq 'physics'
+    foreach ($s in $settings) {
+        $c = $controls[$s.Key]
+        if (-not $c) { continue }
+        $show = (-not $s.Group) -or (($s.Group -eq 'physics') -eq $physics)
+        $c.Label.Visible = $show; $c.Box.Visible = $show
+        if ($c.Bar) { $c.Bar.Visible = $show }
+    }
+}
 $row = 2
 foreach ($s in $settings) {
     $label = New-Object Windows.Forms.Label
@@ -192,7 +227,7 @@ foreach ($s in $settings) {
     $label.Margin = New-Object Windows.Forms.Padding(0, 6, 12, 0)
     $tip.SetToolTip($label, $s.Help)
     $table.Controls.Add($label, 0, $row)
-    $entry = @{ Kind = $s.Kind; Setting = $s }
+    $entry = @{ Kind = $s.Kind; Setting = $s; Label = $label }
     switch ($s.Kind) {
         'slider' {
             $bar = New-Object Windows.Forms.TrackBar
@@ -214,7 +249,7 @@ foreach ($s in $settings) {
             $box = New-Object Windows.Forms.ComboBox
             $box.DropDownStyle = 'DropDownList'; $box.Width = 140; $box.Tag = $s.Key
             foreach ($c in $s.Choices) { [void]$box.Items.Add($c) }
-            $box.Add_SelectedIndexChanged({ if (-not $script:syncing) { Mark-Changed } })
+            $box.Add_SelectedIndexChanged({ if ($this.Tag -eq 'wheel_ffb_model') { Update-Groups }; if (-not $script:syncing) { Mark-Changed } })
             $box.Add_Enter({ $help.Text = $controls[$this.Tag].Setting.Help })
             $box.Margin = New-Object Windows.Forms.Padding(3, 5, 3, 5)
             $table.Controls.Add($box, 1, $row)
@@ -236,6 +271,7 @@ foreach ($s in $settings) {
     Show-Value $s.Key $value
     $row++
 }
+Update-Groups
 
 $timer.Add_Tick({
     $timer.Stop()

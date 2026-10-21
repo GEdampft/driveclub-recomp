@@ -52,6 +52,12 @@ static int ffb_strength=100;   /* percent: the whole steering force of the softw
 /* ffb_center: how much more force the first degrees off the target give (0: in proportion, as the game's spring);
  * ffb_slide: how much more the force drops than the game's grip does (0: as the game's grip). Percent, 0..100. */
 static int ffb_center, ffb_slide;
+/* wheel_ffb_model = physics: the steering force from the car's front tyres in the game's simulation (the moment their
+ * lateral forces put on the steering, runtime_logiwheel.inc), with settings named after Assetto Corsa's, percent:
+ * gain (100: a 1 g corner at about 60% of the wheel's maximum), filter, minimum force, kerb, road and slip effects,
+ * and a damper that is strongest at a standstill. */
+static bool ffb_physics;
+static int ffb_ph_gain=100, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_kerbs=50, ffb_ph_road=50, ffb_ph_slip=30, ffb_ph_damper=10;
 
 static SDL_Joystick *wheel;
 static SDL_JoystickID wheel_id;
@@ -151,7 +157,18 @@ static void wheel_parse(const char *lhs, char *rhs) {
         if (!strcmp(key,"ffb_long_rumble")) ffb_long_rumble=v; else ffb_vibration_limit=v;
         return;
     }
-    if (!strcmp(key,"ffb_model")) { lower(rhs); ffb_software=!strcmp(rhs,"software"); return; }
+    if (!strcmp(key,"ffb_model")) { lower(rhs); ffb_software=!strcmp(rhs,"software"); ffb_physics=!strcmp(rhs,"physics"); return; }
+    if (!strncmp(key,"ffb_physics_",12)) {
+        const char *k=key+12; const int v=atoi(rhs);
+        if (!strcmp(k,"gain")) ffb_ph_gain=v<0 ? 0 : v>500 ? 500 : v;
+        else if (!strcmp(k,"filter")) ffb_ph_filter=v<0 ? 0 : v>100 ? 100 : v;
+        else if (!strcmp(k,"min_force")) ffb_ph_min_force=v<0 ? 0 : v>30 ? 30 : v;
+        else if (!strcmp(k,"kerbs")) ffb_ph_kerbs=v<0 ? 0 : v>200 ? 200 : v;
+        else if (!strcmp(k,"road")) ffb_ph_road=v<0 ? 0 : v>200 ? 200 : v;
+        else if (!strcmp(k,"slip")) ffb_ph_slip=v<0 ? 0 : v>200 ? 200 : v;
+        else if (!strcmp(k,"damper")) ffb_ph_damper=v<0 ? 0 : v>100 ? 100 : v;
+        return;
+    }
     if (!strcmp(key,"ffb_strength")) { const int v=atoi(rhs); ffb_strength=v<0 ? 0 : v>1000 ? 1000 : v; return; }
     if (!strcmp(key,"ffb_center")) { const int v=atoi(rhs); ffb_center=v<0 ? 0 : v>100 ? 100 : v; return; }
     if (!strcmp(key,"ffb_slide")) { const int v=atoi(rhs); ffb_slide=v<0 ? 0 : v>100 ? 100 : v; return; }
@@ -263,6 +280,11 @@ static const char wheel_default_config[]=
     "# wheel_ffb_falloff: percent the force drops far past the grip limit (0..100; 0 holds it, as the game does);\n"
     "# wheel_ffb_smoothing: milliseconds (0..100); wheel_ffb_soft_lock: game (the steering lock the game asks for),\n"
     "# off, or degrees lock to lock: a force stops the wheel there.\n"
+    "# wheel_ffb_model = physics: the force comes from the car's front tyres in the game's simulation, as in a sim. Its\n"
+    "# settings, percent: wheel_ffb_physics_gain (0..300; 100: a 1 g corner at about 60% of the wheel's maximum),\n"
+    "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force (0..30, for gear and belt wheels),\n"
+    "# wheel_ffb_physics_kerbs, wheel_ffb_physics_road and wheel_ffb_physics_slip (0..200), wheel_ffb_physics_damper\n"
+    "# (0..100). wheel_ffb_soft_lock, wheel_ffb_vibration_wave and wheel_ffb_invert apply too.\n"
     "# wheel_ffb_invert = true if the wheel pulls the wrong way.\n"
     "# H-pattern shifter: wheel_shifter = auto (a controller named \"Shifter\"), wheel (its buttons are on the wheel),\n"
     "# off, or part of its name; then one line per gear: wheel_gear = <button number>, <1..6 or r>. WheelSetup.exe\n"

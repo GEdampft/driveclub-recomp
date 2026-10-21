@@ -622,6 +622,42 @@ static void watch_install(void *address) {
     CloseHandle(snap);
     printf("Watch: pad buffer %p armed on %d threads\n",address,n);
 }
+/* The car's simulation for the physics force feedback model. Each physics step the game (guest +0xd93790) fills a
+ * 0x30-byte block from the player's car and passes it to +0xe0f5d0, which copies it into its force feedback object
+ * (+0xf4..+0x124; read by +0xe0ebb0, which makes the Logitech forces from it). That setter is replaced here: the same
+ * copy, and the pointers the caller read the block from are kept (its frame: rbp-0x78 = the car's simulation
+ * interface, whose +0x8 is the car's state and +0x20 its setup, whose +0x8 is the drivetrain and tyres). */
+/* caller_rbp and ret: the caller's frame and the return address, passed in by the patched code */
+static ABI void ffb_inputs_hook(uint8_t *obj, const uint8_t *in, const uintptr_t *caller, uintptr_t ret) {
+    memcpy(obj+0xf4,in,0x30);
+    if (ret!=runtime_image_base+0xd93c3e) return;
+    if (!in[0]) { ffb_car.state=ffb_car.setup=ffb_car.sim=0; return; }   /* no car under the player's control */
+    /* the caller has just read the block from these (+0xd9393d..+0xd93945), so they are valid */
+    const uintptr_t iface=caller[-0x78/8];
+    const uintptr_t state=*(const uintptr_t *)(iface+0x8), setup=*(const uintptr_t *)(iface+0x20), sim=*(const uintptr_t *)(setup+0x8);
+    if (state!=ffb_car.state || setup!=ffb_car.setup) printf("Runtime: FFB physics: car state %p, setup %p, drivetrain %p\n",(void *)state,(void *)setup,(void *)sim);
+    ffb_car.state=state; ffb_car.setup=setup; ffb_car.sim=sim;
+    __atomic_store_n(&ffb_car.step_us,now_us(),__ATOMIC_RELEASE);
+    if (ffb_physics) ffb_physics_step((const float *)state,in,setup);   /* the setup tells cars apart (the state's memory is reused) */
+}
+static void ffb_hook_install(void) {
+    static bool done;
+    if (done || !runtime_image_base) return;
+    done=true;
+    unsigned char *at=(unsigned char *)(runtime_image_base+0xe0f5d0);
+    static const unsigned char expect[]={0x48,0x8b,0x46,0x28,0x48,0x89,0x87,0x1c,0x01,0x00,0x00};   /* mov rax,[rsi+0x28]; mov [rdi+0x11c],rax */
+    if (memcmp(at,expect,sizeof expect)) { printf("Runtime: FFB physics: the game's code differs, not hooked\n"); return; }
+    DWORD old;
+    if (!VirtualProtect(at,32,PAGE_EXECUTE_READWRITE,&old)) return;
+    const uint64_t target=(uint64_t)(uintptr_t)ffb_inputs_hook;
+    static const unsigned char head[]={0x48,0x89,0xea,0x48,0x8b,0x0c,0x24};   /* mov rdx, rbp; mov rcx, [rsp] */
+    memcpy(at,head,sizeof head);
+    at[7]=0x48; at[8]=0xb8; memcpy(at+9,&target,8);   /* movabs rax, hook */
+    at[17]=0xff; at[18]=0xe0;                          /* jmp rax */
+    VirtualProtect(at,32,old,&old);
+    FlushInstructionCache(GetCurrentProcess(),at,32);
+    printf("Runtime: FFB physics: reading the car's simulation\n");
+}
 #endif
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;

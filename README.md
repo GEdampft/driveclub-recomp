@@ -50,7 +50,7 @@ Logs are in the `logs` folder.
 - About 60 FPS at 4K in the heaviest scenes on our test PC (RTX 5070 Ti, Ryzen 7 5800X3D), higher in lighter ones, with an unlocked frame rate option in the launcher that keeps the game at its normal speed
 - Runs on NVIDIA, AMD and Intel graphics through Vulkan, with Resizable BAR used automatically where the driver allows it
 - Keyboard racing layout and any gamepad (Xbox, PlayStation, Switch Pro, 8BitDo)
-- Steering wheels with force feedback, pedals with clutch and an H-pattern shifter
+- Steering wheels with force feedback from the car's tyre physics, pedals with clutch, an H-pattern shifter and a USB handbrake
 - DLC content (add-on cars, bikes, tours and livery decals) can be unlocked from the launcher, built from your own game files. Cars you earn by playing still unlock through normal progression
 - A launcher window that resizes from every edge and corner and stays sharp at any display scale
 - A `mods` folder for loose-file mods: files in it replace the game's own files of the same path
@@ -73,20 +73,48 @@ Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.
 | D-pad | Arrow keys |
 | Look around | I J K L or the mouse |
 
-F7 turns mouse look on or off. F9 and F10 are the anti-aliasing keys above. F12 hides and shows the FPS counter. The bindings are in `data\user\input_config\default.ini` and can be changed there.
+F5 and F6 narrow and widen the view. F7 turns mouse look on or off. F9 and F10 are the anti-aliasing keys above. F12 hides and shows the FPS counter. The bindings are in `data\user\input_config\default.ini` and can be changed there.
 
 ### Steering wheels
-Any wheel that Windows lists as a game controller works: the game sees it as a PS4 wheel, and its force feedback reaches the wheel the way it reached a Logitech wheel on the console. Pedals with a clutch and an H-pattern shifter (on the wheel or as a controller of its own, such as a Logitech Driving Force Shifter on a USB adapter) work too; choose a manual gearbox in the game for the shifter.
+Any wheel that Windows lists as a game controller works: the game sees it as a PS4 wheel. Pedals with a clutch, an H-pattern shifter (on the wheel or as a controller of its own, such as a Logitech Driving Force Shifter on a USB adapter) and a handbrake with a USB of its own work too. Everything is set up on the launcher's **Driving** tab, under **Wheel and force feedback**.
 
-1. Connect the wheel, pedals and shifter **before** starting the game.
-2. Run `WheelSetup.exe` next to `DriveClub.exe`. Pick the wheel, and the pedals if they have a USB of their own. Every control is a row with its current mapping and a live view: click **Map** and turn the wheel, press the pedal, button or gear; **×** clears a row. **Save** writes `default.ini`.
-3. Set the **rotation** in the wheel's own software (Pit House, G HUB, ...) and enter the same number in `WheelSetup.exe`.
+**Setting up**
+1. Connect the wheel, pedals, shifter and handbrake **before** starting the game.
+2. Press **Wheel Setup** (or run `WheelSetup.exe` next to `DriveClub.exe`). Pick the wheel, and the pedals if they have a USB of their own. Every control is a row with its current mapping and a live view: click **Map** and turn the wheel, press the pedal, button or gear, or pull the handbrake; **×** clears a row. **Save** writes `data\user\input_config\default.ini`.
+3. Set the **rotation** in the wheel's own software (Pit House, G HUB, ...) and enter the same number in Wheel Setup.
+4. For the shifter choose a manual gearbox, and for a wheel turn on hardcore handling. The **Sim** driving preset on the **Assists and view** page does both and turns the assists off.
 
-Pedals on a USB of their own (`wheel_pedals` in `default.ini`) and wheels that Windows lists as two controllers of one name, as a Fanatec base is, are picked by `WheelSetup.exe` (for the second, `wheel_device = FANATEC Wheel @col01`: the HID collection, which stays the same from start to start).
+The **Handbrake** row listens on every controller, so a USB handbrake is found by pulling it; one that is a switch is mapped as a button. The game has no handbrake for wheels: pulled past 40%, the handbrake presses the circle button, which is the handbrake in a race.
 
-The force feedback follows the game's own setting. In `default.ini`, `wheel_ffb_gain` and `wheel_ffb_vibration` make the forces and the road vibrations stronger or weaker (100 = as the game sends them, up to 2000; the steering forces are light on most wheels, so a few hundred is normal), `wheel_ffb_invert = true` turns them around if the wheel pulls the wrong way, and `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
+Pedals on a USB of their own (`wheel_pedals` in `default.ini`) and wheels that Windows lists as two controllers of one name, as a Fanatec base is, are picked by Wheel Setup (for the second, `wheel_device = FANATEC Wheel @col01`: the HID collection, which stays the same from start to start).
 
-Tested with a Moza R3 and a Logitech Driving Force Shifter. On some PCs Windows takes a long time to list game controllers; the game then starts later and pauses when a controller is plugged in while it runs.
+**Force feedback**
+- **Reworked Physics** (recommended): the force is worked out from the car's front tyres in the game's own simulation, the way a racing sim does it. The wheel gets heavier as the tyres load up in a corner, goes light when the front tyres start to slide and the car runs wide, and turns the right way by itself when the back of the car steps out. Kerbs, bumps and the road come through on top. It learns each car's tyres in the first corners.
+- **Original Physics** (the default): the forces the PS4 game made for a Logitech wheel. Its settings are `wheel_ffb_gain` and `wheel_ffb_vibration` in `default.ini` (100 = as the game sends them, up to 2000; a few hundred is normal).
+
+**Preset** sets the sliders for your kind of wheel: **Direct drive** (Fanatec DD, Moza, Simagic, Simucube, ...) or **Gear or belt** (most Logitech, Thrustmaster and Fanatec CSL wheels). Then adjust them to taste:
+
+| Setting | Range | What it does |
+|---|---|---|
+| Gain | 0–300% | The overall strength. At 100% a hard corner uses about 60% of the wheel's force. |
+| Filter | 0–100% | Smooths the force. 0 on a direct drive, a little on gear wheels. |
+| Minimum force | 0–30% | Lifts the smallest forces past the dead spot that gear and belt wheels have around the centre. |
+| Damper | 0–100% | Weight when you turn the wheel, strongest when the car stands still, as with real tyres. |
+| Kerbs | 0–200% | The rumble of kerbs. |
+| Road | 0–200% | Bumps and the road surface. |
+| Slip | 0–200% | A buzz when the tyres slide, spin or lock. |
+| Soft lock | Game, Off, 540°–1080° | Stops the wheel at the car's own steering lock (Game) or at a fixed angle. |
+| Vibration wave | Sine, Square | Square feels sharper on gear and belt wheels. |
+| Invert forces | | Turns the forces around if the wheel pulls the wrong way. |
+
+Direct drive: gain 100, filter 0, minimum force 0, kerbs 50, road 50, slip 30, damper 10. Gear or belt: gain 130, filter 10, minimum force 8, kerbs 80, road 80, slip 50, damper 0.
+
+The settings are kept in `default.ini` (`wheel_ffb_physics_*`), and the game picks up changes to it within a second, so `FFB Tuner.bat` can change them while you drive. If the wheel feels flat in hard corners, lower the gain: the log in `logs` says how often the force was at the wheel's maximum (`FFB clipping`). `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
+
+**Field of view**
+The **Field of view** slider on the **Assists and view** page sets the view from 50% to 150% of the game's own, for every camera. While playing, **F5** narrows it and **F6** widens it in 5% steps; the new value shows at the top of the screen and is kept for the next start (`data\user\camera.ini`). At 100% the view is left as the game and the patches have it. Any other value counts from the game's own view and takes the place of the widescreen field-of-view fix (which is about 131%).
+
+Tested with a Moza R3, a Fanatec 8 Nm direct drive base with ClubSport Pedals, and a Logitech Driving Force Shifter. On some PCs Windows takes a long time to list game controllers; the game then starts later and pauses when a controller is plugged in while it runs.
 
 ## Settings
 The window that opens when you start `DriveClub.exe` has every setting. Press **Play** to save them; they are kept for later starts.
@@ -106,6 +134,8 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 **Unlock DLC content:** off by default. Unlocks the add-on cars, bikes, tours and livery decals. The launcher reads the vehicle list, the tour list and the livery list from your own game archive and builds changed copies that the game uses. Your game folders are not modified.
 
 **Gameplay:** player name, borderless fullscreen, FPS counter, motion blur and depth of field off, no reset-to-track timer, no track barriers, and photo mode options.
+
+**Driving:** the field of view, the gearbox, brake assist, hardcore handling and wheel assist, and the steering wheel (Wheel Setup and force feedback, see [Steering wheels](#steering-wheels)). **Sim** turns the assists off, with a manual gearbox and hardcore handling; **Assisted** uses an automatic gearbox, brake assist and wheel assist; **Game Defaults** leaves them to the game's own menu. A choice made here wins over the game's menu; **In-game** hands that option back to the menu.
 
 **Skip the hardware check:** the launcher checks that your processor and graphics card can run the game (a processor with AVX, BMI1, LZCNT and MOVBE, and Vulkan 1.3). If it ever refuses hardware that works, turn this on to start anyway.
 

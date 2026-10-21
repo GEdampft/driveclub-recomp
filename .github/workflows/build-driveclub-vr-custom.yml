@@ -1,8 +1,11 @@
-name: Build DriveClub VR HUD Camera
+name: Build DriveClub VR Gamepad Toggle
 on:
   workflow_dispatch:
   push:
-    branches: [vr-hud-camera-test]
+    branches: [vr-hud-camera-gamepad]
+concurrency:
+  group: vr-gamepad-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-latest
@@ -38,7 +41,7 @@ jobs:
       - name: Upload runtime executable and settings
         uses: actions/upload-artifact@v4
         with:
-          name: DriveClub-VR-HUD-Camera-Test
+          name: DriveClub-VR-Gamepad-L3-Test
           path: |
             out/DriveClubGame.exe
             driveclub_vr.ini

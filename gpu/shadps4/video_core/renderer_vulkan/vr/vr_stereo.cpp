@@ -592,8 +592,13 @@ void TextureAction(u64 vs_hash, int mode) {
     g_tex_vs = vs_hash;
 }
 
+// DRAWLOG: the draw's index and instance counts (LogFragmentImages runs just before OnDraw with them).
+thread_local u32 g_log_indices = 0, g_log_instances = 0;
+
 void LogFragmentImages(const Shader::Info& vs, const Shader::Info* fs, u32 depth_control, u32 stencil_control,
                        u32 stencil_ref_front, u32 indices, u32 instances) {
+    g_log_indices = indices; // DRAWLOG
+    g_log_instances = instances;
     const u64 vs_hash = vs.pgm_hash;
     g_tex_pending.clear();
     if (fs && g_tex_vs.load(std::memory_order_relaxed) == vs_hash) {
@@ -727,10 +732,10 @@ void OnDraw(Scheduler& scheduler, Runtime& runtime, VideoCore::TextureCache& tex
         const auto& image = texture_cache.GetImage(color_id);
         u32 blend = 0;
         std::memcpy(&blend, &key.blend_controls[0], sizeof(blend));
-        std::printf("VR draws: vs %#llx ps %#llx target %ux%u format %d at %#llx blend %#x mask %#x%s%s\n",
+        std::printf("VR draws: vs %#llx ps %#llx target %ux%u format %d at %#llx blend %#x mask %#x idx %u inst %u%s%s\n",
                     (unsigned long long)vs_hash, (unsigned long long)key.stage_hashes[0], image.info.size.width,
                     image.info.size.height, int(image.info.pixel_format), (unsigned long long)image.info.guest_address,
-                    blend, u32(key.write_masks[0]),
+                    blend, u32(key.write_masks[0]), g_log_indices, g_log_instances,
                     FrameCapture::IsDisplayBuffer(image.info.guest_address) ? " (display)" : "",
                     UiComposition::MovieShader(vs_hash) ? " (movie)" : "");
     }

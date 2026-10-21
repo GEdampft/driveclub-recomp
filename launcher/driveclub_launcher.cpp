@@ -725,12 +725,12 @@ void SaveSettings() {
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
-    // VR fork: the two-thread draw path (bit 37) stays off in VR too, as upstream ships it. On (1080 per eye 108 -> 126
-    // at the race start) it broke the picture with precise readbacks: flat untextured surfaces and grey blobs while
-    // driving (2026-10-20; with the readback hybrid on it was rarer). Flat 4K would gain 117 -> 140 FPS, but 2 of ~28
-    // flat boots hung before the race. Also off: prepared resources, draw preparation, deferred stream copies, pooled
-    // small copies (no gain measured).
-    tog << "137439506432";
+    // VR fork: the two-thread draw path (bit 37) is on in VR (vr1.1's mask): its corruption with precise readbacks
+    // (flat grey polygons and streaks, 2026-10-20) was a readback unmarking a window with a GPU write still queued
+    // for the recording thread, fixed in the game (77bf0ae). Splits PM4 decode and Vulkan recording over two cores,
+    // the grid's limit on Matt's machine. Off: prepared resources, draw preparation, deferred stream copies, pooled
+    // small copies (no gain measured). 137439506432 is the same mask with the draw thread off.
+    tog << "552960";
     const std::wstring game_ini = g_data + L"\\user\\driveclub.ini";
     std::ofstream game(game_ini.c_str(), std::ios::binary | std::ios::trunc);
     game << "show_fps=" << (fps_on ? 1 : 0) << "\r\n";

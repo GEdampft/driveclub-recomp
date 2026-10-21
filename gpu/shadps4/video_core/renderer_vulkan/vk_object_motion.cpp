@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_object_motion.h"
+#include "video_core/renderer_vulkan/vr/vr_object_motion.h" // VR fork
+#include <bit>
 
 #include <cstdio>
 #include <cstdlib>
@@ -53,8 +55,9 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_} {
     // Pipeline selection limits the extra attachment and vertex stores to likely
     // animated draws. A setting or environment override can still disable the path.
-    if (!BbSettings::UpscalerOptIn() || !BbSettings::Get().object_motion ||
-        BbSettings::Get().upscaler == BbSettings::UpscalerOff) {
+    if ((!BbSettings::UpscalerOptIn() || !BbSettings::Get().object_motion ||
+         BbSettings::Get().upscaler == BbSettings::UpscalerOff) &&
+        !Vr::ObjectMotion::Wanted()) { // VR fork: VR DLSS (vr_object_motion.h)
         std::puts("Object motion: off (enable in menu or BB_OBJECT_MOTION=1)");
         return;
     }
@@ -162,8 +165,8 @@ u32 ObjectMotion::PrepareDraw(const DrawInfo& draw) {
     return index;
 }
 
-void ObjectMotion::EnsureImage(u32 width, u32 height) {
-    if (image && width == image_width && height == image_height) {
+void ObjectMotion::EnsureImage(u32 width, u32 height, u32 layers) {
+    if (image && width == image_width && height == image_height && layers == image_layers) {
         return;
     }
     const auto device = instance.GetDevice();
@@ -171,6 +174,9 @@ void ObjectMotion::EnsureImage(u32 width, u32 height) {
         scheduler.Finish();
     }
     view.reset();
+    for (auto& v : layer_views) {
+        v.reset();
+    }
     image_layout = vk::ImageLayout::eUndefined;
     image = VideoCore::UniqueImage(device, instance.GetAllocator());
     image.Create(vk::ImageCreateInfo{
@@ -178,7 +184,7 @@ void ObjectMotion::EnsureImage(u32 width, u32 height) {
         .format = vk::Format::eR32G32B32A32Sfloat,
         .extent = {width, height, 1},
         .mipLevels = 1,
-        .arrayLayers = 1,
+        .arrayLayers = layers,
         .samples = vk::SampleCountFlagBits::e1,
         .tiling = vk::ImageTiling::eOptimal,
         .usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
@@ -187,18 +193,27 @@ void ObjectMotion::EnsureImage(u32 width, u32 height) {
     });
     view = Check(device.createImageViewUnique({
         .image = vk::Image(image),
-        .viewType = vk::ImageViewType::e2D,
+        .viewType = layers > 1 ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D,
         .format = vk::Format::eR32G32B32A32Sfloat,
-        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, layers},
     }));
+    for (u32 layer = 0; layer < layers && layer < layer_views.size(); ++layer) { // VR fork: an eye each
+        layer_views[layer] = Check(device.createImageViewUnique({
+            .image = vk::Image(image),
+            .viewType = vk::ImageViewType::e2D,
+            .format = vk::Format::eR32G32B32A32Sfloat,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, layer, 1},
+        }));
+    }
     image_width = width;
     image_height = height;
+    image_layers = layers;
     written = false;
 }
 
 void ObjectMotion::Attach(RenderState& state, u32 width, u32 height) {
     constexpr u32 slot = Shader::MotionVectors::Output;
-    EnsureImage(width, height);
+    EnsureImage(width, height, state.view_mask ? u32(std::popcount(u32(state.view_mask))) : 1u); // VR fork
     auto& attachment = state.color_attachments[slot];
     attachment = {};
     attachment.image_view = *view;
@@ -215,7 +230,7 @@ void ObjectMotion::Attach(RenderState& state, u32 width, u32 height) {
             .oldLayout = image_layout,
             .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .image = vk::Image(image),
-            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, image_layers},
         };
         // Recorded in order on the recording thread: CommandBuffer() here switched the rest of
         // the submission (most of the G-buffer) to direct recording on the GPU thread.
@@ -231,7 +246,7 @@ void ObjectMotion::Attach(RenderState& state, u32 width, u32 height) {
 
 vk::ImageView ObjectMotion::PrepareRead(vk::CommandBuffer cmdbuf, u32 width, u32 height,
                                         bool& valid) {
-    EnsureImage(std::max(image_width, 1u), std::max(image_height, 1u));
+    EnsureImage(std::max(image_width, 1u), std::max(image_height, 1u), std::max(image_layers, 1u));
     valid = written && width == image_width && height == image_height;
     const vk::ImageMemoryBarrier2 barrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
@@ -241,7 +256,7 @@ vk::ImageView ObjectMotion::PrepareRead(vk::CommandBuffer cmdbuf, u32 width, u32
         .oldLayout = image_layout,
         .newLayout = vk::ImageLayout::eGeneral,
         .image = vk::Image(image),
-        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, image_layers},
     };
     cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
     image_layout = vk::ImageLayout::eGeneral;

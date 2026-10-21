@@ -29,6 +29,7 @@
 #include "video_core/renderer_vulkan/vr/vr_dev.h" // VR
 #include "video_core/renderer_vulkan/vr/vr_dlss.h" // VR
 #include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR
+#include "video_core/renderer_vulkan/vr/vr_object_motion.h" // VR
 #include "video_core/renderer_vulkan/vr/vr_stereo.h" // VR
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_threads.h"
@@ -96,6 +97,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     scene_targets = std::make_unique<SceneTargets>(instance, scheduler, runtime, texture_cache);
     // Object motion first: it fixes the buffer addresses the motion shader variants embed.
     object_motion = std::make_unique<ObjectMotion>(instance, scheduler);
+    Vr::ObjectMotion::g_object_motion = object_motion.get(); // VR fork
     camera_motion = std::make_unique<CameraMotion>(instance, scheduler, texture_cache, runtime);
     camera_motion->SetObjectMotion(object_motion.get());
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
@@ -1230,6 +1232,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             static const char* scene_debug = std::getenv("BB_SCENE_DEBUG");
             scene_debug_frame = scene_debug && std::remove(scene_debug) == 0;
             scene_targets->debug = scene_debug_frame;
+        } else if (Vr::ObjectMotion::Wanted() && fg_display_draws == 1) {
+            object_motion->OnFrameStart(); // VR fork: vr_object_motion.h (once a frame: the first display draw)
         }
     }
     bind_prepared = used_prepared;
@@ -1321,7 +1325,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
             return value && value[0] == '1';
         }();
-        bool gated = !all_motion;
+        bool gated = !all_motion && !Vr::ObjectMotion::Wanted(); // VR fork: the cars move by their constants
         u64 palette = 0;
         for (const auto& resource : vs.buffers) {
             if (resource.IsSpecial()) continue;

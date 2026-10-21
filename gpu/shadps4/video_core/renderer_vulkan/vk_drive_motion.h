@@ -34,7 +34,8 @@ public:
                 vk::ImageView motion_view,
                 u32 width, u32 height, u32 src_width, u32 src_height, bool normalized,
                 float eye_shift = 0.0f, // VR: the eye's clip x shift (vr_dlss.cpp)
-                const float* clip_to_prev = nullptr); // VR: the matrix (row vectors, 16 floats) instead
+                const float* clip_to_prev = nullptr, // VR: the matrix (row vectors, 16 floats) instead
+                vk::ImageView object_view = {});      // VR: object motion of the same eye (vr_object_motion.h)
 
     /// Row-vector clip space matrices for the frame generator.
     void ClipTransforms(std::array<float, 16>& view_to_clip,

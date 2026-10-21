@@ -189,10 +189,10 @@ static void EmitFragmentMotion(EmitContext& ctx) {
 }
 
 void EmitEpilogue(EmitContext& ctx) {
-    Vr::Epilogue(ctx); // VR: the eye's clip shift
-    if (Sirit::ValidId(ctx.motion_out_cur)) {
+    if (Sirit::ValidId(ctx.motion_out_cur)) { // VR fork: before the eye's shift (it cancels in the motion)
         EmitVertexMotion(ctx);
     }
+    Vr::Epilogue(ctx); // VR: the eye's clip shift
     if (Sirit::ValidId(ctx.motion_frag_out)) {
         EmitFragmentMotion(ctx);
     }

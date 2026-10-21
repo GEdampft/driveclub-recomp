@@ -25,6 +25,7 @@ struct Push {
     std::array<float, 2> scale;
     float use_stencil;
     float eye_shift; // VR
+    float use_object; // VR: vr_object_motion.h
 };
 
 Mat Multiply(const Mat& a, const Mat& b) {
@@ -89,7 +90,7 @@ bool Invert(const Mat& m, Mat& out) {
 
 DriveMotion::DriveMotion(const Instance& instance) {
     const auto device = instance.GetDevice();
-    const std::array<vk::DescriptorSetLayoutBinding, 3> bindings = {{
+    const std::array<vk::DescriptorSetLayoutBinding, 4> bindings = {{
         {.binding = 0,
          .descriptorType = vk::DescriptorType::eSampledImage,
          .descriptorCount = 1,
@@ -99,6 +100,10 @@ DriveMotion::DriveMotion(const Instance& instance) {
          .descriptorCount = 1,
          .stageFlags = vk::ShaderStageFlagBits::eCompute},
         {.binding = 2,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 3, // VR: object motion
          .descriptorType = vk::DescriptorType::eSampledImage,
          .descriptorCount = 1,
          .stageFlags = vk::ShaderStageFlagBits::eCompute},
@@ -153,7 +158,8 @@ bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
 
 void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          vk::ImageView mask_view, vk::ImageView motion_view, u32 width, u32 height, u32 src_width,
-                         u32 src_height, bool normalized, float eye_shift, const float* clip_to_prev) {
+                         u32 src_height, bool normalized, float eye_shift, const float* clip_to_prev,
+                         vk::ImageView object_view) {
     Push push{};
     push.eye_shift = eye_shift; // VR
     if (clip_to_prev) { // VR
@@ -173,7 +179,14 @@ void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
     push.use_stencil = mask_view != depth_view ? 1.0f : 0.0f;
     const vk::DescriptorImageInfo mask_info{.imageView = mask_view,
                                             .imageLayout = vk::ImageLayout::eGeneral};
-    const std::array<vk::WriteDescriptorSet, 3> writes = {{
+    push.use_object = object_view ? 1.0f : 0.0f; // VR
+    const vk::DescriptorImageInfo object_info{.imageView = object_view ? object_view : depth_view,
+                                              .imageLayout = vk::ImageLayout::eGeneral};
+    const std::array<vk::WriteDescriptorSet, 4> writes = {{
+        {.dstBinding = 3,
+         .descriptorCount = 1,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .pImageInfo = &object_info},
         {.dstBinding = 2,
          .descriptorCount = 1,
          .descriptorType = vk::DescriptorType::eSampledImage,

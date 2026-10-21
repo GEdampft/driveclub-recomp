@@ -56,13 +56,21 @@ public:
     [[nodiscard]] vk::ImageView View() const noexcept {
         return view ? *view : vk::ImageView{};
     }
+    /// VR fork: one layer (an eye) of the last PrepareRead's image, or null.
+    [[nodiscard]] vk::ImageView LayerView(u32 layer) const noexcept {
+        return layer < image_layers && layer < layer_views.size() && layer_views[layer] ? *layer_views[layer]
+                                                                                     : vk::ImageView{};
+    }
+    [[nodiscard]] u32 Layers() const noexcept {
+        return image_layers;
+    }
     [[nodiscard]] vk::Image Image(u32 width, u32 height) const noexcept {
         return written && width == image_width && height == image_height
             ? vk::Image(image) : vk::Image{};
     }
 
 private:
-    void EnsureImage(u32 width, u32 height);
+    void EnsureImage(u32 width, u32 height, u32 layers = 1);
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -88,6 +96,8 @@ private:
     VideoCore::UniqueImage image;
     vk::UniqueImageView view;
     u32 image_width = 0, image_height = 0;
+    u32 image_layers = 1;                         ///< VR fork: an eye each in multiview passes
+    std::array<vk::UniqueImageView, 2> layer_views; ///< VR fork
     bool written = false; ///< this frame's vectors are in the image
     vk::ImageLayout image_layout = vk::ImageLayout::eUndefined;
 };

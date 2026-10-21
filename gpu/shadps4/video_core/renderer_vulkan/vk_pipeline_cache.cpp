@@ -30,6 +30,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vr/vr_fixes.h" // VR
+#include "video_core/renderer_vulkan/vr/vr_object_motion.h" // VR
 #include "video_core/renderer_vulkan/vr/vr_stereo.h" // VR
 
 namespace Vulkan {
@@ -532,6 +533,13 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                           regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
                           regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
     }
+    // VR fork (vr_object_motion.h): in VR with DLSS the cars' G-buffer draws, by their stencil.
+    const bool vr_motion = Shader::MotionVectors::positions_address != 0 && Vr::ObjectMotion::Wanted() &&
+                           !regs.color_buffers[Shader::MotionVectors::Output] && regs.depth_buffer.DepthValid() &&
+                           regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
+                           regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs &&
+                           Vr::ObjectMotion::CarDraw(regs);
+    motion_possible = motion_possible || vr_motion;
     sel.motion = false;
 
     // First pass to fill render target information needed by shader recompiler
@@ -606,7 +614,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
             const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
             return value && value[0] == '1';
         }();
-        if (all_motion) {
+        if (all_motion || vr_motion) {
             sel.motion = true;
         }
         if (sel.motion && !RefreshGraphicsStages(sel)) {

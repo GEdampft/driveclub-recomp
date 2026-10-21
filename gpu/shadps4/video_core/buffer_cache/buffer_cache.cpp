@@ -699,6 +699,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     const u64 uploaded_before = BbStats::buffer_upload_bytes.load(std::memory_order_relaxed);
     if (is_written) {
         ReadbackHybrid::NoteGpuWritten(device_addr, size, true); // VR fork: before its pages are protected
+        ReadbackHybrid::NoteWriter(device_addr, size);           // VR fork: late outputs
     }
     SynchronizeMemory(arena, device_addr, size, is_written, is_texel_buffer);
     if (stats) {

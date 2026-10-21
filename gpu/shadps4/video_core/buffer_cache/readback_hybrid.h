@@ -154,11 +154,101 @@ inline void ForEachNotGpuWritten(VAddr address, u64 size, Func&& func) {
 /// The size of the faulting access, from its instruction (PageManager); 32 (an AVX access) when unknown.
 inline thread_local u32 t_access_size = 32;
 
+// Late outputs: a few shaders write small results the game reads on the CPU every frame or two, and each read was a
+// wait for the GPU to finish the newest work (~120 waits a second, ~0.45 s of game-thread waiting a second at 3200).
+// The game only steers by them (Driveclub: 0xeea18ba7 the scene's average luminance for auto exposure, 0xf558c2c1
+// two probe positions, 0x832138ea/0x89ea5c34 and 0x2f6a12bc small lighting tables), so a frame-old value does: their
+// bytes count as the game's own (an access to only those is stepped, no readback), and they are copied back into
+// guest memory once the GPU finishes them (small_writeback.cpp), like a fast page's but without making the page fast:
+// other GPU bytes on it (GDS counters) stay exact. A write by any other GPU work over such bytes makes them exact
+// again. Ignoring the four outputs entirely gave 84 FPS against 79.5 at 3200. BB_HYBRID_LATE=<hex,...> replaces the
+// list, 0 turns it off.
+inline bool LateWriter(u64 shader_hash) {
+    static const std::vector<u64> hashes = [] {
+        std::vector<u64> list;
+        const char* v = std::getenv("BB_HYBRID_LATE");
+        if (!v) {
+            v = "eea18ba7,f558c2c1,832138ea,89ea5c34,2f6a12bc";
+        }
+        while (*v) {
+            char* end = nullptr;
+            const u64 h = std::strtoull(v, &end, 16);
+            if (end == v) {
+                break;
+            }
+            if (h) {
+                list.push_back(h);
+            }
+            v = *end ? end + 1 : end;
+        }
+        return list;
+    }();
+    return Enabled() && std::find(hashes.begin(), hashes.end(), shader_hash) != hashes.end();
+}
+/// Set by the rasterizer around a late output's ObtainBuffer.
+inline thread_local bool t_late_writer = false;
+inline std::mutex g_late_mutex;
+inline std::map<VAddr, std::vector<std::pair<u16, u16>>> g_late; // page -> late output ranges [begin, end) on it
+inline std::atomic<u32> g_late_pages{0};
+
+/// Every GPU-written range (BufferCache::ObtainBuffer): a late output's ranges on its first and last pages are noted
+/// (the pages between are read back as usual); any other write takes the noted ranges it overlaps away.
+inline void NoteWriter(VAddr address, u64 size) {
+    if (!size || (!t_late_writer && g_late_pages.load(std::memory_order_relaxed) == 0)) {
+        return;
+    }
+    const VAddr end = address + size;
+    std::scoped_lock lk{g_late_mutex};
+    if (t_late_writer) {
+        const auto note = [&](VAddr begin, VAddr stop) {
+            const VAddr page = begin & ~VAddr(4095);
+            auto& ranges = g_late[page];
+            const std::pair<u16, u16> r{u16(begin - page), u16(stop - page)}; // an end of 4096 fits
+            if (std::find(ranges.begin(), ranges.end(), r) == ranges.end() && ranges.size() < 16) {
+                ranges.push_back(r);
+            }
+        };
+        const VAddr first_end = std::min(end, (address | 4095) + 1);
+        note(address, first_end);
+        if (end > first_end) {
+            note(std::max(first_end, (end - 1) & ~VAddr(4095)), end);
+        }
+    } else {
+        for (auto it = g_late.lower_bound(address & ~VAddr(4095)); it != g_late.end() && it->first < end;) {
+            const VAddr page = it->first;
+            std::erase_if(it->second, [&](const std::pair<u16, u16>& r) {
+                return page + r.first < end && address < page + r.second;
+            });
+            it = it->second.empty() ? g_late.erase(it) : std::next(it);
+        }
+    }
+    g_late_pages.store(u32(g_late.size()), std::memory_order_relaxed);
+}
+
+/// [begin, end) (within one page) lies in a late output's range.
+inline bool LateBytes(VAddr begin, VAddr end) {
+    if (g_late_pages.load(std::memory_order_relaxed) == 0) {
+        return false;
+    }
+    const VAddr page = begin & ~VAddr(4095);
+    std::scoped_lock lk{g_late_mutex};
+    const auto it = g_late.find(page);
+    if (it == g_late.end()) {
+        return false;
+    }
+    for (const auto& [b, e] : it->second) {
+        if (begin - page >= b && end - page <= e) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// The bytes a faulting access touches (from its first byte, t_access_size, on its page) hold no GPU data still to be
-/// read back.
+/// read back, or only late outputs.
 inline bool OwnBytes(VAddr address) {
-    const VAddr page_end = (address & ~VAddr(4095)) + 4096;
-    return !GpuWroteBytes(address, std::min<VAddr>(address + t_access_size, page_end) - address);
+    const VAddr end = std::min<VAddr>(address + t_access_size, (address & ~VAddr(4095)) + 4096);
+    return !GpuWroteBytes(address, end - address) || LateBytes(address, end);
 }
 
 /// Set by the fault handler around a guest write to its own bytes: the tracker marks the page CPU modified without a

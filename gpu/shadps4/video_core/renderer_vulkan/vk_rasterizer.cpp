@@ -19,6 +19,7 @@
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
+#include "video_core/buffer_cache/readback_hybrid.h" // VR fork: late outputs
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "bbport_recent.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
@@ -2691,8 +2692,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     LOG_ERROR(Render, "Clamped size from {} to {} for stage {:#x}",
                               vsharp.GetSize(), size, stage.pgm_hash);
                 }
+                VideoCore::ReadbackHybrid::t_late_writer = // VR fork: readback_hybrid.h
+                    desc.is_written && VideoCore::ReadbackHybrid::LateWriter(stage.pgm_hash);
                 const auto [buffer, offset] = buffer_cache.ObtainBuffer(
                     vsharp.base_address, size, desc.is_written, desc.is_formatted);
+                VideoCore::ReadbackHybrid::t_late_writer = false;
                 const u64 offset_aligned = Common::AlignDown(offset, alignment);
                 const u64 adjust = offset - offset_aligned;
                 if (adjust % 4 != 0) {

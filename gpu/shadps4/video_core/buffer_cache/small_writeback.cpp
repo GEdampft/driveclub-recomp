@@ -38,6 +38,7 @@ const u64 MaxSmallWrite = [] {
 struct Range {
     VAddr addr;
     u64 size;
+    bool late = false; ///< readback_hybrid.h: a late output's bytes, written back on any page
 };
 
 struct Job {
@@ -97,6 +98,17 @@ void BufferCache::NoteSmallGpuWrite(VAddr device_addr, u64 size) {
         }
     }
     if (size == 0 || !Enabled()) {
+        return;
+    }
+    if (ReadbackHybrid::t_late_writer) { // readback_hybrid.h: its bytes on its first and last pages
+        const VAddr end = device_addr + size;
+        const VAddr first_end = std::min(end, (device_addr | 4095) + 1);
+        std::scoped_lock lk{g_mutex};
+        g_noted.push_back({device_addr, first_end - device_addr, true});
+        if (end > first_end) {
+            const VAddr last_begin = std::max(first_end, (end - 1) & ~VAddr(4095));
+            g_noted.push_back({last_begin, end - last_begin, true});
+        }
         return;
     }
     if (size > MaxSmallWrite) {
@@ -190,7 +202,7 @@ void BufferCache::WriteBackSmallWrites() {
                 memory->TryWriteBacking(std::bit_cast<u8*>(job.ranges[i].addr), gpu, job.ranges[i].size);
                 continue;
             }
-            MergeCopyBack(job.ranges[i].addr, gpu, job.ranges[i].size, false);
+            MergeCopyBack(job.ranges[i].addr, gpu, job.ranges[i].size, job.ranges[i].late);
         }
         staging_pool.FreeDeferred(job.staging);
         g_jobs.pop_front();
@@ -212,6 +224,7 @@ void BufferCache::WriteBackSmallWrites() {
     u64 total = 0;
     for (const Range& range : ranges) {
         if (range.addr + range.size <= covered_end) {
+            job.ranges.back().late |= range.late;
             continue;
         }
         job.ranges.push_back(range);

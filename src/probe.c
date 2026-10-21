@@ -302,11 +302,19 @@ static DWORD WINAPI crash_dump_worker(LPVOID unused) {
 }
 
 static void note_exit(void) {
+    runtime_ffb_release("the game quit");
     puts("Runtime: the process ended normally");
     fflush(NULL);
 }
+/* The console window closed (or Ctrl+C, log off, shut down): Windows ends the process right after this. */
+static BOOL WINAPI console_closing(DWORD event) {
+    (void)event;
+    runtime_ffb_release("the console closed");
+    return FALSE;
+}
 static void on_abort(int signal_number) {
     (void)signal_number;
+    runtime_ffb_release("abort");
     fputs("Fatal: abort() was called (a failed check in the runtime or a library)", stderr);
     fputc(10, stderr);
     fflush(NULL);
@@ -417,6 +425,7 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
         }
     }
     write_crash_dump(info);
+    runtime_ffb_release("a crash");
     fputs("Runtime: the process was ended after the fault above",stderr);
     fputc(10,stderr);
     fflush(NULL);
@@ -694,6 +703,7 @@ void runtime_restart(void) {
     }
     CloseHandle(process.hThread); CloseHandle(process.hProcess);
     /* The new launch waits for this process's GPU device to go away (run.py --after). */
+    runtime_ffb_release("restart");
     TerminateProcess(GetCurrentProcess(),0);
 #else
     puts("Runtime: restarting through run.sh");
@@ -944,6 +954,7 @@ int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(unhandled_fault);
     atexit(note_exit);
     signal(SIGABRT,on_abort);
+    SetConsoleCtrlHandler(console_closing,TRUE);
     if (getenv("BB_STRICT_HANDLES")) {
         PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict={0};
         strict.RaiseExceptionOnInvalidHandleReference=1;

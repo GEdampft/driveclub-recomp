@@ -15,6 +15,8 @@ typedef bb_jmp_buf sigjmp_buf;
 extern __thread sigjmp_buf *runtime_fault_recover;
 /* Restarts the game (in-game settings menu, render resolution change). */
 void runtime_restart(void);
+/* Stops the wheel's forces and lets it go (runtime_logiwheel.inc): before the process ends any way it can. */
+void runtime_ffb_release(const char *why);
 #define ABI __attribute__((sysv_abi))
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);

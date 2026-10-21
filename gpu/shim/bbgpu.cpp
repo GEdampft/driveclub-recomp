@@ -197,6 +197,8 @@ u32 BbDisplayRefreshHz() {
     return hz;
 }
 
+extern "C" void runtime_ffb_release(const char* why); // src/runtime_logiwheel.inc: the wheel's forces off
+
 #ifdef BB_PGO_GENERATE
 extern "C" void __gcov_dump(void);
 extern "C" void __gcov_reset(void);
@@ -231,6 +233,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         }
         std::fputc(10, stdout);
         bbgpu_print_recent_passes();
+        runtime_ffb_release("a fatal GPU error");
         std::fflush(nullptr);
         _exit(21);
     });
@@ -260,6 +263,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
             SDL_Delay(2);
         }
         LOG_INFO(Frontend, "Window closed by user");
+        runtime_ffb_release("the window closed");
         std::fflush(stdout);
         std::_Exit(0);
     });

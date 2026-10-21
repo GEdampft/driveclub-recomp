@@ -263,6 +263,70 @@ static void ffb_log_params(const char *what, int id, const LogiEffectParams *p) 
     if (ffb_log() && n++<400) printf("Runtime: FFB %s %d: type %u a %d b %d c %d d %d e %d f %d\n",what,id,p->type,p->a,p->b,p->c,p->d,p->e,p->f);
 }
 
+/* Safety: the force the game set last keeps playing in the wheel until something stops it, after the game is gone
+ * too (the runtime ends through _Exit or TerminateProcess): a direct drive base then spins or pushes into its lock
+ * until it is reconnected. runtime_ffb_release asks the haptic thread to stop everything and let the wheel go before
+ * the process ends; while the game does not read the wheel (hung, stuck loading) its forces are stopped. */
+static volatile bool ffb_release_asked, ffb_release_done;
+static const char *volatile ffb_release_why;
+static uint64_t ffb_last_read_us;   /* when the game last read the wheel (logiWheelReadState) */
+static bool ffb_held;               /* the forces are stopped because the game stopped reading the wheel */
+/* At the start of each pass of the haptic thread. True: no pass now (ffb_release_asked: the thread ends). */
+static bool ffb_guard(SDL_Haptic **haptic, bool *running) {
+    if (ffb_release_asked) {
+        if (*haptic) {
+            SDL_StopHapticEffects(*haptic);
+            if (SDL_GetHapticFeatures(*haptic)&SDL_HAPTIC_GAIN) SDL_SetHapticGain(*haptic,0);
+            SDL_CloseHaptic(*haptic); *haptic=NULL;
+            printf("Runtime: FFB released (%s): the wheel's forces are stopped\n",ffb_release_why);
+            fflush(stdout);
+        }
+        ffb_release_done=true;
+        return true;
+    }
+    if (!*haptic) return false;
+    const uint64_t last=__atomic_load_n(&ffb_last_read_us,__ATOMIC_RELAXED);
+    if (last && now_us()-last>500000) {
+        if (!ffb_held) {
+            /* The device's gain to 0 silences every effect as it is (the game's and any other), and back to 100
+             * gives them back; a wheel without a gain has its effects stopped and started again. */
+            ffb_held=true;
+            if (SDL_GetHapticFeatures(*haptic)&SDL_HAPTIC_GAIN) SDL_SetHapticGain(*haptic,0);
+            else {
+                SDL_StopHapticEffects(*haptic);
+                for (int i=0;i<LOGI_EFFECTS;++i) running[i]=false;
+            }
+            static unsigned n; if (n++<20) printf("Runtime: FFB: the game stopped reading the wheel; its forces are off until it does\n");
+        }
+        return true;
+    }
+    if (ffb_held) {
+        ffb_held=false;
+        if (SDL_GetHapticFeatures(*haptic)&SDL_HAPTIC_GAIN) SDL_SetHapticGain(*haptic,100);
+        else {
+            /* the effects as the game has them now (it may have changed them meanwhile) start again */
+            pthread_mutex_lock(&ffb.m);
+            for (int i=0;i<LOGI_EFFECTS;++i) ffb.fx[i].dirty=ffb.fx[i].used;
+            pthread_mutex_unlock(&ffb.m);
+        }
+        static unsigned n; if (n++<20) printf("Runtime: FFB: the game reads the wheel again; forces back on\n");
+    }
+    return false;
+}
+/* Before the process ends any way the runtime controls it (window closed, quit, crash...). Waits at most 300 ms:
+ * from a crash handler the device may never answer, and the process must still end. */
+void runtime_ffb_release(const char *why) {
+    static int once;
+    if (__atomic_exchange_n(&once,1,__ATOMIC_ACQ_REL)) return;
+    pthread_mutex_lock(&ffb.m);
+    const bool started=ffb.started;
+    pthread_mutex_unlock(&ffb.m);
+    if (!started) return;
+    ffb_release_why=why;
+    ffb_release_asked=true;
+    for (int i=0;i<75 && !ffb_release_done;++i) compat_sleep_ns(4000000);
+}
+
 /* The haptic thread: opens the wheel's force feedback and keeps its effects as the game last asked. */
 static void *ffb_thread(void *unused) {
     (void)unused;
@@ -275,6 +339,7 @@ static void *ffb_thread(void *unused) {
         compat_sleep_ns(4000000); /* 4 ms */
         const uint64_t pass_now=now_us(), pass_us=pass_now-pass_at;   /* the time this pass stands for */
         pass_at=pass_now;
+        if (ffb_guard(&haptic,running)) { if (ffb_release_asked) return NULL; continue; }
         if (!haptic) {
             pthread_mutex_lock(&lock);
             SDL_Joystick *j=wheel;
@@ -314,6 +379,7 @@ static void *ffb_thread(void *unused) {
                 compat_sleep_ns(1000000000);
                 continue;
             }
+            SDL_StopHapticEffects(haptic);   /* forces a previous run left playing (a killed process) end here */
             const Uint32 f=SDL_GetHapticFeatures(haptic);
             printf("Runtime: FFB on %s: constant %s, spring %s, damper %s, square %s, gain %s\n",SDL_GetHapticName(haptic),
                    f&SDL_HAPTIC_CONSTANT ? "yes" : "no",f&SDL_HAPTIC_SPRING ? "yes" : "no",f&SDL_HAPTIC_DAMPER ? "yes" : "no",
@@ -451,6 +517,7 @@ static ABI int32_t logi_term(void) { return LOGI_OK; }
  * (0..65535), shifter gear at +0x10, the pad buttons from +0x11. Filled from the wheel port's last read. */
 static ABI int32_t logi_read_state(uint8_t *state) {
     if (!state) return LOGI_ERR_ARG;
+    __atomic_store_n(&ffb_last_read_us,now_us(),__ATOMIC_RELAXED);
     if (!logi_connected()) return LOGI_ERR_NOT_CONNECTED;
     /* The wheel now, with the buttons of the pad last read on the wheel port (gamepad, keyboard and wheel). */
     PadData d; memset(&d,0,sizeof d);

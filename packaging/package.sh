@@ -21,6 +21,7 @@ clang -O2 -o out/FfbTest.exe tools/ffb_test.c -static $sdl_static -mconsole
 rm -rf "$OUT"
 mkdir -p "$OUT/runtime/patches"
 cp out/launcher/DriveClub.exe out/WheelSetup.exe out/FfbTest.exe "$OUT/"
+cp "tools/FFB Tuner.ps1" "tools/FFB Tuner.bat" "$OUT/"   # the force feedback sliders, next to DriveClub.exe
 cp out/DriveClubGame.exe "$OUT/runtime/"
 strip --strip-all "$OUT/runtime/DriveClubGame.exe" || true
 cp patches/DriveClub.xml "$OUT/runtime/patches/"

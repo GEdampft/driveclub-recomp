@@ -21,6 +21,37 @@ static struct { int index; uint8_t out_kind; uint32_t button; int touch_side; } 
 static int wheel_button_count;
 static bool ffb_enabled=true, ffb_invert;  /* force feedback (runtime_logiwheel.inc) */
 static int ffb_gain=100, ffb_vibration=100;   /* percent; the strongest forces clip at the wheel's maximum */
+static int ffb_damper=-1;                      /* percent of the game's damper; -1: it follows ffb_gain, as before */
+static int ffb_spring=-1;                      /* percent of the game's centring spring; -1: it follows ffb_gain */
+/* The spring's strongest pull, percent of the wheel's maximum. The game varies the spring's saturation with grip
+ * (255 gripping, 15..40 sliding): with a limit set, that range is scaled into the limit, so the grip stays in the
+ * force. -1: the saturation follows the gain and clips at the wheel's maximum, as before. */
+static int ffb_spring_limit=-1;
+static bool ffb_sine;                          /* the game's vibrations as sine waves (road texture on a direct drive) */
+/* The game's two vibrations apart: kerbs and rumble strips (its 55..82 ms wave) and the road surface (its 20..30 ms
+ * wave, on nearly all the time). Percent; -1: wheel_ffb_vibration. ffb_texture_changes: only the surface's changes
+ * (above its own average of the last second or so), not its steady hum. */
+static int ffb_kerbs=-1, ffb_texture=-1;
+static bool ffb_texture_changes;
+/* ffb_long_rumble: percent of the kerb wave kept once it has been on for more than 0.6 s (wheelspin, burnouts);
+ * ffb_vibration_limit: the strongest any vibration may be, percent of the wheel's maximum; the game's strongest
+ * wave at ffb_kerbs / ffb_texture = 100 gives exactly that. 25: the game's strongest (64 of Logitech's 255), as
+ * before these settings. */
+static int ffb_long_rumble=100, ffb_vibration_limit=25;
+/* ffb_vibration_response: percent; below 100 small vibrations are lifted (the game's level to the power
+ * response/100) while the strongest stays at the limit. ffb_texture_floor: percent of the road texture's steady
+ * level kept in the changes mode (gravel stays present). */
+static int ffb_vibration_response=100, ffb_texture_floor;
+/* wheel_ffb_model = software: the steering force is worked out here from the game's spring (its target and grip)
+ * every pass of the haptic thread and sent as one force, instead of the game's spring going to the wheel as it is.
+ * ffb_falloff: percent the force drops far past the grip limit; ffb_smoothing_ms: the game's values are followed
+ * this smoothly between its frames; ffb_soft_lock: degrees lock to lock, -1 the game's operating range, 0 off. */
+static bool ffb_software;
+static int ffb_falloff=40, ffb_smoothing_ms=8, ffb_soft_lock=-1;
+static int ffb_strength=100;   /* percent: the whole steering force of the software model, clipped at the maximum */
+/* ffb_center: how much more force the first degrees off the target give (0: in proportion, as the game's spring);
+ * ffb_slide: how much more the force drops than the game's grip does (0: as the game's grip). Percent, 0..100. */
+static int ffb_center, ffb_slide;
 
 static SDL_Joystick *wheel;
 static SDL_JoystickID wheel_id;
@@ -70,9 +101,55 @@ static void wheel_parse(const char *lhs, char *rhs) {
         return;
     }
     if (!strcmp(key,"rotation")) { int v=atoi(rhs); wheel_rotation=v<90 ? 90 : v>3600 ? 3600 : v; return; }
-    if (!strcmp(key,"ffb_gain") || !strcmp(key,"ffb_vibration")) {
+    if (!strcmp(key,"ffb_gain") || !strcmp(key,"ffb_vibration") || !strcmp(key,"ffb_damper") || !strcmp(key,"ffb_spring")) {
+        lower(rhs);
         int v=atoi(rhs); v=v<0 ? 0 : v>2000 ? 2000 : v;
-        if (!strcmp(key,"ffb_gain")) ffb_gain=v; else ffb_vibration=v;
+        if (!strcmp(key,"ffb_gain")) ffb_gain=v;
+        else if (!strcmp(key,"ffb_vibration")) ffb_vibration=v;
+        else if (!strcmp(key,"ffb_damper")) ffb_damper=!strcmp(rhs,"gain") ? -1 : v;
+        else ffb_spring=!strcmp(rhs,"gain") ? -1 : v;
+        return;
+    }
+    if (!strcmp(key,"ffb_spring_limit")) {
+        lower(rhs);
+        const int v=atoi(rhs);
+        ffb_spring_limit=!strcmp(rhs,"off") || !strcmp(rhs,"gain") ? -1 : v<5 ? 5 : v>100 ? 100 : v;
+        return;
+    }
+    if (!strcmp(key,"ffb_vibration_wave")) {
+        lower(rhs);
+        ffb_sine=!strcmp(rhs,"sine");
+        return;
+    }
+    if (!strcmp(key,"ffb_kerbs") || !strcmp(key,"ffb_texture")) {
+        lower(rhs);
+        int v=atoi(rhs); v=v<0 ? 0 : v>2000 ? 2000 : v;
+        if (!strcmp(rhs,"vibration")) v=-1;
+        if (!strcmp(key,"ffb_kerbs")) ffb_kerbs=v; else ffb_texture=v;
+        return;
+    }
+    if (!strcmp(key,"ffb_texture_mode")) {
+        lower(rhs);
+        ffb_texture_changes=!strcmp(rhs,"changes");
+        return;
+    }
+    if (!strcmp(key,"ffb_vibration_response")) { const int v=atoi(rhs); ffb_vibration_response=v<20 ? 20 : v>100 ? 100 : v; return; }
+    if (!strcmp(key,"ffb_texture_floor")) { const int v=atoi(rhs); ffb_texture_floor=v<0 ? 0 : v>100 ? 100 : v; return; }
+    if (!strcmp(key,"ffb_long_rumble") || !strcmp(key,"ffb_vibration_limit")) {
+        int v=atoi(rhs); v=v<0 ? 0 : v>100 ? 100 : v;
+        if (!strcmp(key,"ffb_long_rumble")) ffb_long_rumble=v; else ffb_vibration_limit=v;
+        return;
+    }
+    if (!strcmp(key,"ffb_model")) { lower(rhs); ffb_software=!strcmp(rhs,"software"); return; }
+    if (!strcmp(key,"ffb_strength")) { const int v=atoi(rhs); ffb_strength=v<0 ? 0 : v>1000 ? 1000 : v; return; }
+    if (!strcmp(key,"ffb_center")) { const int v=atoi(rhs); ffb_center=v<0 ? 0 : v>100 ? 100 : v; return; }
+    if (!strcmp(key,"ffb_slide")) { const int v=atoi(rhs); ffb_slide=v<0 ? 0 : v>100 ? 100 : v; return; }
+    if (!strcmp(key,"ffb_falloff")) { const int v=atoi(rhs); ffb_falloff=v<0 ? 0 : v>100 ? 100 : v; return; }
+    if (!strcmp(key,"ffb_smoothing")) { const int v=atoi(rhs); ffb_smoothing_ms=v<0 ? 0 : v>100 ? 100 : v; return; }
+    if (!strcmp(key,"ffb_soft_lock")) {
+        lower(rhs);
+        const int v=atoi(rhs);
+        ffb_soft_lock=!strcmp(rhs,"game") ? -1 : !strcmp(rhs,"off") ? 0 : v<90 ? 0 : v>3600 ? 3600 : v;
         return;
     }
     if (!strcmp(key,"as_stick") || !strcmp(key,"hat_dpad") || !strcmp(key,"ffb") || !strcmp(key,"ffb_invert")) {
@@ -145,6 +222,31 @@ static const char wheel_default_config[]=
     "# the game's steering forces are light on most wheels, so several hundred is normal; the strongest forces clip\n"
     "# at the wheel's maximum). wheel_ffb_vibration: the same for the road and kerb vibrations (0..2000), which the\n"
     "# game keeps weak (at most 25%).\n"
+    "# wheel_ffb_damper: percent of the game's damper, the resistance to turning the wheel at all (0..2000), or gain\n"
+    "# (it follows wheel_ffb_gain). Lower it when the wheel feels heavy and dull at a high gain.\n"
+    "# wheel_ffb_spring: percent of the game's road-feel spring, which pulls the wheel to where the tyres want it\n"
+    "# (0..2000), or gain. wheel_ffb_spring_limit: its strongest pull, percent of the wheel's maximum (5..100), or\n"
+    "# off: lower it when the wheel fights back too hard far from the centre (holding a drift). The game makes the\n"
+    "# spring lighter as the tyres lose grip; with a limit that lightening is kept in proportion.\n"
+    "# wheel_ffb_vibration_wave: square (as the game asks) or sine (smoother road texture on a direct drive wheel).\n"
+    "# wheel_ffb_vibration_limit: the strongest any vibration may be, percent of the wheel's maximum (0..100).\n"
+    "# wheel_ffb_kerbs and wheel_ffb_texture: the two vibrations apart, kerbs and rumble strips (also wheelspin) and\n"
+    "# the road surface, as percent of that limit at the game's strongest (0..100, or vibration: wheel_ffb_vibration).\n"
+    "# wheel_ffb_texture_mode: full, or changes (only the surface's changes, rough patches and going off the road,\n"
+    "# without the steady hum).\n"
+    "# wheel_ffb_texture_floor: in the changes mode, percent of the steady level kept (0..100; gravel stays present).\n"
+    "# wheel_ffb_vibration_response: 100 in proportion to the game; lower lifts small vibrations (20..100).\n"
+    "# wheel_ffb_long_rumble: percent of the kerb vibration kept when it goes on for more than about half a second\n"
+    "# (wheelspin, burnouts; 0..100).\n"
+    "# wheel_ffb_model: game (the game's spring goes to the wheel as it is) or software (the steering force is worked\n"
+    "# out here, smoothed between the game's frames, and falls off past the grip limit). With software:\n"
+    "# wheel_ffb_strength: percent of the steering force (0..1000; the log's \"FFB clipping\" lines say how often it\n"
+    "# is at the wheel's maximum, where detail is lost: keep that low);\n"
+    "# wheel_ffb_center: more force in the first degrees off centre (0..100; 0: in proportion, as the game);\n"
+    "# wheel_ffb_slide: the force drops more than the game's grip as the tyres slide (0..100; 0: as the game);\n"
+    "# wheel_ffb_falloff: percent the force drops far past the grip limit (0..100; 0 holds it, as the game does);\n"
+    "# wheel_ffb_smoothing: milliseconds (0..100); wheel_ffb_soft_lock: game (the steering lock the game asks for),\n"
+    "# off, or degrees lock to lock: a force stops the wheel there.\n"
     "# wheel_ffb_invert = true if the wheel pulls the wrong way.\n"
     "# H-pattern shifter: wheel_shifter = auto (a controller named \"Shifter\"), wheel (its buttons are on the wheel),\n"
     "# off, or part of its name; then one line per gear: wheel_gear = <button number>, <1..6 or r>. WheelSetup.exe\n"

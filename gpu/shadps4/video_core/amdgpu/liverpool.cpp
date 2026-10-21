@@ -299,6 +299,9 @@ void RunEventWriteEop(Vulkan::Rasterizer& rasterizer, const u8* data) {
         // Labels are written in order: not before the ones deferred to the recording thread.
         rasterizer.WaitHostCopies();
         rasterizer.WaitDeferredSignals();
+        if (rasterizer.GetBufferCache().DeferGdsFence(reinterpret_cast<VAddr>(eop.Address<u32>()), [eop] { SignalEop(eop); })) {
+            return; // VR fork: gds_fence.cpp
+        }
         SignalEop(eop);
     }
 }

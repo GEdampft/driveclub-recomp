@@ -3690,16 +3690,16 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         if (dst_gds) {
             return {gds_buffer, dst};
         }
-        // VR fork: the counters at GDS offset 0 (the vegetation clusters' visibility bits, floating clumps when
-        // read a frame late) stay exact; the others (offset 4, ~2/3 of the polls) are served a frame late as vr1.1
-        // did. BB_HYBRID_GDS_EXACT_MAX=<offset> raises the bound (4096: all).
-        static const u32 exact_max = std::getenv("BB_HYBRID_GDS_EXACT_MAX")
-                                         ? u32(std::atoi(std::getenv("BB_HYBRID_GDS_EXACT_MAX"))) : 0u;
-        if (src_gds && src <= exact_max) {
-            VideoCore::ReadbackHybrid::MarkGdsCopyTarget(dst, num_bytes); // VR fork: never a fast page
-            VideoCore::ReadbackHybrid::NoteGdsCopyTick(dst, num_bytes, scheduler.CurrentTick() + 1); // TEMP
+        // VR fork: a GDS counter's bytes are a late output (readback_hybrid.h: an access to them steps, no readback)
+        // and the fence after the copy is written once the copy is done (gds_fence.cpp); BB_HYBRID_GDS_EXACT=1 keeps
+        // their pages exact instead.
+        if (src_gds) {
+            VideoCore::ReadbackHybrid::MarkGdsCopyTarget(dst, num_bytes);
+            VideoCore::ReadbackHybrid::t_late_writer = !VideoCore::ReadbackHybrid::GdsExact();
         }
-        return buffer_cache.ObtainBuffer(dst, num_bytes, true, true);
+        const auto result = buffer_cache.ObtainBuffer(dst, num_bytes, true, true);
+        VideoCore::ReadbackHybrid::t_late_writer = false;
+        return result;
     }();
     const vk::BufferCopy copy = {
         .srcOffset = src_offset,
@@ -3708,8 +3708,11 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
     };
     runtime.CopyBuffer(src_buffer, dst_buffer, std::span{&copy, 1});
     // VR fork: a GDS counter copied to memory is polled by the game right after (the vegetation clusters' visibility
-    // bits among them); its page stays exact (readback_hybrid.h MarkGdsCopyTarget), and submitting now lets that
-    // poll wait for this copy alone instead of the frame's draws queued behind it. BB_GDS_FLUSH=0 turns it off.
+    // bits among them): its bytes go on into staging for the fence that follows (gds_fence.cpp), and submitting now
+    // gets the copy to the GPU ahead of the frame's draws queued behind it. BB_GDS_FLUSH=0 turns the submit off.
+    if (src_gds && !dst_gds) {
+        buffer_cache.NoteGdsCopy(dst_buffer, dst_offset, dst, num_bytes);
+    }
     static const bool gds_flush = !(std::getenv("BB_GDS_FLUSH") && std::getenv("BB_GDS_FLUSH")[0] == '0');
     if (src_gds && !dst_gds && gds_flush && VideoCore::ReadbackHybrid::Enabled()) {
         scheduler.Flush();

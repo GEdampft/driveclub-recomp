@@ -4,6 +4,7 @@
 #pragma once
 
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 
 #include "bbport_copy.h"
@@ -118,6 +119,10 @@ public:
     /// VR fork (small_writeback.cpp): small GPU writes reach guest memory with readbacks off.
     void NoteSmallGpuWrite(VAddr device_addr, u64 size);
     void WriteBackSmallWrites();
+    static bool GdsFencesEnabled();                                                   // VR fork: gds_fence.cpp
+    void NoteGdsCopy(const Buffer* dst_buffer, u64 dst_offset, VAddr dst, u32 size); // VR fork: gds_fence.cpp
+    bool DeferGdsFence(VAddr fence, std::function<void()> signal);                   // VR fork: gds_fence.cpp
+    void GdsFenceWorker();                                                           // VR fork: gds_fence.cpp
     void MergeCopyBack(VAddr addr, const u8* gpu, u64 size, bool other_pages); // VR fork: readback_hybrid.h
 
 private:

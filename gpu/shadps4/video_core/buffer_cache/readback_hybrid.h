@@ -309,9 +309,15 @@ inline u64 GdsCopyTick(VAddr address) {
     return it == g_gds_tick.end() ? 0 : it->second;
 }
 
+/// BB_HYBRID_GDS_EXACT=1: the pages GDS counters are copied to are exact (every poll a readback wait, 6 FPS at 3200)
+/// instead of the counter bytes being late outputs with their fence written once the copy is done (gds_fence.cpp).
+inline bool GdsExact() {
+    static const bool on = std::getenv("BB_HYBRID_GDS_EXACT") && std::getenv("BB_HYBRID_GDS_EXACT")[0] == '1';
+    return on;
+}
+
 inline void MarkGdsCopyTarget(VAddr address, u64 size) {
-    static const bool exact = !(std::getenv("BB_HYBRID_GDS_EXACT") && std::getenv("BB_HYBRID_GDS_EXACT")[0] == '0');
-    if (!exact || !Enabled() || !size) {
+    if (!GdsExact() || !Enabled() || !size) {
         return;
     }
     static const bool log = std::getenv("BB_READBACK_CLASSIFY") != nullptr;

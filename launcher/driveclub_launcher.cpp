@@ -1197,6 +1197,9 @@ void LayoutPass(float bottom_extra) {
   // and the other columns have room, so the folders card goes into one of them instead of taking a full-width strip.
   g_folders_in_flow = g_cols >= 3;
   const float folders_h = kTitleH + 2 * FolderRowHeight() + kPad * 0.4f + 8.f;
+  // On the Graphics tab only (the first a player sees); elsewhere it is off the page.
+  const bool folders_shown = g_tab == kTabGraphics;
+  g_folders_rect = RectF(-1e6f, -1e6f, 0.f, 0.f);
   const float content_top = kHeaderH + kTabH + (HasSubTabs() ? kSubTabH : 0.f);
   {
     // a full-width bar of equal halves under the main tabs, so the inner tabs cannot be missed
@@ -1215,7 +1218,7 @@ void LayoutPass(float bottom_extra) {
     }
   }
   float y[4];
-  for (float& v : y) v = content_top + (g_folders_in_flow ? 0.f : folders_h + kGap);
+  for (float& v : y) v = content_top + (g_folders_in_flow || !folders_shown ? 0.f : folders_h + kGap);
   for (auto& c : g_c) c.row = c.ctl = RectF(-10000.f, -10000.f, 0.f, 0.f);  // VR fork: only shown rows get a place
   // Card heights; the tallest cards are placed first, each into the shortest column. Only the cards of the
   // current tab are placed; the others move off the page, so they neither draw nor catch the mouse.
@@ -1248,7 +1251,7 @@ void LayoutPass(float bottom_extra) {
   }
   // The folders card, when in a column, takes part as index g_cards.size() and goes on top of its column.
   const size_t folders_k = g_cards.size();
-  if (g_folders_in_flow) {
+  if (g_folders_in_flow && folders_shown) {
     heights[folders_k] = place[folders_k] = folders_h;
     order.push_back(folders_k);
   }
@@ -1295,14 +1298,14 @@ void LayoutPass(float bottom_extra) {
   std::vector<size_t> seq;
   if (!part.empty()) seq.push_back(part[0]);
   if (vr_here && g_exp_card > 0) seq.push_back(size_t(g_exp_card));
-  if (g_folders_in_flow && (part.empty() || part[0] != folders_k)) seq.push_back(folders_k);
+  if (g_folders_in_flow && folders_shown && (part.empty() || part[0] != folders_k)) seq.push_back(folders_k);
   for (size_t k : part) {
     if (k != part[0] && k != folders_k) seq.push_back(k);
   }
   for (size_t k : order) {
     if (std::find(seq.begin(), seq.end(), k) == seq.end()) seq.push_back(k);
   }
-  if (!g_folders_in_flow) g_folders_rect = RectF(kMargin, content_top, g_win_w - 2 * kMargin, folders_h);
+  if (!g_folders_in_flow && folders_shown) g_folders_rect = RectF(kMargin, content_top, g_win_w - 2 * kMargin, folders_h);
   int last[4] = {-1, -1, -1, -1};  // the lowest card in each column: it is stretched to the common bottom
   for (size_t k : seq) {
     if (k == folders_k) {

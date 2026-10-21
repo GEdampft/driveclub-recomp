@@ -285,10 +285,29 @@ static void *ffb_thread(void *unused) {
                 printf("Runtime: FFB off: %s\n",SDL_GetError());
                 return NULL;
             }
+            char wheel_name[128]="";
             pthread_mutex_lock(&lock);
-            if ((j=wheel)) haptic=SDL_OpenHapticFromJoystick(j);
+            if ((j=wheel)) {
+                haptic=SDL_OpenHapticFromJoystick(j);
+                snprintf(wheel_name,sizeof wheel_name,"%s",SDL_GetJoystickName(j) ? SDL_GetJoystickName(j) : "");
+            }
             pthread_mutex_unlock(&lock);
             if (!j) continue;
+            if (!haptic && *wheel_name) {
+                /* Some wheels (Fanatec) are several game controllers of one name, and the forces go to another one
+                 * than the axes: the first of that name with a constant force takes them. */
+                char why[256]; snprintf(why,sizeof why,"%s",SDL_GetError());
+                int n=0;
+                SDL_HapticID *hids=SDL_GetHaptics(&n);
+                for (int i=0;hids && i<n && !haptic;++i) {
+                    const char *hn=SDL_GetHapticNameForID(hids[i]);
+                    if (!hn || strcmp(hn,wheel_name) || !(haptic=SDL_OpenHaptic(hids[i]))) continue;
+                    if (!(SDL_GetHapticFeatures(haptic)&SDL_HAPTIC_CONSTANT)) { SDL_CloseHaptic(haptic); haptic=NULL; continue; }
+                    printf("Runtime: FFB: the wheel's own controller has none (%s), forces go to its other \"%s\"\n",why,hn);
+                }
+                SDL_free(hids);
+                if (!haptic) SDL_SetError("%s",why);
+            }
             if (!haptic) {
                 static bool said;
                 if (!said) { said=true; printf("Runtime: FFB: the wheel offers no force feedback to Windows (%s)\n",SDL_GetError()); }

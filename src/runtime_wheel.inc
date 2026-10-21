@@ -56,6 +56,16 @@ static int ffb_center, ffb_slide;
 static SDL_Joystick *wheel;
 static SDL_JoystickID wheel_id;
 static bool wheel_inverted[WAX_COUNT];      /* decided when the wheel is opened (pedals at rest) */
+/* Many wheels and pedals send nothing until an axis moves, and SDL reads such an axis as 0 (half pressed) until then.
+ * A pedal reads released until it leaves the value it had when its controller was opened. */
+static int wheel_rest_raw[WAX_COUNT];
+static bool wheel_touched[WAX_COUNT];
+
+/* Pedals: axes of the wheel (wheel_pedals = wheel) or a controller of their own on another USB (Fanatec, Moza,
+ * Simagic, Heusinkveld... pedals): part of its name. The pedal axis numbers are then that controller's. */
+static char pedals_device[64]="wheel";
+static SDL_Joystick *pedals;
+static SDL_JoystickID pedals_id;
 
 /* H-pattern shifter: a controller of its own (a Logitech Driving Force Shifter on an adapter, ...) or buttons of the
  * wheel. Each wheel_gear line gives the button held in one gear. The game takes the gear the way a Logitech G29
@@ -88,6 +98,7 @@ static void wheel_parse(const char *lhs, char *rhs) {
     const char *key=lhs+6;
     if (!strcmp(key,"device")) { snprintf(wheel_device,sizeof wheel_device,"%s",rhs); return; }
     if (!strcmp(key,"shifter")) { snprintf(shifter_device,sizeof shifter_device,"%s",rhs); return; }
+    if (!strcmp(key,"pedals")) { snprintf(pedals_device,sizeof pedals_device,"%s",rhs); return; }
     if (!strcmp(key,"gear")) {
         /* <button number>, <1..6|r> */
         int index=-1; char g[8]="";
@@ -198,12 +209,17 @@ static const char wheel_default_config[]=
     "# Any wheel that Windows lists as a game controller (Moza, Logitech, Thrustmaster, Fanatec...) is shown to the game\n"
     "# as a PS4 steering wheel. The log (logs\\driveclub_*.log) names the wheel that was found and, for the first moves,\n"
     "# the numbers of the axes and buttons you touch (\"Runtime: wheel axis 2 ...\", \"Runtime: wheel button 5\").\n"
-    "# wheel_device: auto (a controller whose name says it is a wheel), off, or part of the name the log shows.\n"
+    "# wheel_device: auto (a controller whose name says it is a wheel), off, or part of the name the log shows;\n"
+    "# a wheel that is several controllers of one name (a Fanatec base is two \"FANATEC Wheel\") is told apart by\n"
+    "# \" @col01\" (part of its device path) or \" @2\" (the second of that name) after the name; WheelSetup writes it.\n"
     "wheel_device = auto\n"
     "# Lock to lock rotation in degrees: the same as in the wheel's own software (Moza Pit House: steering wheel angle).\n"
     "wheel_rotation = 900\n"
     "# Axis numbers (or none). Add \", inverted\" to turn an axis around. A pedal that reads pressed at rest when the\n"
     "# game starts is turned around by itself; \", normal\" stops that.\n"
+    "# wheel_pedals: wheel (the pedals are plugged into the wheel) or part of the name of the pedals' own controller\n"
+    "# when they have a USB of their own; the pedal axis numbers are then that controller's.\n"
+    "wheel_pedals = wheel\n"
     "wheel_steering = 0\n"
     "wheel_throttle = 1\n"
     "wheel_brake = 2\n"
@@ -272,10 +288,38 @@ static void wheel_config_append(const char *path) {
     fclose(f);
     printf("Runtime: steering wheel settings added to %s\n",path);
 }
+static bool pedals_separate(void) {
+    char want[64]; snprintf(want,sizeof want,"%s",pedals_device); lower(want); trim(want);
+    return *want && strcmp(want,"wheel") && strcmp(want,"auto");
+}
+static bool pedals_name_matches(const char *name) {
+    if (!pedals_separate()) return false;
+    char n[128]; snprintf(n,sizeof n,"%s",name ? name : ""); lower(n);
+    char want[64]; snprintf(want,sizeof want,"%s",pedals_device); lower(want); trim(want);
+    return strstr(n,want)!=NULL;
+}
+/* wheel_device in lower case without its " @<which>" (not '#': that starts a comment in default.ini), for wheels that are several controllers of one name (a Fanatec
+ * base is two "FANATEC Wheel"): which is part of the controller's device path (col01: the HID collection, which stays
+ * the same from start to start, unlike the order Windows lists them in) or a number, the n-th of that name. */
+static void wheel_device_want(char *want, size_t size, char *which, size_t which_size) {
+    snprintf(want,size,"%s",wheel_device); lower(want); trim(want);
+    which[0]=0;
+    char *at=strrchr(want,'@');
+    if (!at || at==want || at[-1]!=' ' || !at[1]) return;
+    snprintf(which,which_size,"%s",at+1); trim(which);
+    *at=0; trim(want);
+}
+static bool wheel_which_matches(SDL_JoystickID id, const char *which, int *matched) {
+    if (!*which) return true;
+    if (atoi(which)>0) return ++*matched==atoi(which);
+    char path[512]; snprintf(path,sizeof path,"%s",SDL_GetJoystickPathForID(id) ? SDL_GetJoystickPathForID(id) : ""); lower(path);
+    return strstr(path,which)!=NULL;
+}
 static bool wheel_name_matches(const char *name) {
     char n[128]; snprintf(n,sizeof n,"%s",name ? name : ""); lower(n);
-    char want[64]; snprintf(want,sizeof want,"%s",wheel_device); lower(want); trim(want);
+    char want[64], which[32]; wheel_device_want(want,sizeof want,which,sizeof which);
     if (strcmp(want,"auto")) return *want && strstr(n,want)!=NULL;
+    if (strstr(n,"pedal")) return false;   /* "FANATEC ClubSport Pedals" and the like are no wheel */
     static const char *const words[]={"wheel","moza","racing","fanatec","thrustmaster","simagic","simucube","cammus",
                                       "logitech g2","logitech g9","g29","g920","g923","t300","t248","t150","t500","tx racing"};
     for (size_t i=0;i<sizeof(words)/sizeof(*words);++i) if (strstr(n,words[i])) return true;
@@ -283,6 +327,18 @@ static bool wheel_name_matches(const char *name) {
 }
 static int axis_raw(SDL_Joystick *j, int axis) {
     return axis>=0 && axis<SDL_GetNumJoystickAxes(j) ? SDL_GetJoystickAxis(j,axis) : -32768;
+}
+/* Takes the rest value of axis a of controller j, just opened with the pedals at rest, and decides whether it reads
+ * backwards. */
+static void wheel_take_rest(SDL_Joystick *j, int a, const char *what) {
+    wheel_rest_raw[a]=axis_raw(j,wheel_axis[a].axis);
+    wheel_touched[a]=false;
+    /* A pedal at rest sits at one end of its axis; at the top end it reads backwards. An axis that has sent nothing
+     * yet reads 0: wheel_value decides when it first moves. */
+    wheel_inverted[a]=wheel_axis[a].invert==WINV_YES ||
+                      (wheel_axis[a].invert==WINV_AUTO && wheel_axis[a].axis>=0 && wheel_rest_raw[a]>16384);
+    if (wheel_axis[a].axis>=0)
+        printf("Runtime: %s %s = axis %d%s\n",what,wheel_axis_names[a],wheel_axis[a].axis,wheel_inverted[a] ? ", inverted" : "");
 }
 /* The connected wheel, opened on first use and after a reconnect; called under lock. */
 static SDL_Joystick *current_wheel(void) {
@@ -299,25 +355,25 @@ static SDL_Joystick *current_wheel(void) {
     last_scan=now;
     int count=0;
     SDL_JoystickID *ids=SDL_GetJoysticks(&count);
+    char want[64], which[32]; wheel_device_want(want,sizeof want,which,sizeof which);
+    int matched=0;
     for (int i=0;ids && i<count && !wheel;++i) {
         const char *name=SDL_GetJoystickNameForID(ids[i]);
         const bool by_type=!SDL_strcasecmp(wheel_device,"auto") && SDL_GetJoystickTypeForID(ids[i])==SDL_JOYSTICK_TYPE_WHEEL;
         if (!by_type && !wheel_name_matches(name)) continue;
+        if (pedals_name_matches(name)) continue;   /* separate pedals of the wheel's brand are not the wheel */
+        if (!wheel_which_matches(ids[i],which,&matched)) continue;
         if (!(wheel=SDL_OpenJoystick(ids[i]))) continue;
         wheel_id=ids[i];
         SDL_UpdateJoysticks();
         printf("Runtime: wheel connected: %s (%d axes, %d buttons, %d hats), %d degrees, reported to the game as a PS4 steering wheel\n",
                name ? name : "?",SDL_GetNumJoystickAxes(wheel),SDL_GetNumJoystickButtons(wheel),SDL_GetNumJoystickHats(wheel),wheel_rotation);
+        printf("Runtime: wheel path %s\n",SDL_GetJoystickPathForID(ids[i]) ? SDL_GetJoystickPathForID(ids[i]) : "?");
         printf("Runtime: wheel axes at rest:");
         for (int a=0;a<SDL_GetNumJoystickAxes(wheel);++a) printf(" %d=%d",a,SDL_GetJoystickAxis(wheel,a));
         printf("\n");
-        for (int a=0;a<WAX_COUNT;++a) {
-            /* A pedal at rest sits at one end of its axis; at the top end it reads backwards. */
-            wheel_inverted[a]=wheel_axis[a].invert==WINV_YES ||
-                              (wheel_axis[a].invert==WINV_AUTO && wheel_axis[a].axis>=0 && axis_raw(wheel,wheel_axis[a].axis)>16384);
-            if (wheel_axis[a].axis>=0)
-                printf("Runtime: wheel %s = axis %d%s\n",wheel_axis_names[a],wheel_axis[a].axis,wheel_inverted[a] ? ", inverted" : "");
-        }
+        /* With pedals of their own only the steering is the wheel's; current_pedals takes the pedals' rest. */
+        for (int a=0;a<(pedals_separate() ? 1 : WAX_COUNT);++a) wheel_take_rest(wheel,a,"wheel");
     }
     if (!wheel && count>0 && ids) {
         static bool listed;
@@ -354,6 +410,43 @@ static SDL_Joystick *current_shifter(void) {
     SDL_free(ids);
     return shifter;
 }
+/* The controller the pedal axes are read from: the wheel, or the pedals' own controller, looked for once a second
+ * while the wheel is connected (NULL until it is found: the pedals read released); called under lock. */
+static SDL_Joystick *current_pedals(void) {
+    if (!pedals_separate()) return wheel;
+    if (!wheel) return NULL;
+    if (pedals && !SDL_JoystickConnected(pedals)) { printf("Runtime: pedals disconnected\n"); SDL_CloseJoystick(pedals); pedals=NULL; pedals_id=0; }
+    if (pedals) return pedals;
+    static uint64_t last_scan;
+    const uint64_t now=now_us();
+    if (last_scan && now-last_scan<1000000) return NULL;
+    last_scan=now;
+    int count=0;
+    SDL_JoystickID *ids=SDL_GetJoysticks(&count);
+    for (int i=0;ids && i<count && !pedals;++i) {
+        if (ids[i]==wheel_id || (shifter && ids[i]==SDL_GetJoystickID(shifter))) continue;
+        const char *name=SDL_GetJoystickNameForID(ids[i]);
+        if (!pedals_name_matches(name) || !(pedals=SDL_OpenJoystick(ids[i]))) continue;
+        pedals_id=ids[i];
+        SDL_UpdateJoysticks();
+        printf("Runtime: pedals connected: %s (%d axes)\n",name ? name : "?",SDL_GetNumJoystickAxes(pedals));
+        printf("Runtime: pedal axes at rest:");
+        for (int a=0;a<SDL_GetNumJoystickAxes(pedals);++a) printf(" %d=%d",a,SDL_GetJoystickAxis(pedals,a));
+        printf("\n");
+        for (int a=WAX_THROTTLE;a<WAX_COUNT;++a) wheel_take_rest(pedals,a,"pedals");
+    }
+    if (!pedals) {
+        static bool listed;
+        if (!listed) {
+            listed=true;
+            printf("Runtime: no pedals named \"%s\" among the game controllers:",pedals_device);
+            for (int i=0;ids && i<count;++i) printf(" \"%s\"",SDL_GetJoystickNameForID(ids[i]) ? SDL_GetJoystickNameForID(ids[i]) : "?");
+            printf(" (wheel_pedals in input_config\\default.ini picks one by name)\n");
+        }
+    }
+    SDL_free(ids);
+    return pedals;
+}
 static uint8_t shifter_gear(SDL_Joystick *w) {
     SDL_Joystick *s=current_shifter();
     char want[16]; snprintf(want,sizeof want,"%s",shifter_device); lower(want); trim(want);
@@ -364,7 +457,17 @@ static uint8_t shifter_gear(SDL_Joystick *w) {
 }
 static uint16_t wheel_value(SDL_Joystick *j, int a) {
     if (wheel_axis[a].axis<0) return a==WAX_STEER ? 32768 : 0;
-    int v=axis_raw(j,wheel_axis[a].axis)+32768;   /* 0..65535 */
+    const int raw=axis_raw(j,wheel_axis[a].axis);
+    if (a!=WAX_STEER && !wheel_touched[a]) {
+        if (raw==wheel_rest_raw[a]) return 0;
+        wheel_touched[a]=true;
+        /* Silent until now: its first value is near its rest, which tells which way it reads. */
+        if (wheel_axis[a].invert==WINV_AUTO && !wheel_rest_raw[a]) {
+            wheel_inverted[a]=raw>0;
+            printf("Runtime: %s first moved from %d%s\n",wheel_axis_names[a],raw,wheel_inverted[a] ? ", inverted" : "");
+        }
+    }
+    int v=raw+32768;   /* 0..65535 */
     if (wheel_inverted[a]) v=65535-v;
     return (uint16_t)(v<0 ? 0 : v>65535 ? 65535 : v);
 }
@@ -374,8 +477,24 @@ static void wheel_sample(PadData *d, bool neutral) {
     if (!j) return;
     WheelExtension w={32768,0,0,0,0,0,WHEEL_MAGIC};
     if (!neutral) {
-        w.steer=wheel_value(j,WAX_STEER); w.throttle=wheel_value(j,WAX_THROTTLE); w.brake=wheel_value(j,WAX_BRAKE);
-        w.clutch=wheel_value(j,WAX_CLUTCH); w.handbrake=wheel_value(j,WAX_HANDBRAKE);
+        w.steer=wheel_value(j,WAX_STEER);
+        SDL_Joystick *p=current_pedals();
+        if (p) {
+            w.throttle=wheel_value(p,WAX_THROTTLE); w.brake=wheel_value(p,WAX_BRAKE);
+            w.clutch=wheel_value(p,WAX_CLUTCH); w.handbrake=wheel_value(p,WAX_HANDBRAKE);
+        }
+        if (p && p!=j) {
+            /* For the wheel_* settings: which axis numbers of the pedals' controller the player touches. */
+            static int last_paxis[16]; static bool have_plast; static unsigned plogged;
+            if (plogged<100) {
+                for (int a=0;a<SDL_GetNumJoystickAxes(p) && a<16;++a) {
+                    const int v=SDL_GetJoystickAxis(p,a);
+                    if (!have_plast) last_paxis[a]=v;
+                    else if (abs(v-last_paxis[a])>8000) { printf("Runtime: pedals axis %d = %d\n",a,v); last_paxis[a]=v; ++plogged; }
+                }
+                have_plast=true;
+            }
+        }
         w.gear=shifter_gear(j);
         { static uint8_t last_gear; if (w.gear!=last_gear) { static unsigned n; if (n++<60) printf("Runtime: shifter gear %s\n",w.gear==0x80 ? "R" : !w.gear ? "N" : w.gear==1 ? "1" : w.gear==2 ? "2" : w.gear==4 ? "3" : w.gear==8 ? "4" : w.gear==16 ? "5" : "6"); last_gear=w.gear; } }
         for (int i=0;i<wheel_button_count;++i) {

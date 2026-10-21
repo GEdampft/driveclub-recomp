@@ -79,8 +79,10 @@ F7 turns mouse look on or off. F9 and F10 are the anti-aliasing keys above. F12 
 Any wheel that Windows lists as a game controller works: the game sees it as a PS4 wheel, and its force feedback reaches the wheel the way it reached a Logitech wheel on the console. Pedals with a clutch and an H-pattern shifter (on the wheel or as a controller of its own, such as a Logitech Driving Force Shifter on a USB adapter) work too; choose a manual gearbox in the game for the shifter.
 
 1. Connect the wheel, pedals and shifter **before** starting the game.
-2. Run `WheelSetup.exe` next to `DriveClub.exe` once: it asks you to turn the wheel, press each pedal and button and put the shifter in each gear, and writes the result to `default.ini`.
-3. Set the **rotation** in the wheel's own software (Pit House, G HUB, ...) and give `WheelSetup.exe` the same number.
+2. Run `WheelSetup.exe` next to `DriveClub.exe`. Pick the wheel, and the pedals if they have a USB of their own. Every control is a row with its current mapping and a live view: click **Map** and turn the wheel, press the pedal, button or gear; **×** clears a row. **Save** writes `default.ini`.
+3. Set the **rotation** in the wheel's own software (Pit House, G HUB, ...) and enter the same number in `WheelSetup.exe`.
+
+Pedals on a USB of their own (`wheel_pedals` in `default.ini`) and wheels that Windows lists as two controllers of one name, as a Fanatec base is, are picked by `WheelSetup.exe` (for the second, `wheel_device = FANATEC Wheel @col01`: the HID collection, which stays the same from start to start).
 
 The force feedback follows the game's own setting. In `default.ini`, `wheel_ffb_gain` and `wheel_ffb_vibration` make the forces and the road vibrations stronger or weaker (100 = as the game sends them, up to 2000; the steering forces are light on most wheels, so a few hundred is normal), `wheel_ffb_invert = true` turns them around if the wheel pulls the wrong way, and `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
 

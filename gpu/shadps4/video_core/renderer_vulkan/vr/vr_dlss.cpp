@@ -23,6 +23,8 @@
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/renderer_vulkan/vr/vr_fixes.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
+#include "video_core/renderer_vulkan/vr/vr_object_motion.h"
+#include "video_core/renderer_vulkan/vk_object_motion.h"
 #include "shader_recompiler/info.h"
 #include "video_core/texture_cache/texture_cache.h"
 #include "video_core/texture_cache/image.h"
@@ -377,10 +379,22 @@ bool Record(const Instance& instance, Scheduler& scheduler, Runtime& runtime, Dr
     }
     const auto color_format = color.info.pixel_format;
     const auto depth_format = depth.info.pixel_format;
-    std::array<vk::ImageView, 2> color_views, depth_views, out_views;
+    // The motion pass's mask: each eye's stencil, where the game marks the player's car, the hands and the other cars
+    // (bits 0x82, as frame generation reads them). Without it they took the world's motion from the camera: the car
+    // you sit in moves with the camera, yet its pixels were said to move at the car's speed, and DLSS smeared the
+    // cockpit and the bonnet while driving. Masked pixels keep their place (head turns in the car are the error left).
+    // BB_VR_DLSS_CAR_MASK=0 turns it off.
+    static const bool car_mask =
+        !(std::getenv("BB_VR_DLSS_CAR_MASK") && std::getenv("BB_VR_DLSS_CAR_MASK")[0] == '0');
+    const bool has_stencil = depth_format == vk::Format::eD32SfloatS8Uint ||
+                             depth_format == vk::Format::eD24UnormS8Uint || depth_format == vk::Format::eD16UnormS8Uint;
+    std::array<vk::ImageView, 2> color_views, depth_views, out_views, mask_views;
     for (u32 eye = 0; eye < 2; ++eye) {
         color_views[eye] = LayerView(instance, scheduler, color, color_format, vk::ImageAspectFlagBits::eColor, eye);
         depth_views[eye] = LayerView(instance, scheduler, depth, depth_format, vk::ImageAspectFlagBits::eDepth, eye);
+        mask_views[eye] = car_mask && has_stencil ? LayerView(instance, scheduler, depth, depth_format,
+                                                              vk::ImageAspectFlagBits::eStencil, eye)
+                                                  : depth_views[eye];
         out_views[eye] = LayerView(instance, scheduler, output, vk::Format::eB10G11R11UfloatPack32,
                                    vk::ImageAspectFlagBits::eColor, eye);
     }
@@ -415,12 +429,21 @@ bool Record(const Instance& instance, Scheduler& scheduler, Runtime& runtime, Dr
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
     barrier(vk::Image(g.result_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone, all, rw);
 
+    // The cars' own motion where their draws wrote it this frame (vr_object_motion.h), an eye per layer.
+    std::array<vk::ImageView, 2> object_views{};
+    if (auto* objects = ObjectMotion::g_object_motion; objects && objects->Enabled()) {
+        bool valid = false;
+        objects->PrepareRead(cmdbuf, w, h, valid);
+        if (valid && objects->Layers() == 2) {
+            object_views = {objects->LayerView(0), objects->LayerView(1)};
+        }
+    }
     // Camera motion per eye: each eye's pixels are the centre view's shifted by its clip shift (left +, right -).
     const float shift = Multiview::Shift();
     const Mat clip_to_prev = ClipToPrevious();
     for (u32 eye = 0; eye < 2; ++eye) {
-        motion.Record(cmdbuf, depth_views[eye], depth_views[eye], *g.motion_views[eye], w, h, w, h, false,
-                      eye == 0 ? shift : -shift, clip_to_prev.data());
+        motion.Record(cmdbuf, depth_views[eye], mask_views[eye], *g.motion_views[eye], w, h, w, h, false,
+                      eye == 0 ? shift : -shift, clip_to_prev.data(), object_views[eye]);
     }
     barrier(vk::Image(g.motion_image), vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
             vk::AccessFlagBits2::eShaderWrite, all, vk::AccessFlagBits2::eShaderRead);

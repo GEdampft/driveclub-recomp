@@ -603,6 +603,29 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!data) return ERR_INVALID_ARG;
     pthread_mutex_lock(&lock);
     sample(data); ++reads;
+    /* Manual VR offset switch on L3 (or selected D-pad direction). Preserve the
+       original controller behavior if VR is disabled. */
+    if (getenv("BB_VR") && getenv("BB_VR")[0] == '1') {
+        static int was_down;
+        static int button_initialized;
+        static uint32_t toggle_button;
+        if (!button_initialized) {
+            button_initialized = 1;
+            toggle_button = BTN_L3;
+            const char *config = getenv("BB_VR_CAMERA_BUTTON");
+            if (config) {
+                if (!strcmp(config, "off")) toggle_button = 0;
+                else if (!strcmp(config, "pad_up")) toggle_button = BTN_UP;
+                else if (!strcmp(config, "pad_down")) toggle_button = BTN_DOWN;
+                else if (!strcmp(config, "pad_left")) toggle_button = BTN_LEFT;
+                else if (!strcmp(config, "pad_right")) toggle_button = BTN_RIGHT;
+            }
+        }
+        const int is_down = toggle_button && !!(data->buttons & toggle_button);
+        if (is_down && !was_down) bbgpu_vr_camera_toggle();
+        was_down = is_down;
+        if (toggle_button) data->buttons &= ~toggle_button;
+    }
 #ifdef _WIN32
     { static int armed; if (data->buttons && !armed && getenv("DR_WATCH")) { armed=1; watch_install(data); } }
 #endif

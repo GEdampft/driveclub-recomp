@@ -292,6 +292,23 @@ inline void DemoteFastPage(VAddr page, VAddr begin, VAddr end);
 // that takes its clusters' visibility bits from the counter floats (Matt, 2026-10-21 afternoon, one corner in: the
 // grass clump skip covers one shader only). Each read is a readback wait; Rasterizer::CopyBuffer submits right after
 // a GDS copy so that wait covers the copy, not the frame queued behind it.
+// TEMP measurement: the scheduler tick of the latest GDS copy into each page, and how the game's polls find it.
+inline std::mutex g_gds_mutex;
+inline std::map<VAddr, u64> g_gds_tick;
+inline std::atomic<u64> g_gds_poll_done{0}, g_gds_poll_wait{0};
+inline void NoteGdsCopyTick(VAddr address, u64 size, u64 tick) {
+    std::scoped_lock lk{g_gds_mutex};
+    for (VAddr page = address & ~VAddr(4095); page < address + size; page += 4096) {
+        g_gds_tick[page] = tick;
+    }
+}
+/// The tick of the latest GDS copy into the page of `address`, 0 when none.
+inline u64 GdsCopyTick(VAddr address) {
+    std::scoped_lock lk{g_gds_mutex};
+    const auto it = g_gds_tick.find(address & ~VAddr(4095));
+    return it == g_gds_tick.end() ? 0 : it->second;
+}
+
 inline void MarkGdsCopyTarget(VAddr address, u64 size) {
     static const bool exact = !(std::getenv("BB_HYBRID_GDS_EXACT") && std::getenv("BB_HYBRID_GDS_EXACT")[0] == '0');
     if (!exact || !Enabled() || !size) {

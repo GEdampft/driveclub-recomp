@@ -3690,8 +3690,14 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         if (dst_gds) {
             return {gds_buffer, dst};
         }
-        if (src_gds) {
+        // VR fork: the counters at GDS offset 0 (the vegetation clusters' visibility bits, floating clumps when
+        // read a frame late) stay exact; the others (offset 4, ~2/3 of the polls) are served a frame late as vr1.1
+        // did. BB_HYBRID_GDS_EXACT_MAX=<offset> raises the bound (4096: all).
+        static const u32 exact_max = std::getenv("BB_HYBRID_GDS_EXACT_MAX")
+                                         ? u32(std::atoi(std::getenv("BB_HYBRID_GDS_EXACT_MAX"))) : 0u;
+        if (src_gds && src <= exact_max) {
             VideoCore::ReadbackHybrid::MarkGdsCopyTarget(dst, num_bytes); // VR fork: never a fast page
+            VideoCore::ReadbackHybrid::NoteGdsCopyTick(dst, num_bytes, scheduler.CurrentTick() + 1); // TEMP
         }
         return buffer_cache.ObtainBuffer(dst, num_bytes, true, true);
     }();

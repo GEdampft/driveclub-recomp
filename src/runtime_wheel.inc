@@ -73,6 +73,14 @@ static char pedals_device[64]="wheel";
 static SDL_Joystick *pedals;
 static SDL_JoystickID pedals_id;
 
+/* Handbrake: an axis of the pedals' controller (wheel_handbrake_device = pedals, the default), of the wheel's, or of a
+ * controller of its own (a USB handbrake: part of its name); wheel_handbrake = button <n> for a handbrake that is a
+ * switch. The game takes it as the pad's circle (see wheel_sample). */
+static char handbrake_device[64]="pedals";
+static int handbrake_button=-1;
+static SDL_Joystick *handbrake;
+static SDL_JoystickID handbrake_id;
+
 /* H-pattern shifter: a controller of its own (a Logitech Driving Force Shifter on an adapter, ...) or buttons of the
  * wheel. Each wheel_gear line gives the button held in one gear. The game takes the gear the way a Logitech G29
  * gives its shifter's (guest +0xe132c0): gears 1..6 as the bits 1, 2, 4, 8, 16, 32, reverse 0x80, neutral 0. */
@@ -105,6 +113,13 @@ static void wheel_parse(const char *lhs, char *rhs) {
     if (!strcmp(key,"device")) { snprintf(wheel_device,sizeof wheel_device,"%s",rhs); return; }
     if (!strcmp(key,"shifter")) { snprintf(shifter_device,sizeof shifter_device,"%s",rhs); return; }
     if (!strcmp(key,"pedals")) { snprintf(pedals_device,sizeof pedals_device,"%s",rhs); return; }
+    if (!strcmp(key,"handbrake_device")) { snprintf(handbrake_device,sizeof handbrake_device,"%s",rhs); return; }
+    if (!strcmp(key,"handbrake")) {   /* button <n> here; an axis below, as the pedals */
+        char v[32]; snprintf(v,sizeof v,"%s",rhs); lower(v);
+        const char *s=v; while (*s==' ') ++s;
+        handbrake_button=-1;
+        if (!strncmp(s,"button",6)) { handbrake_button=atoi(s+6); wheel_axis[WAX_HANDBRAKE].axis=-1; return; }
+    }
     if (!strcmp(key,"gear")) {
         /* <button number>, <1..6|r> */
         int index=-1; char g[8]="";
@@ -236,6 +251,8 @@ static const char wheel_default_config[]=
     "# game starts is turned around by itself; \", normal\" stops that.\n"
     "# wheel_pedals: wheel (the pedals are plugged into the wheel) or part of the name of the pedals' own controller\n"
     "# when they have a USB of their own; the pedal axis numbers are then that controller's.\n"
+    "# wheel_handbrake_device: pedals (an axis of the pedals' controller), wheel, or part of the name of a handbrake\n"
+    "# with a USB of its own; wheel_handbrake = <axis number> or button <number> (a handbrake that is a switch).\n"
     "wheel_pedals = wheel\n"
     "wheel_steering = 0\n"
     "wheel_throttle = 1\n"
@@ -314,6 +331,17 @@ static bool pedals_separate(void) {
     char want[64]; snprintf(want,sizeof want,"%s",pedals_device); lower(want); trim(want);
     return *want && strcmp(want,"wheel") && strcmp(want,"auto");
 }
+enum { HB_PEDALS, HB_WHEEL, HB_OWN };
+static int handbrake_where(void) {
+    char want[64]; snprintf(want,sizeof want,"%s",handbrake_device); lower(want); trim(want);
+    return !*want || !strcmp(want,"pedals") || !strcmp(want,"auto") ? HB_PEDALS : !strcmp(want,"wheel") ? HB_WHEEL : HB_OWN;
+}
+static bool handbrake_name_matches(const char *name) {
+    if (handbrake_where()!=HB_OWN) return false;
+    char n[128]; snprintf(n,sizeof n,"%s",name ? name : ""); lower(n);
+    char want[64]; snprintf(want,sizeof want,"%s",handbrake_device); lower(want); trim(want);
+    return strstr(n,want)!=NULL;
+}
 static bool pedals_name_matches(const char *name) {
     if (!pedals_separate()) return false;
     char n[128]; snprintf(n,sizeof n,"%s",name ? name : ""); lower(n);
@@ -383,7 +411,7 @@ static SDL_Joystick *current_wheel(void) {
         const char *name=SDL_GetJoystickNameForID(ids[i]);
         const bool by_type=!SDL_strcasecmp(wheel_device,"auto") && SDL_GetJoystickTypeForID(ids[i])==SDL_JOYSTICK_TYPE_WHEEL;
         if (!by_type && !wheel_name_matches(name)) continue;
-        if (pedals_name_matches(name)) continue;   /* separate pedals of the wheel's brand are not the wheel */
+        if (pedals_name_matches(name) || handbrake_name_matches(name)) continue;   /* separate pedals or handbrake of the wheel's brand are not the wheel */
         if (!wheel_which_matches(ids[i],which,&matched)) continue;
         if (!(wheel=SDL_OpenJoystick(ids[i]))) continue;
         wheel_id=ids[i];
@@ -395,7 +423,8 @@ static SDL_Joystick *current_wheel(void) {
         for (int a=0;a<SDL_GetNumJoystickAxes(wheel);++a) printf(" %d=%d",a,SDL_GetJoystickAxis(wheel,a));
         printf("\n");
         /* With pedals of their own only the steering is the wheel's; current_pedals takes the pedals' rest. */
-        for (int a=0;a<(pedals_separate() ? 1 : WAX_COUNT);++a) wheel_take_rest(wheel,a,"wheel");
+        for (int a=0;a<(pedals_separate() ? 1 : WAX_COUNT);++a) if (a!=WAX_HANDBRAKE) wheel_take_rest(wheel,a,"wheel");
+        if (handbrake_where()==HB_WHEEL || (handbrake_where()==HB_PEDALS && !pedals_separate())) wheel_take_rest(wheel,WAX_HANDBRAKE,"wheel");
     }
     if (!wheel && count>0 && ids) {
         static bool listed;
@@ -455,7 +484,7 @@ static SDL_Joystick *current_pedals(void) {
         printf("Runtime: pedal axes at rest:");
         for (int a=0;a<SDL_GetNumJoystickAxes(pedals);++a) printf(" %d=%d",a,SDL_GetJoystickAxis(pedals,a));
         printf("\n");
-        for (int a=WAX_THROTTLE;a<WAX_COUNT;++a) wheel_take_rest(pedals,a,"pedals");
+        for (int a=WAX_THROTTLE;a<WAX_COUNT;++a) if (a!=WAX_HANDBRAKE || handbrake_where()==HB_PEDALS) wheel_take_rest(pedals,a,"pedals");
     }
     if (!pedals) {
         static bool listed;
@@ -468,6 +497,43 @@ static SDL_Joystick *current_pedals(void) {
     }
     SDL_free(ids);
     return pedals;
+}
+/* The handbrake's controller (wheel_handbrake_device), looked for once a second while the wheel is connected when it
+ * has one of its own; called under lock. */
+static SDL_Joystick *current_handbrake(void) {
+    const int where=handbrake_where();
+    if (where==HB_WHEEL) return wheel;
+    if (where==HB_PEDALS) return current_pedals();
+    if (!wheel) return NULL;
+    if (handbrake && !SDL_JoystickConnected(handbrake)) { printf("Runtime: handbrake disconnected\n"); SDL_CloseJoystick(handbrake); handbrake=NULL; handbrake_id=0; }
+    if (handbrake) return handbrake;
+    static uint64_t last_scan;
+    const uint64_t now=now_us();
+    if (last_scan && now-last_scan<1000000) return NULL;
+    last_scan=now;
+    int count=0;
+    SDL_JoystickID *ids=SDL_GetJoysticks(&count);
+    for (int i=0;ids && i<count && !handbrake;++i) {
+        if (ids[i]==wheel_id) continue;
+        const char *name=SDL_GetJoystickNameForID(ids[i]);
+        if (!handbrake_name_matches(name) || !(handbrake=SDL_OpenJoystick(ids[i]))) continue;
+        handbrake_id=ids[i];
+        SDL_UpdateJoysticks();
+        printf("Runtime: handbrake connected: %s (%d axes, %d buttons), %s\n",name ? name : "?",SDL_GetNumJoystickAxes(handbrake),
+               SDL_GetNumJoystickButtons(handbrake),handbrake_button>=0 ? "a button" : "an axis");
+        wheel_take_rest(handbrake,WAX_HANDBRAKE,"handbrake");
+    }
+    if (!handbrake) {
+        static bool listed;
+        if (!listed) {
+            listed=true;
+            printf("Runtime: no handbrake named \"%s\" among the game controllers:",handbrake_device);
+            for (int i=0;ids && i<count;++i) printf(" \"%s\"",SDL_GetJoystickNameForID(ids[i]) ? SDL_GetJoystickNameForID(ids[i]) : "?");
+            printf(" (wheel_handbrake_device in input_config\\default.ini picks one by name)\n");
+        }
+    }
+    SDL_free(ids);
+    return handbrake;
 }
 static uint8_t shifter_gear(SDL_Joystick *w) {
     SDL_Joystick *s=current_shifter();
@@ -503,7 +569,16 @@ static void wheel_sample(PadData *d, bool neutral) {
         SDL_Joystick *p=current_pedals();
         if (p) {
             w.throttle=wheel_value(p,WAX_THROTTLE); w.brake=wheel_value(p,WAX_BRAKE);
-            w.clutch=wheel_value(p,WAX_CLUTCH); w.handbrake=wheel_value(p,WAX_HANDBRAKE);
+            w.clutch=wheel_value(p,WAX_CLUTCH);
+        }
+        SDL_Joystick *hb=current_handbrake();
+        if (hb) w.handbrake=handbrake_button>=0 ? (SDL_GetJoystickButton(hb,handbrake_button) ? 65535 : 0) : wheel_value(hb,WAX_HANDBRAKE);
+        /* The game reads the wheel through logiWheel, which has no handbrake: a pulled handbrake is the pad's circle,
+         * the handbrake in a race (on from 40% pulled, off again under 25%). */
+        if (wheel_axis[WAX_HANDBRAKE].axis>=0 || handbrake_button>=0) {
+            static bool pulled;
+            pulled=w.handbrake>(pulled ? 16384 : 26214);
+            if (pulled) d->buttons|=BTN_CIRCLE;
         }
         if (p && p!=j) {
             /* For the wheel_* settings: which axis numbers of the pedals' controller the player touches. */

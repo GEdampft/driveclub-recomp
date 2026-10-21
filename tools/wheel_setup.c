@@ -38,6 +38,7 @@ static int listed_value[16][64];
 static bool axis_moved[16][64];
 static int wheel_dev=-1, pedal_dev=-1;   /* pedal_dev -1: the pedals are axes of the wheel */
 static int shifter_dev=-1;               /* the controller whose buttons are the gears, -1 unknown */
+static int hb_dev=-1;                    /* the handbrake's controller; -1: the pedals' (an axis among theirs) */
 
 static bool looks_like_pedals(const char *lname) { return strstr(lname,"pedal")!=NULL; }
 static bool looks_like_wheel(SDL_JoystickID id, const char *lname) {
@@ -71,6 +72,9 @@ static void list_devices(void) {
 }
 static SDL_Joystick *wheel_joy(void) { return wheel_dev>=0 ? dev[wheel_dev].j : NULL; }
 static SDL_Joystick *pedal_joy(void) { return pedal_dev>=0 ? dev[pedal_dev].j : wheel_joy(); }
+static int pedal_index(void) { return pedal_dev>=0 ? pedal_dev : wheel_dev; }
+static int hb_index(void) { return hb_dev>=0 ? hb_dev : pedal_index(); }
+static SDL_Joystick *hb_joy(void) { return hb_index()>=0 ? dev[hb_index()].j : NULL; }
 /* How many controllers have a name containing this one's; and this one's place among them. */
 static int same_name(int d, int *rank) {
     int n=0;
@@ -88,7 +92,9 @@ typedef struct { int axis, inv; } AxisSetting;   /* axis -1: none; inv -1: the g
 typedef struct {
     AxisSetting steer, pedal[4];
     int button[NACT], gear[7];
+    int hb_button;                                 /* wheel_handbrake = button <n>; -1: an axis (pedal[3]) or none */
     char device[160], pedals[128], shifter[128];   /* wheel_device, wheel_pedals, wheel_shifter as read */
+    char hb_device[128];                           /* wheel_handbrake_device as read */
     int rotation;
     char extra[16][96]; int nextra;   /* wheel_button lines for PS4 buttons this tool does not show */
 } Mapping;
@@ -114,6 +120,8 @@ static void load_mapping(const char *path, Mapping *m) {
     m->rotation=900;
     snprintf(m->device,sizeof m->device,"auto");
     snprintf(m->pedals,sizeof m->pedals,"wheel");
+    snprintf(m->hb_device,sizeof m->hb_device,"pedals");
+    m->hb_button=-1;
     FILE *f=fopen(path,"rb");
     if (!f) return;
     char line[512];
@@ -127,7 +135,9 @@ static void load_mapping(const char *path, Mapping *m) {
         if (strncmp(k,"wheel_",6)) continue;
         k+=6;
         if (!strcmp(k,"steering")) { m->steer=parse_axis(v); if (m->steer.inv<0) m->steer.inv=0; continue; }
+        if (!strcmp(k,"handbrake") && !SDL_strncasecmp(v,"button",6)) { m->hb_button=atoi(v+6); m->pedal[3].axis=-1; continue; }
         for (int p=0;p<4;++p) if (!strcmp(k,pedal_key[p])) m->pedal[p]=parse_axis(v);
+        if (!strcmp(k,"handbrake_device")) snprintf(m->hb_device,sizeof m->hb_device,"%s",v);
         if (!strcmp(k,"button")) {
             int index=-1; char ps[32]="";
             if (sscanf(v," %d , %31s",&index,ps)!=2 || index<0) continue;
@@ -177,6 +187,9 @@ static void resolve_devices(void) {
     if (!strcmp(strip(s),"wheel")) shifter_dev=wheel_dev;
     else if (!strcmp(strip(s),"auto")) { shifter_dev=-1; for (int i=0;i<ndev && shifter_dev<0;++i) if (strstr(dev[i].lname,"shifter")) shifter_dev=i; }
     else shifter_dev=find_device(cur.shifter,false);
+    snprintf(s,sizeof s,"%s",cur.hb_device); lower_in_place(s);
+    const char *hb=strip(s);
+    hb_dev=!strcmp(hb,"wheel") ? wheel_dev : !*hb || !strcmp(hb,"pedals") || !strcmp(hb,"auto") ? -1 : find_device(cur.hb_device,false);
 }
 
 /* ---- rows ------------------------------------------------------------------------------------------------------ */
@@ -201,8 +214,8 @@ static const char *row_label(int r) {
 static struct {
     int row, phase;             /* -1: not listening; pedals: 0 waiting for the press, 1 for the release */
     int base[64];               /* steering: the axes when Map was clicked */
-    int start[64], first[64], lo[64], hi[64]; bool moved[64];
-    int axis, rest, close, last; Uint64 still_since; bool hinted;
+    int start[16][64], first[16][64], lo[16][64], hi[16][64]; bool moved[16][64];   /* pedals, per controller */
+    int dev, axis, rest, close, last; Uint64 still_since; bool hinted;
     bool base_btn[16][256];     /* buttons held when Map was clicked */
 } L={.row=-1};
 static char status[300];
@@ -221,10 +234,16 @@ static void start_listening(int r) {
         say(T("Hold the wheel straight, then turn it all the way LEFT.   (Esc: cancel)",
               "Держи руль прямо, затем поверни до упора ВЛЕВО.   (Esc — отмена)"));
     } else if (r<R_BUTTON) {
-        if (!p) { stop_listening(T("No wheel chosen.","Руль не выбран.")); return; }
-        for (int a=0;a<SDL_GetNumJoystickAxes(p) && a<64;++a) L.start[a]=SDL_GetJoystickAxis(p,a);
-        snprintf(buf,sizeof buf,T("Press the %s all the way, then release it.   (Esc: cancel)",
-                                   "Выжми до конца: %s, затем отпусти.   (Esc — отмена)"),row_label(r));
+        /* the handbrake may be any controller's axis or button (a USB handbrake of its own); a pedal is the pedals' */
+        if (!p && r!=R_PEDAL+3) { stop_listening(T("No wheel chosen.","Руль не выбран.")); return; }
+        for (int d=0;d<ndev;++d) {
+            for (int a=0;a<dev[d].naxes && a<64;++a) L.start[d][a]=SDL_GetJoystickAxis(dev[d].j,a);
+            for (int b=0;b<dev[d].nbuttons && b<256;++b) L.base_btn[d][b]=SDL_GetJoystickButton(dev[d].j,b);
+        }
+        if (r==R_PEDAL+3) snprintf(buf,sizeof buf,"%s",T("Pull the handbrake all the way, then release it (any controller).   (Esc: cancel)",
+                                                          "Потяни ручник до конца и отпусти (любой контроллер).   (Esc — отмена)"));
+        else snprintf(buf,sizeof buf,T("Press the %s all the way, then release it.   (Esc: cancel)",
+                                       "Выжми до конца: %s, затем отпусти.   (Esc — отмена)"),row_label(r));
         say(buf);
     } else if (r<R_GEAR) {
         if (!w) { stop_listening(T("No wheel chosen.","Руль не выбран.")); return; }
@@ -266,34 +285,54 @@ static void poll_listening(void) {
          * axis that travels most of its range is the pedal, the end its first value sent was near is its rest, and
          * it is released when it is back near that end and still for a moment (or on Enter). */
         const int p=r-R_PEDAL;
-        SDL_Joystick *j=pedal_joy();
-        const int n=SDL_GetNumJoystickAxes(j);
+        const bool handbrake=p==3;
         if (L.phase==0) {
-            for (int a=0;a<n && a<64;++a) {
-                if (pedal_dev<0 && cur.steer.axis==a) continue;
-                const int v=SDL_GetJoystickAxis(j,a);
-                if (!L.moved[a]) {
-                    if (abs(v-L.start[a])<1500) continue;
-                    L.moved[a]=true; L.first[a]=L.lo[a]=L.hi[a]=v;
-                    if (L.start[a]) { if (L.start[a]<L.lo[a]) L.lo[a]=L.start[a]; if (L.start[a]>L.hi[a]) L.hi[a]=L.start[a]; L.first[a]=L.start[a]; }
+            for (int d=0;d<ndev;++d) {
+                if (!handbrake && d!=pedal_index()) continue;
+                SDL_Joystick *j=dev[d].j;
+                if (handbrake) for (int b=0;b<dev[d].nbuttons && b<256;++b) {   /* a handbrake that is a switch */
+                    if (L.base_btn[d][b] || !SDL_GetJoystickButton(j,b)) continue;
+                    hb_dev=d; cur.hb_button=b; cur.pedal[3].axis=-1;
+                    snprintf(what,sizeof what,T("button %d of %s","кнопка %d (%s)"),b,dev[d].name);
+                    done(what);
+                    return;
                 }
-                if (v<L.lo[a]) L.lo[a]=v;
-                if (v>L.hi[a]) L.hi[a]=v;
-                if (L.hi[a]-L.lo[a]<=40000) continue;
-                L.axis=a;
-                L.rest=L.first[a]-L.lo[a]<L.hi[a]-L.first[a] ? L.lo[a] : L.hi[a];
-                L.close=(L.hi[a]-L.lo[a])/4;
-                L.last=v; L.still_since=SDL_GetTicks(); L.phase=1;
-                for (int q=0;q<4;++q) if (q!=p && cur.pedal[q].axis==a) cur.pedal[q].axis=-1;   /* it moves over */
-                cur.pedal[p].axis=a; cur.pedal[p].inv=L.rest==L.hi[a];
-                char buf[300];
-                snprintf(buf,sizeof buf,T("%s: axis %d%s. Release it.","%s: ось %d%s. Отпусти."),row_label(r),a,
-                         cur.pedal[p].inv ? T(" (reversed)"," (перевёрнута)") : "");
-                say(buf);
-                return;
+                for (int a=0;a<dev[d].naxes && a<64;++a) {
+                    if (d==wheel_dev && cur.steer.axis==a) continue;
+                    const int v=SDL_GetJoystickAxis(j,a);
+                    if (!L.moved[d][a]) {
+                        if (abs(v-L.start[d][a])<1500) continue;
+                        L.moved[d][a]=true; L.first[d][a]=L.lo[d][a]=L.hi[d][a]=v;
+                        if (L.start[d][a]) {
+                            if (L.start[d][a]<L.lo[d][a]) L.lo[d][a]=L.start[d][a];
+                            if (L.start[d][a]>L.hi[d][a]) L.hi[d][a]=L.start[d][a];
+                            L.first[d][a]=L.start[d][a];
+                        }
+                    }
+                    if (v<L.lo[d][a]) L.lo[d][a]=v;
+                    if (v>L.hi[d][a]) L.hi[d][a]=v;
+                    if (L.hi[d][a]-L.lo[d][a]<=40000) continue;
+                    L.dev=d; L.axis=a;
+                    L.rest=L.first[d][a]-L.lo[d][a]<L.hi[d][a]-L.first[d][a] ? L.lo[d][a] : L.hi[d][a];
+                    L.close=(L.hi[d][a]-L.lo[d][a])/4;
+                    L.last=v; L.still_since=SDL_GetTicks(); L.phase=1;
+                    /* it moves over from another row that had it on this controller */
+                    for (int q=0;q<3;++q) if (q!=p && d==pedal_index() && cur.pedal[q].axis==a) cur.pedal[q].axis=-1;
+                    if (!handbrake && d==hb_index() && cur.hb_button<0 && cur.pedal[3].axis==a) cur.pedal[3].axis=-1;
+                    if (handbrake) { hb_dev=d==pedal_index() ? -1 : d; cur.hb_button=-1; }
+                    cur.pedal[p].axis=a; cur.pedal[p].inv=L.rest==L.hi[d][a];
+                    char buf[300];
+                    if (handbrake && hb_dev>=0)
+                        snprintf(buf,sizeof buf,T("%s: axis %d of %s%s. Release it.","%s: ось %d (%s)%s. Отпусти."),row_label(r),a,dev[d].name,
+                                 cur.pedal[p].inv ? T(" (reversed)"," (перевёрнута)") : "");
+                    else snprintf(buf,sizeof buf,T("%s: axis %d%s. Release it.","%s: ось %d%s. Отпусти."),row_label(r),a,
+                                  cur.pedal[p].inv ? T(" (reversed)"," (перевёрнута)") : "");
+                    say(buf);
+                    return;
+                }
             }
         } else {
-            const int v=SDL_GetJoystickAxis(j,L.axis);
+            const int v=SDL_GetJoystickAxis(dev[L.dev].j,L.axis);
             if (abs(v-L.last)>600) { L.last=v; L.still_since=SDL_GetTicks(); }
             if (abs(v-L.rest)<=L.close && SDL_GetTicks()-L.still_since>=250) {
                 snprintf(what,sizeof what,T("axis %d%s","ось %d%s"),L.axis,cur.pedal[p].inv ? T(", reversed",", перевёрнута") : "");
@@ -338,7 +377,7 @@ static void poll_listening(void) {
 }
 static void clear_row(int r) {
     if (r==R_STEER) cur.steer.axis=-1;
-    else if (r<R_BUTTON) cur.pedal[r-R_PEDAL].axis=-1;
+    else if (r<R_BUTTON) { cur.pedal[r-R_PEDAL].axis=-1; if (r==R_PEDAL+3) { cur.hb_button=-1; hb_dev=-1; } }
     else if (r<R_GEAR) cur.button[r-R_BUTTON]=-1;
     else cur.gear[r-R_GEAR]=-1;
     dirty=true;
@@ -409,9 +448,15 @@ static bool save(int rotation) {
     if (cur.steer.axis<0) fprintf(f,"wheel_steering = none\n");
     else fprintf(f,"wheel_steering = %d%s\n",cur.steer.axis,cur.steer.inv==1 ? ", inverted" : "");
     fprintf(f,"wheel_pedals = %s\n",pedal_dev>=0 ? dev[pedal_dev].name : "wheel");
+    /* the handbrake's controller: the pedals', the wheel's, or one of its own by name */
+    char hb_device[160]="pedals";
+    if (hb_dev>=0 && hb_dev==wheel_dev) snprintf(hb_device,sizeof hb_device,"wheel");
+    else if (hb_dev>=0 && hb_dev!=pedal_index()) snprintf(hb_device,sizeof hb_device,"%s",dev[hb_dev].name);
+    fprintf(f,"wheel_handbrake_device = %s\n",hb_device);
     for (int p=0;p<4;++p) {
         const AxisSetting a=cur.pedal[p];
-        if (a.axis<0) fprintf(f,"wheel_%s = none\n",pedal_key[p]);
+        if (p==3 && cur.hb_button>=0) fprintf(f,"wheel_handbrake = button %d\n",cur.hb_button);
+        else if (a.axis<0) fprintf(f,"wheel_%s = none\n",pedal_key[p]);
         else if (a.inv<0) fprintf(f,"wheel_%s = %d\n",pedal_key[p],a.axis);
         else fprintf(f,"wheel_%s = %d, %s\n",pedal_key[p],a.axis,a.inv ? "inverted" : "normal");
     }
@@ -426,6 +471,7 @@ static bool save(int rotation) {
     snprintf(cur.device,sizeof cur.device,"%s",device);
     snprintf(cur.pedals,sizeof cur.pedals,"%s",pedal_dev>=0 ? dev[pedal_dev].name : "wheel");
     snprintf(cur.shifter,sizeof cur.shifter,"%s",shifter);
+    snprintf(cur.hb_device,sizeof cur.hb_device,"%s",hb_device);
     cur.rotation=rotation;
     saved=cur; dirty=false;
     return true;
@@ -475,6 +521,11 @@ static void mapping_text(int r, char *out, size_t n) {
     if (r==R_STEER) {
         if (cur.steer.axis<0) snprintf(out,n,"%s",none);
         else snprintf(out,n,T("axis %d%s","ось %d%s"),cur.steer.axis,cur.steer.inv==1 ? T(", reversed",", перевёрнута") : "");
+    } else if (r==R_PEDAL+3 && (cur.hb_button>=0 || hb_dev>=0)) {   /* the handbrake on a controller of its own, or a switch */
+        const char *of=hb_index()>=0 ? dev[hb_index()].name : "?";
+        if (cur.hb_button>=0) snprintf(out,n,T("button %d of %s","кнопка %d (%s)"),cur.hb_button,of);
+        else if (cur.pedal[3].axis<0) snprintf(out,n,"%s",none);
+        else snprintf(out,n,T("axis %d of %s%s","ось %d (%s)%s"),cur.pedal[3].axis,of,cur.pedal[3].inv==1 ? T(", reversed",", перевёрнута") : "");
     } else if (r<R_BUTTON) {
         const AxisSetting a=cur.pedal[r-R_PEDAL];
         if (a.axis<0) snprintf(out,n,"%s",none);
@@ -492,8 +543,15 @@ static void mapping_text(int r, char *out, size_t n) {
 static void draw_live(HDC dc, int r, int y) {
     const int x=LIVE_X, w=210, h=ROW_H-10;
     y+=5;
+    if (r==R_PEDAL+3 && cur.hb_button>=0) {   /* a handbrake that is a switch: lit while pulled */
+        SDL_Joystick *j=hb_joy();
+        const bool on=j && cur.hb_button<SDL_GetNumJoystickButtons(j) && SDL_GetJoystickButton(j,cur.hb_button);
+        fill(dc,x,y,h,h,on ? C_ON : RGB(255,255,255)); frame(dc,x,y,h,h,on ? C_ON : C_LINE);
+        if (on) draw_text(dc,x+h+8,y-5,120,ROW_H,T("pulled","потянут"),C_ON,font,0);
+        return;
+    }
     if (r<R_BUTTON) {
-        SDL_Joystick *j=r==R_STEER ? wheel_joy() : pedal_joy();
+        SDL_Joystick *j=r==R_STEER ? wheel_joy() : r==R_PEDAL+3 ? hb_joy() : pedal_joy();
         const AxisSetting a=r==R_STEER ? cur.steer : cur.pedal[r-R_PEDAL];
         fill(dc,x,y,w,h,RGB(255,255,255)); frame(dc,x,y,w,h,C_LINE);
         if (!j || a.axis<0 || a.axis>=SDL_GetNumJoystickAxes(j)) return;
@@ -504,7 +562,7 @@ static void draw_live(HDC dc, int r, int y) {
             if (len>=0) fill(dc,mid,y+2,len,h-4,C_BAR); else fill(dc,mid+len,y+2,-len,h-4,C_BAR);
             fill(dc,mid,y,1,h,C_DIM);
         } else {
-            const int d=pedal_dev>=0 ? pedal_dev : wheel_dev;
+            const int d=r==R_PEDAL+3 ? hb_index() : pedal_index();
             if (d>=0 && a.axis<64 && !axis_moved[d][a.axis]) {
                 if (SDL_GetJoystickAxis(j,a.axis)==listed_value[d][a.axis]) return;   /* silent so far: released */
                 axis_moved[d][a.axis]=true;
@@ -541,7 +599,8 @@ static void paint(HDC dc, int cw, int ch) {
         else if (r==hover) fill(dc,12,y,WIN_W-24,ROW_H,C_HOVER);
         draw_text(dc,24,y,180,ROW_H,row_label(r),C_TEXT,font,0);
         mapping_text(r,buf,sizeof buf);
-        const bool unset=(r==R_STEER && cur.steer.axis<0) || (r>=R_PEDAL && r<R_BUTTON && cur.pedal[r-R_PEDAL].axis<0) ||
+        const bool unset=(r==R_STEER && cur.steer.axis<0) ||
+                         (r>=R_PEDAL && r<R_BUTTON && cur.pedal[r-R_PEDAL].axis<0 && (r!=R_PEDAL+3 || cur.hb_button<0)) ||
                          (r>=R_BUTTON && r<R_GEAR && cur.button[r-R_BUTTON]<0) || (r>=R_GEAR && cur.gear[r-R_GEAR]<0);
         draw_text(dc,210,y,185,ROW_H,buf,unset ? C_DIM : C_TEXT,font,0);
         draw_live(dc,r,y);

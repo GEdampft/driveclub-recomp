@@ -2094,11 +2094,15 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     }
     std::wstring summary = L"release " + (version.empty() ? std::wstring(L"unknown") : version) + L":";
     for (const auto& c : g_c) {
-      if (c.patches.empty() || c.patches[0] == "@name" || c.patches[0] == "@lang" || IsBenchRow(c) || c.sel < 0) continue;
+      if (c.patches.empty() || c.patches[0] == "@name" || c.patches[0] == "@lang" || IsBenchRow(c) || c.sel < 0 ||
+          c.kind == Kind::Button)
+        continue;
       summary += L" ";
       summary += c.label;
       summary += L"=";
-      summary += c.kind == Kind::Toggle ? (c.sel ? L"on" : L"off") : (size_t(c.sel) < c.items.size() ? c.items[size_t(c.sel)] : L"?");
+      summary += c.kind == Kind::Toggle   ? (c.sel ? L"on" : L"off")
+                 : c.kind == Kind::Slider ? std::to_wstring(c.sel)
+                                          : (size_t(c.sel) < c.items.size() ? c.items[size_t(c.sel)] : L"?");
       summary += L";";
     }
     SetEnvironmentVariableW(L"BB_SETTINGS_SUMMARY", summary.c_str());

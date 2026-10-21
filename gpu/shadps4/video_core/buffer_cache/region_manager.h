@@ -225,7 +225,8 @@ public:
         return (gpu & ~small_gpu).AnyInRange(start_page, end_page);
     }
 
-    /// Changes whenever a GPU write is marked in the range (one counter per 64 pages).
+    /// Changes whenever a GPU write is marked in the range (one counter per page: VR fork, for page by page unmarking
+    /// after a readback, MemoryTracker::TryUnmarkPagesAsGpuModified).
     u64 GpuWriteSeq(u64 offset, u64 size) const noexcept {
         const size_t start_page = SanitizeAddress(offset) / TRACKER_BYTES_PER_PAGE;
         const size_t end_page = Common::DivCeil(SanitizeAddress(offset + size), TRACKER_BYTES_PER_PAGE);
@@ -242,7 +243,7 @@ public:
     LockType lock;
 
 private:
-    static constexpr size_t GPU_SEQ_PAGES = 64;
+    static constexpr size_t GPU_SEQ_PAGES = 1;
     /**
      * Notify tracker about changes in the CPU tracking state of a word in the buffer
      *

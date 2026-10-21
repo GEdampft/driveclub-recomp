@@ -70,6 +70,43 @@ public:
         return true;
     }
 
+    /// VR fork: GpuWriteSeq of each page of a range inside one region.
+    void GpuWriteSeqs(VAddr cpu_addr, u64 size, std::vector<u64>& seqs) noexcept {
+        seqs.assign(size / TRACKER_BYTES_PER_PAGE, 0);
+        auto* manager = top_tier[cpu_addr >> TRACKER_HIGHER_PAGE_BITS];
+        if (!manager) {
+            return;
+        }
+        std::scoped_lock lk{manager->lock};
+        const u64 offset = cpu_addr & TRACKER_HIGHER_PAGE_MASK;
+        for (size_t i = 0; i < seqs.size(); ++i) {
+            seqs[i] = manager->GpuWriteSeq(offset + i * TRACKER_BYTES_PER_PAGE, TRACKER_BYTES_PER_PAGE);
+        }
+    }
+
+    /// VR fork: TryUnmarkRegionAsGpuModified page by page: a page with no GPU write marked since GpuWriteSeqs is
+    /// unmarked; `kept[i]` is set for the others. (A write into one page of a readback's window kept the whole window
+    /// GPU modified: the game's next read of an untouched page read it back again, twice, then downloaded the arena.)
+    void TryUnmarkPagesAsGpuModified(VAddr cpu_addr, u64 size, const std::vector<u64>& seqs,
+                                     std::vector<bool>& kept) noexcept {
+        kept.assign(seqs.size(), false);
+        auto* manager = top_tier[cpu_addr >> TRACKER_HIGHER_PAGE_BITS];
+        if (!manager || seqs.size() != size / TRACKER_BYTES_PER_PAGE) {
+            kept.assign(seqs.size(), manager != nullptr);
+            return;
+        }
+        std::scoped_lock lk{manager->lock};
+        const u64 offset = cpu_addr & TRACKER_HIGHER_PAGE_MASK;
+        for (size_t i = 0; i < seqs.size(); ++i) {
+            const u64 page = offset + i * TRACKER_BYTES_PER_PAGE;
+            if (manager->GpuWriteSeq(page, TRACKER_BYTES_PER_PAGE) != seqs[i]) {
+                kept[i] = true;
+                continue;
+            }
+            manager->template ChangeRegionState<Type::GPU, false>(manager->GetCpuAddr() + page, TRACKER_BYTES_PER_PAGE);
+        }
+    }
+
     /// Mark region as CPU modified, notifying the device_tracker about this change
     void MarkRegionAsCpuModified(VAddr dirty_cpu_addr, u64 query_size) {
         IteratePages<false>(dirty_cpu_addr, query_size,

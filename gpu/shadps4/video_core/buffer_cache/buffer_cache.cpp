@@ -367,6 +367,8 @@ struct BufferCache::Readback {
     Vulkan::StagingBufferRef staging{};
     VAddr arena_base{};
     u64 write_seq{};
+    std::vector<u64> page_seq; ///< VR fork: per page, for TryUnmarkPagesAsGpuModified
+    bool one_recorder{};       ///< VR fork: draws recorded on this thread too (no two-thread draw path)
     u64 tick{};
     bool busy{};
     /// Read from the arena mapping once the tick has passed; verify: the usual copy is made too and compared.
@@ -429,6 +431,8 @@ void BufferCache::RecordReadback(Readback& job) {
     }
     job.arena_base = arena->cpu_addr;
     job.write_seq = memory_tracker->GpuWriteSeq(job.window, READBACK_WINDOW_SIZE);
+    memory_tracker->GpuWriteSeqs(job.window, READBACK_WINDOW_SIZE, job.page_seq); // VR fork
+    job.one_recorder = BbToggle::Disabled(BbToggle::DrawPipeline);
 
     // Direct path: the data is already in memory the CPU can read once the GPU has finished writing it, so no copy
     // is recorded. Small requests only (reads of video memory through the mapping are slow), and only when every
@@ -545,11 +549,30 @@ void BufferCache::FinishReadback(const Readback& job) {
     }
     const bool unmarked = memory_tracker->TryUnmarkRegionAsGpuModified(
         job.window, READBACK_WINDOW_SIZE, job.write_seq);
+    // VR fork: the pages the GPU wrote again stay GPU modified, the others are unmarked. With one recording thread
+    // the copied ranges are not returned at all: a write marked after the copy was recorded runs after it on the GPU
+    // and marks its own ranges (returning the rest kept bytes the GPU wrote once, long ago, on a page it writes every
+    // frame - GDS counter copies next to the game's own data - reading back again at every access).
+    std::vector<bool> kept;
+    if (!unmarked) {
+        memory_tracker->TryUnmarkPagesAsGpuModified(job.window, READBACK_WINDOW_SIZE, job.page_seq, kept);
+        if (job.one_recorder && BbToggle::Disabled(BbToggle::DrawPipeline)) {
+            kept.assign(kept.size(), false);
+        }
+    }
     {
         std::scoped_lock lk{readback_mutex};
         if (!unmarked) {
             for (const auto& copy : job.copies) {
-                readback_returns.emplace_back(job.arena_base + copy.srcOffset, copy.size);
+                const VAddr begin = job.arena_base + copy.srcOffset, end = begin + copy.size;
+                for (VAddr at = begin; at < end;) {
+                    const VAddr part_end = std::min<VAddr>(end, Common::AlignDown(at, 4096) + 4096);
+                    const size_t page = (at - job.window) / 4096;
+                    if (page >= kept.size() || kept[page]) {
+                        readback_returns.emplace_back(at, part_end - at);
+                    }
+                    at = part_end;
+                }
             }
         }
         std::erase(pending_readbacks, job.window);

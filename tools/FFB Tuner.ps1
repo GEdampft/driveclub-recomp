@@ -146,16 +146,16 @@ function Show-Value($key, $value) {
 # Presets: starting points that set every slider; fine-tune from there.
 $presets = [ordered]@{
     'Direct drive (8 Nm Fanatec baseline)' = @{
-        wheel_ffb_model='software'; wheel_ffb_strength=225; wheel_ffb_center=100; wheel_ffb_slide=2; wheel_ffb_falloff=5
-        wheel_ffb_smoothing=0; wheel_ffb_soft_lock='game'; wheel_ffb_spring=90; wheel_ffb_spring_limit=100; wheel_ffb_damper=5
-        wheel_ffb_vibration_limit=10; wheel_ffb_vibration_response=80; wheel_ffb_kerbs=100; wheel_ffb_texture=49
-        wheel_ffb_texture_mode='changes'; wheel_ffb_texture_floor=30; wheel_ffb_long_rumble=25; wheel_ffb_vibration_wave='sine'
+        wheel_ffb_model='software'; wheel_ffb_strength=200; wheel_ffb_center=100; wheel_ffb_slide=2; wheel_ffb_falloff=5
+        wheel_ffb_smoothing=0; wheel_ffb_soft_lock='game'; wheel_ffb_spring=90; wheel_ffb_spring_limit=100; wheel_ffb_damper=10
+        wheel_ffb_vibration_limit=10; wheel_ffb_vibration_response=46; wheel_ffb_kerbs=100; wheel_ffb_texture=50
+        wheel_ffb_texture_mode='changes'; wheel_ffb_texture_floor=75; wheel_ffb_long_rumble=0; wheel_ffb_vibration_wave='sine'
         wheel_ffb_invert='false' }
     'Gear or belt driven (Logitech, Thrustmaster) - untested' = @{
-        wheel_ffb_model='software'; wheel_ffb_strength=250; wheel_ffb_center=100; wheel_ffb_slide=2; wheel_ffb_falloff=5
+        wheel_ffb_model='software'; wheel_ffb_strength=225; wheel_ffb_center=100; wheel_ffb_slide=2; wheel_ffb_falloff=5
         wheel_ffb_smoothing=8; wheel_ffb_soft_lock='game'; wheel_ffb_spring=90; wheel_ffb_spring_limit=100; wheel_ffb_damper=0
-        wheel_ffb_vibration_limit=25; wheel_ffb_vibration_response=80; wheel_ffb_kerbs=100; wheel_ffb_texture=49
-        wheel_ffb_texture_mode='changes'; wheel_ffb_texture_floor=30; wheel_ffb_long_rumble=25; wheel_ffb_vibration_wave='sine'
+        wheel_ffb_vibration_limit=25; wheel_ffb_vibration_response=46; wheel_ffb_kerbs=100; wheel_ffb_texture=50
+        wheel_ffb_texture_mode='changes'; wheel_ffb_texture_floor=75; wheel_ffb_long_rumble=0; wheel_ffb_vibration_wave='sine'
         wheel_ffb_invert='false' }
 }
 $presetLabel = New-Object Windows.Forms.Label

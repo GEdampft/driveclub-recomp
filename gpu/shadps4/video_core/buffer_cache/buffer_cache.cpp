@@ -216,20 +216,6 @@ void BufferCache::ExtendWriteFault(VAddr device_addr) {
 static constexpr u64 READBACK_WINDOW_SIZE = 512_KB;
 
 void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks) {
-    { // TEMP: polls of GDS counter pages: is the GPU already done with the latest copy into the page?
-        if (const u64 tick = ReadbackHybrid::GdsCopyTick(device_addr)) {
-            (scheduler.IsFree(tick) ? ReadbackHybrid::g_gds_poll_done : ReadbackHybrid::g_gds_poll_wait).fetch_add(1);
-            static std::atomic<u64> last{0};
-            const u64 now = std::chrono::steady_clock::now().time_since_epoch().count() / 1000000000;
-            u64 l = last.load();
-            if (now - l >= 5 && last.compare_exchange_strong(l, now) && l) {
-                std::printf("GDS polls: GPU done %llu, not yet %llu (5 s)\n",
-                            (unsigned long long)ReadbackHybrid::g_gds_poll_done.exchange(0),
-                            (unsigned long long)ReadbackHybrid::g_gds_poll_wait.exchange(0));
-                std::fflush(stdout);
-            }
-        }
-    }
     // Development (BB_READBACK_LOG=1): each CPU access that needs GPU data, the first 200000.
     static const bool log_reads = std::getenv("BB_READBACK_LOG") != nullptr;
     static std::atomic<int> logged{0};

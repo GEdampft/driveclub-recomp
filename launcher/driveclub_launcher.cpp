@@ -22,6 +22,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cctype>
+#include <cstdint>
+#include <iterator>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -56,7 +59,8 @@ constexpr float kWinW = 960.f;
 // model
 // ------------------------------------------------------------------------------------------
 // Picker: one box that opens a menu (benchmark track and car). Action: the benchmark's Run button and its result.
-enum class Kind { Segmented, Toggle, Picker, Action };
+// Slider: a value from min to max (sel), dragged or stepped with the arrow keys. Button: a button across the row.
+enum class Kind { Segmented, Toggle, Picker, Action, Slider, Button };
 
 struct Ctl {
   const wchar_t* label;
@@ -67,6 +71,11 @@ struct Ctl {
   int def = 0;                         // default choice (toggle: 1 = on)
   int sel = 0;
   RectF row{}, ctl{};
+  RectF info{};                        // the (i) after the name, where it was last drawn (pixels; empty when not shown)
+  const wchar_t* more = nullptr;       // the details the (i) opens, after the hint
+  int min = 0, max = 0;                // slider range
+  bool physics_only = false;           // a steering wheel row shown with the physics force model only
+  int loaded = 0;                      // steering wheel rows: the value default.ini had, so only changes are written
 };
 
 struct Card {
@@ -77,6 +86,7 @@ struct Card {
   const wchar_t* note = nullptr;
   float note_h = 0;  // the note's height at the current column width (LayoutPass)
   RectF rect{};
+  int sub = -1;  // the inner tab of its tab (the Driving tab's kSub*), -1: none
 };
 
 std::vector<Ctl> g_c;
@@ -105,17 +115,30 @@ float g_natural_h = 0;       // the height the content needs
 float g_row_extra = 0;       // extra space given to every row when the window is taller than the content
 int g_hover_ctl = -1, g_hover_seg = -1, g_hover_btn = -1, g_hover_browse = -1, g_press_btn = -1;
 int g_hover_tab = -1;
+// Help: a click on the (i) after a row's name (g_hover_info: the one under the pointer) opens its details over the page.
+int g_hover_info = -1, g_info_open = -1;
 
 // The cards are split over tabs so a page holds what belongs together and needs no scrolling.
-enum { kTabGraphics, kTabGameplay, kTabBench, kTabCount };
-const wchar_t* const kTabName[kTabCount] = {L"Graphics", L"Gameplay", L"Benchmark"};
+enum { kTabGraphics, kTabGameplay, kTabDriving, kTabBench, kTabCount };
+const wchar_t* const kTabName[kTabCount] = {L"Graphics", L"Gameplay", L"Driving", L"Benchmark"};
 const wchar_t* const kTabHint[kTabCount] = {
     L"Frame rate, the sizes the game draws and shows, anti-aliasing and texture filtering.",
     L"Your name and language, the mirrors, the window, the add-on content and the community patches.",
+    L"Driving: the field of view and the game's driving assists, and the steering wheel (its setup and force feedback).",
     L"Drive one circuit on its own and get back the frame rate and the 1% and 0.1% lows."};
 int g_tab = kTabGraphics;
 RectF g_tab_rect[kTabCount];
-bool OnPage(const Card& card) { return card.tab == g_tab; }
+// The Driving tab has tabs of its own, in a smaller row under the main one (HitTab gives them as kTabCount + n).
+enum { kSubAssists, kSubWheel, kSubCount };
+const wchar_t* const kSubName[kSubCount] = {L"Assists and view", L"Wheel and force feedback"};
+const wchar_t* const kSubHint[kSubCount] = {
+    L"The field of view, and the game's gearbox, brake assist, hardcore handling and wheel assist.",
+    L"Your steering wheel: Wheel Setup for its controls, and the force feedback."};
+constexpr float kSubTabH = 62.f;
+int g_subtab = kSubAssists;
+RectF g_sub_rect[kSubCount];
+bool HasSubTabs() { return g_tab == kTabDriving; }
+bool OnPage(const Card& card) { return card.tab == g_tab && (card.sub < 0 || card.sub == g_subtab); }
 std::wstring g_status;
 std::wstring g_gpu_problem;  // from CheckGpu() at start; Play stays off while it is set, unless the check is skipped
 bool g_skip_gpu_check = false;  // "Skip the graphics card check" in the launcher (skip_gpu_check= in launcher.ini)
@@ -123,6 +146,7 @@ bool g_allow_overlays = false;  // "Let overlay programs into the game" (overlay
 bool g_auto_play = false;  // "Start the game without this window" (auto_play= in launcher.ini)
 bool GpuBlocked() { return !g_gpu_problem.empty() && !g_skip_gpu_check; }
 Color g_status_color = kMuted;
+bool g_status_sticky = false;  // a warning about the last click: shown over the hints until the next click
 RectF g_btn[3];  // reset, save, play
 const wchar_t* kBtnText[3] = {L"Reset to defaults", L"Save", L"Play"};
 std::atomic<bool> g_busy{false};
@@ -351,6 +375,36 @@ const int kBenchSeconds[] = {30, 60, 120, 300};
 int g_bench_track = 0, g_bench_car = kBenchDefaultCar;
 int g_btrack = -1, g_bcar = -1, g_bmode = -1, g_btod = -1, g_bweather = -1, g_brain = -1, g_blen = -1, g_brun = -1;
 bool IsBenchRow(const Ctl& c) { return c.patches[0].rfind("@bench", 0) == 0; }
+// Driving: the game's own gearbox, brake assist, hardcore handling and wheel assist options, set by the launcher
+// (choice 0: the game's own; the runtime sets the others with the game's setters: BB_GEARBOX, BB_BRAKE_ASSIST,
+// BB_HARDCORE, BB_WHEEL_ASSIST, see src/runtime_pad.c). Kept in launcher.ini as driving_<name>=<choice>.
+struct DriveRow { const char* key; const wchar_t* env; const wchar_t* const* values; int row; };
+const wchar_t* const kGearboxEnv[] = {nullptr, L"automatic", L"manual"};
+const wchar_t* const kBrakeEnv[] = {nullptr, L"off", L"low", L"medium", L"high"};
+const wchar_t* const kOnOffEnv[] = {nullptr, L"off", L"on"};
+DriveRow g_drive[4] = {{"driving_gearbox=", L"BB_GEARBOX", kGearboxEnv, -1}, {"driving_brake_assist=", L"BB_BRAKE_ASSIST", kBrakeEnv, -1},
+                       {"driving_hardcore=", L"BB_HARDCORE", kOnOffEnv, -1}, {"driving_wheel_assist=", L"BB_WHEEL_ASSIST", kOnOffEnv, -1}};
+bool IsDriveRow(const Ctl& c) { return c.patches[0].rfind("@drive", 0) == 0; }
+// Field of view, percent of the game's own: data\user\camera.ini fov=, read by the game at start; F5 and F6 change
+// it while playing and save it there (src/runtime_pad.c).
+int g_fov = -1;
+// The driving presets: the choice of each row of g_drive (0 = In-game). Sim: manual, no assists, hardcore handling;
+// Assisted: automatic, medium brake assist, wheel assist; Game Defaults: the game's own options for all.
+int g_drive_preset = -1;
+const int kDrivePreset[3][4] = {{2, 1, 2, 1}, {1, 3, 1, 2}, {0, 0, 0, 0}};
+void DeriveDrivePreset() {
+  if (g_drive_preset < 0) return;
+  g_c[g_drive_preset].sel = -1;
+  for (int p = 0; p < 3; ++p) {
+    bool same = true;
+    for (int k = 0; k < 4; ++k) same = same && g_drive[k].row >= 0 && g_c[g_drive[k].row].sel == kDrivePreset[p][k];
+    if (same) g_c[g_drive_preset].sel = p;
+  }
+}
+void ApplyDrivePreset(int p) {
+  for (int k = 0; k < 4; ++k) if (g_drive[k].row >= 0) g_c[g_drive[k].row].sel = kDrivePreset[p][k];
+}
+std::wstring CameraIniPath() { return g_data + L"\\user\\camera.ini"; }
 
 // The last result, from data\user\benchmark\result.txt.
 struct BenchResult {
@@ -367,11 +421,190 @@ std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported
 // overrides (BB_FPS_LIMIT=40, ...). Only these are left alone; the launcher's own values are replaced each time.
 std::vector<std::wstring> g_user_env;
 void SnapshotUserEnv() {
-  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER"}) {
+  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER",
+                             L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST"}) {
     if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
   }
 }
 bool UserEnv(const wchar_t* name) { return std::find(g_user_env.begin(), g_user_env.end(), name) != g_user_env.end(); }
+
+// ------------------------------------------------------------------------------------------
+// steering wheel: the force feedback lines of data\user\input_config\default.ini (wheel_ffb_*, read by the game's
+// runtime, src/runtime_wheel.inc; a running game takes changes within a second) and WheelSetup.exe for the controls.
+// Only the lines changed here are written; the rest of the file stays as it is. Until the game has made the file
+// (its first start) the choices wait in launcher.ini (ffb.<key>=) and are written into it once it exists.
+// ------------------------------------------------------------------------------------------
+int g_ffb_model = -1, g_ffb_preset = -1, g_ffb_softlock = -1, g_ffb_wave = -1, g_wheel_setup = -1;
+int g_ffb_slider[7] = {-1, -1, -1, -1, -1, -1, -1};
+int g_drag = -1;  // the slider being dragged
+// The two starting points (gain, filter, minimum force, kerbs, road, slip, damper), as FFB Tuner's.
+const int kWheelPreset[2][7] = {{100, 0, 0, 50, 50, 30, 10}, {130, 10, 8, 80, 80, 50, 0}};
+const int kWheelPresetWave[2] = {0, 1};  // sine on a direct drive, square on gear and belt wheels
+const char* const kSoftLock[6] = {"game", "off", "540", "720", "900", "1080"};
+constexpr char kLayoutMarker[] = "# DriveClub racing layout";  // the game replaces a default.ini without it
+
+bool PhysicsChosen() { return g_ffb_model >= 0 && g_c[g_ffb_model].sel == 0; }
+bool RowHidden(const Ctl& c) { return c.physics_only && !PhysicsChosen(); }
+bool IsWheelRow(const Ctl& c) { return c.patches[0].rfind("@ffb:", 0) == 0 || c.patches[0].rfind("@wheel", 0) == 0; }
+bool IsFfbKeyRow(const Ctl& c) { return c.patches[0].rfind("@ffb:", 0) == 0; }
+std::wstring WheelIniPath() { return g_data + L"\\user\\input_config\\default.ini"; }
+bool WheelIniReady() { return FileHas(WheelIniPath(), kLayoutMarker); }
+
+// A row's value as default.ini has it, and back (INT32_MIN: a value the launcher does not offer, kept as it is).
+std::string WheelValue(int i) {
+  const Ctl& c = g_c[size_t(i)];
+  if (i == g_ffb_model) return c.sel == 0 ? "physics" : "game";
+  if (i == g_ffb_softlock) return kSoftLock[c.sel];
+  if (i == g_ffb_wave) return c.sel == 0 ? "sine" : "square";
+  if (c.kind == Kind::Toggle) return c.sel ? "true" : "false";
+  return std::to_string(c.sel);
+}
+int WheelParse(int i, std::string v) {
+  const Ctl& c = g_c[size_t(i)];
+  for (char& ch : v) ch = char(tolower((unsigned char)ch));
+  if (i == g_ffb_model) return v == "physics" ? 0 : v == "game" ? 1 : INT32_MIN;
+  if (i == g_ffb_softlock) {
+    for (int k = 0; k < 6; ++k) if (v == kSoftLock[k]) return k;
+    return INT32_MIN;
+  }
+  if (i == g_ffb_wave) return v == "sine" ? 0 : v == "square" ? 1 : INT32_MIN;
+  if (c.kind == Kind::Toggle) return v == "true" || v == "on" || v == "yes" || v == "1" ? 1 : 0;
+  if (v.empty() || !isdigit((unsigned char)v[0])) return INT32_MIN;
+  return (std::clamp)(atoi(v.c_str()), c.min, c.max);
+}
+// The preset row shows the preset whose values the sliders have, else none.
+void DeriveWheelPreset() {
+  if (g_ffb_preset < 0) return;
+  g_c[g_ffb_preset].sel = -1;
+  for (int p = 0; p < 2; ++p) {
+    bool same = true;
+    for (int k = 0; k < 7; ++k) same = same && g_c[g_ffb_slider[k]].sel == kWheelPreset[p][k];
+    if (same) g_c[g_ffb_preset].sel = p;
+  }
+}
+void ApplyWheelPreset(int p) {
+  for (int k = 0; k < 7; ++k) g_c[g_ffb_slider[k]].sel = kWheelPreset[p][k];
+  if (g_ffb_wave >= 0) g_c[g_ffb_wave].sel = kWheelPresetWave[p];
+}
+// "key = value" lines (comments after '#' dropped) into the rows.
+void ApplyWheelLines(const std::vector<std::string>& lines, const char* prefix) {
+  const size_t plen = std::strlen(prefix);
+  for (std::string line : lines) {
+    const size_t hash = line.find('#');
+    if (hash != std::string::npos) line.resize(hash);
+    size_t s = line.find_first_not_of(" \t");
+    if (s == std::string::npos || line.compare(s, plen, prefix) != 0) continue;
+    s += plen;
+    const size_t eq = line.find('=', s);
+    if (eq == std::string::npos) continue;
+    std::string key = line.substr(s, eq - s), value = line.substr(eq + 1);
+    while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+    for (char& ch : key) ch = char(tolower((unsigned char)ch));
+    value.erase(0, value.find_first_not_of(" \t"));
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.pop_back();
+    for (size_t i = 0; i < g_c.size(); ++i) {
+      if (!IsFfbKeyRow(g_c[i]) || g_c[i].patches[0].compare(5, std::string::npos, key) != 0) continue;
+      const int v = WheelParse(int(i), value);
+      g_c[i].sel = v == INT32_MIN ? -1 : v;
+    }
+  }
+}
+// Writes the rows that changed into default.ini: each key's line replaced, or added after the last wheel_ffb line.
+bool WriteWheelChanges() {
+  std::ifstream in(WheelIniPath().c_str(), std::ios::binary);
+  if (!in) return false;
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  const std::string nl = text.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+  std::vector<std::string> lines;
+  for (size_t p = 0; p <= text.size();) {
+    size_t e = text.find('\n', p);
+    if (e == std::string::npos) { if (p < text.size()) lines.push_back(text.substr(p)); break; }
+    std::string l = text.substr(p, e - p);
+    if (!l.empty() && l.back() == '\r') l.pop_back();
+    lines.push_back(l);
+    p = e + 1;
+  }
+  auto key_of = [](const std::string& l) {
+    const size_t s = l.find_first_not_of(" \t");
+    const size_t eq = l.find('=');
+    if (s == std::string::npos || eq == std::string::npos || eq < s || l[s] == '#') return std::string();
+    std::string k = l.substr(s, eq - s);
+    while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+    for (char& ch : k) ch = char(tolower((unsigned char)ch));
+    return k;
+  };
+  bool any = false;
+  for (size_t i = 0; i < g_c.size(); ++i) {
+    Ctl& c = g_c[i];
+    if (!IsFfbKeyRow(c) || c.sel < 0 || c.sel == c.loaded) continue;
+    const std::string key = c.patches[0].substr(5), line = key + " = " + WheelValue(int(i));
+    int at = -1, last_ffb = -1;
+    for (size_t k = 0; k < lines.size(); ++k) {
+      const std::string lk = key_of(lines[k]);
+      if (lk == key) at = int(k);
+      if (lk.rfind("wheel_ffb", 0) == 0) last_ffb = int(k);
+    }
+    if (at >= 0) lines[size_t(at)] = line;
+    else if (last_ffb >= 0) lines.insert(lines.begin() + last_ffb + 1, line);
+    else lines.push_back(line);
+    any = true;
+  }
+  if (!any) return true;
+  static bool backed_up = false;  // the file as it was before the launcher first changed it, once per start
+  if (!backed_up) {
+    CopyFileW(WheelIniPath().c_str(), (WheelIniPath() + L".launcher-backup").c_str(), FALSE);
+    backed_up = true;
+  }
+  std::ofstream out(WheelIniPath().c_str(), std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  for (const auto& l : lines) out << l << nl;
+  if (!out) return false;
+  for (auto& c : g_c) if (IsFfbKeyRow(c) && c.sel >= 0) c.loaded = c.sel;
+  return true;
+}
+// The rows from default.ini (the runtime's defaults where it has no line); choices still waiting in launcher.ini
+// are written into it now that it exists.
+void LoadWheel() {
+  for (auto& c : g_c) if (IsFfbKeyRow(c)) c.sel = c.def;
+  std::vector<std::string> pending;
+  for (const auto& l : ReadLines(IniPath())) if (l.rfind("ffb.", 0) == 0) pending.push_back(l);
+  if (WheelIniReady()) ApplyWheelLines(ReadLines(WheelIniPath()), "");
+  for (auto& c : g_c) if (IsFfbKeyRow(c)) c.loaded = c.sel;
+  ApplyWheelLines(pending, "ffb.");
+  if (!pending.empty() && WheelIniReady() && WriteWheelChanges()) {
+    // written: the waiting lines go from launcher.ini
+    std::vector<std::string> keep;
+    for (const auto& l : ReadLines(IniPath())) if (l.rfind("ffb.", 0) != 0) keep.push_back(l);
+    std::ofstream ini(IniPath().c_str(), std::ios::binary | std::ios::trunc);
+    for (const auto& l : keep) ini << l << "\r\n";
+  }
+  DeriveWheelPreset();
+}
+// On Save and Play: into default.ini, or, before the game has made it, as ffb.<key>= lines for launcher.ini.
+std::string SaveWheel() {
+  if (WheelIniReady()) {
+    WriteWheelChanges();
+    return "";
+  }
+  std::string pending;
+  for (size_t i = 0; i < g_c.size(); ++i) {
+    if (IsFfbKeyRow(g_c[i]) && g_c[i].sel >= 0) pending += "ffb." + g_c[i].patches[0].substr(5) + "=" + WheelValue(int(i)) + "\r\n";
+  }
+  return pending;
+}
+// WheelSetup.exe next to this program (or in the development tree).
+void OpenWheelSetup() {
+  for (const std::wstring& p : {g_home + L"\\WheelSetup.exe", g_home + L"\\..\\WheelSetup.exe", g_home + L"\\..\\tools\\WheelSetup.exe"}) {
+    if (!Exists(p)) continue;
+    ShellExecuteW(g_hwnd, L"open", p.c_str(), nullptr, Dir(p).c_str(), SW_SHOWNORMAL);
+    g_status = L"Wheel Setup is open: map the wheel, pedals, handbrake and shifter there, then press Save in its window.";
+    g_status_color = kMuted;
+    return;
+  }
+  g_status = L"WheelSetup.exe was not found next to DriveClub.exe.";
+  g_status_color = kBad;
+}
 
 void BuildModel() {
   g_folder[0].label = L"Update folder (version 1.28)";
@@ -518,6 +751,63 @@ void BuildModel() {
                    L"Shows the VR EXPERIMENTAL section below: VR DLSS, its model and the sharpening. Still in "
                    L"development: they may have graphical bugs. Off, those settings are not used.",
                    "@vrexp", false);
+  g_drive_preset = seg(L"Driving preset",
+                       L"Sets the four rows below in one click. Sim: manual gears, no assists, hardcore handling. Assisted: automatic gears and help with braking and steering. Game Defaults: the game's own Options menu decides.",
+                       {L"Sim", L"Assisted", L"Game Defaults"}, {"@drive_preset", "", ""}, 2);
+  g_drive[0].row = seg(L"Gearbox", L"In-game: whatever is set in the game's own Options menu. Automatic changes gear for you; Manual is for paddles or a shifter.",
+                       {L"In-game", L"Automatic", L"Manual"}, {"@drive_gearbox", "", ""}, 0);
+  g_drive[1].row = seg(L"Brake assist", L"In-game: whatever is set in the game's own Options menu. The assist brakes for you before corners; Off leaves the braking to you.",
+                       {L"In-game", L"Off", L"Low", L"Medium", L"High"}, {"@drive_brake", "", "", "", ""}, 0);
+  g_drive[2].row = seg(L"Hardcore handling", L"In-game: whatever is set in the game's own Options menu. On makes the cars handle more like real ones, with fewer hidden helpers. Recommended with a wheel.",
+                       {L"In-game", L"Off", L"On"}, {"@drive_hardcore", "", ""}, 0);
+  g_drive[3].row = seg(L"Wheel assist", L"In-game: whatever is set in the game's own Options menu. The game's steering help for wheels. Off is recommended with the Reworked Physics force feedback.",
+                       {L"In-game", L"Off", L"On"}, {"@drive_wheel_assist", "", ""}, 0);
+  {
+    Ctl c{L"Field of view (F5 / F6 while driving)", L"How much of the road you see. 100% is the game's own view; higher shows more to the sides, lower zooms in. While playing: F5 narrower, F6 wider.",
+          Kind::Slider, {}, {"@drive_fov"}, 100, 100};
+    c.min = 50;
+    c.max = 150;
+    g_fov = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
+  // Steering wheel: Wheel Setup, then the force feedback.
+  g_wheel_setup = int(g_c.size());
+  g_c.push_back(Ctl{L"Controls", L"Set up your wheel, pedals, handbrake and shifter. Click Map next to a control, then move it.",
+                    Kind::Button, {L"Wheel Setup..."}, {"@wheelsetup"}, 0, 0});
+  g_ffb_model = seg(L"Force feedback",
+                    L"How the wheel's force is made. Reworked Physics feels like a real car and a racing sim. Original Physics is the PS4 game's own feel.",
+                    {L"Reworked Physics", L"Original Physics"}, {"@ffb:wheel_ffb_model", ""}, 1);
+  g_ffb_preset = seg(L"Preset", L"Ready-made settings for your type of wheel. You can fine-tune the sliders below afterwards.",
+                     {L"Direct drive", L"Gear or belt"}, {"@wheelpreset", ""}, -1);
+  g_c[g_ffb_preset].physics_only = true;
+  auto slider = [](const wchar_t* label, const wchar_t* hint, const char* key, int lo, int hi, int def) {
+    Ctl c{label, hint, Kind::Slider, {}, {std::string("@ffb:") + key}, def, def};
+    c.min = lo;
+    c.max = hi;
+    c.physics_only = true;
+    g_c.push_back(std::move(c));
+    return int(g_c.size()) - 1;
+  };
+  g_ffb_slider[0] = slider(L"Gain", L"How strong the steering force is overall.",
+                           "wheel_ffb_physics_gain", 0, 300, 100);
+  g_ffb_slider[1] = slider(L"Filter", L"Smooths the force. Higher feels softer, lower feels more detailed.",
+                           "wheel_ffb_physics_filter", 0, 100, 0);
+  g_ffb_slider[2] = slider(L"Minimum force", L"Helps weaker wheels feel small forces around the centre.",
+                           "wheel_ffb_physics_min_force", 0, 30, 0);
+  g_ffb_slider[3] = slider(L"Kerb effects", L"How much you feel kerbs and rumble strips.",
+                           "wheel_ffb_physics_kerbs", 0, 200, 50);
+  g_ffb_slider[4] = slider(L"Road effects", L"How much you feel bumps and the road surface.",
+                           "wheel_ffb_physics_road", 0, 200, 50);
+  g_ffb_slider[5] = slider(L"Slip effects", L"A light vibration when the tyres slide, spin or lock up.",
+                           "wheel_ffb_physics_slip", 0, 200, 30);
+  g_ffb_slider[6] = slider(L"Damper", L"Makes the wheel a little heavier to turn so it stays calm and does not wobble.",
+                           "wheel_ffb_physics_damper", 0, 100, 10);
+  g_ffb_softlock = seg(L"Soft lock", L"Stops the wheel where the car's own steering stops, so you cannot turn it further than the car can.",
+                       {L"Game", L"Off", L"540\x00b0", L"720\x00b0", L"900\x00b0", L"1080\x00b0"},
+                       {"@ffb:wheel_ffb_soft_lock", "", "", "", "", ""}, 0);
+  g_ffb_wave = seg(L"Vibration wave", L"The feel of vibrations: Sine is smooth, Square is sharper.",
+                   {L"Sine", L"Square"}, {"@ffb:wheel_ffb_vibration_wave", ""}, 1);
+  const int ffb_invert = toggle(L"Invert forces", L"Turn on only if the wheel pulls away from the centre instead of towards it.", "@ffb:wheel_ffb_invert", false);
   // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab. VR fork:
   // the VR card first on the Graphics tab, at the top of the first column, the experimental card right below it. With
   // a headset size the VR patch set stands in for the frame rate, resolution and anti-aliasing rows (VrReplaces):
@@ -533,10 +823,52 @@ void BuildModel() {
   g_tex_card = int(g_cards.size());
   g_cards.push_back({L"TEXTURE FILTERING", {g_aniso}, 0, kTabGraphics});
   g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, overlays, autoplay}, 0, kTabGameplay});
+  g_cards.push_back({L"VIEW AND KEYS", {g_fov}, 0, kTabDriving,
+                     L"Keys while playing:  F5 / F6  narrower / wider view.   F7  mouse look on or off.   F9  the new anti-aliasing on or off.   F10  FSR or DLSS.   F12  FPS counter."});
+  g_cards.back().sub = kSubAssists;
+  g_cards.push_back({L"ASSISTS", {g_drive_preset, g_drive[0].row, g_drive[1].row, g_drive[2].row, g_drive[3].row}, 0, kTabDriving,
+                     L"In-game: the launcher leaves that setting alone and the game's own Options menu decides. Any other choice is set by the launcher every time the game starts."});
+  g_cards.back().sub = kSubAssists;
   g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0, kTabGameplay,
                      L"Community patches for DriveClub version 1.28."});
   g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen}, 0, kTabBench});
   g_cards.push_back({L"BENCHMARK RUN AND RESULT", {g_brun}, 0, kTabBench});
+  // The details each (i) opens, after the row's hint.
+  const struct { const wchar_t* label; const wchar_t* more; } kMore[] = {
+      {L"Widescreen (render and output)", L"Leave Output resolution and Render resolution on Default when you use a widescreen size: the widescreen size sets both, and other sizes there crop the picture. Choosing a widescreen size puts them back on Default for you."},
+      {L"Force feedback", L"Reworked Physics is recommended for every wheel. The wheel gets heavier in fast corners, goes light when the front tyres lose grip (the car runs wide), and turns itself the right way when the back of the car slides, like in Assetto Corsa. It learns each car as you drive. Original Physics gives the forces the PS4 game made."},
+      {L"Preset", L"Direct drive: wheels with the motor on the steering shaft (for example Fanatec DD, Moza, Simagic, Simucube). Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels. A preset only moves the sliders below."},
+      {L"Gain", L"Too weak and the car feels vague; too strong and the wheel hits its limit in fast corners, where it feels flat and you lose the detail. Start at 100 on a strong wheel; weaker wheels may want 150 to 200."},
+      {L"Filter", L"Leave it at 0. If the wheel feels grainy or rattles, try 10 to 20."},
+      {L"Minimum force", L"Gear and belt wheels often feel dead around the centre because they cannot make very small forces. If yours does, try 5 to 10. Keep it at 0 on a direct drive wheel."},
+      {L"Kerb effects", L"Also used for wheelspin. 50 is a good start; turn it down if kerbs shake the wheel too much."},
+      {L"Road effects", L"You feel dips, bumps and rough road through the wheel. Turn it down for a calmer wheel."},
+      {L"Slip effects", L"A warning that you are past the grip limit. Many players keep it low or off, because the wheel already goes light when the tyres slide."},
+      {L"Damper", L"Like real steering, it is heaviest when the car stands still. On a direct drive wheel, 10 to 30 stops the wheel wobbling when you let go. Gear and belt wheels usually want 0."},
+      {L"Soft lock", L"Game uses the right angle for each car. Also set your wheel's own software to 900 degrees."},
+      {L"Vibration wave", L"Sine suits direct drive wheels. Square feels stronger on gear and belt wheels."},
+      {L"Invert forces", L"Only needed on a few wheels. If the wheel pushes away from the centre when you drive straight, turn this on."},
+      {L"Field of view (F5 / F6 while driving)", L"A wider view (110 to 130%) helps in the cockpit view, especially on a big or wide screen; a narrower one makes the car feel faster. It changes every camera. Other than 100%, it replaces the widescreen field-of-view fix. In the game, F5 and F6 change it in steps of 5% and it is kept for next time."},
+      {L"Driving preset", L"Sim is for wheel players who want the real thing: you change gear yourself and nothing helps you brake or steer. Assisted is the easiest way to start: the car changes gear, helps you brake before corners and helps the steering. Game Defaults uses whatever you set in the game's own Options menu (each row then shows In-game). You can change any row afterwards."},
+      {L"Gearbox", L"Pick Manual if you change gear yourself with paddles or an H-pattern shifter; the shifter only works with Manual."},
+      {L"Brake assist", L"Good for learning the tracks. Experienced players and wheel users usually turn it Off."},
+      {L"Hardcore handling", L"The game's sim-like handling: the cars react more honestly to throttle, brakes and weight. Recommended with a wheel and the Reworked Physics force feedback."},
+      {L"Wheel assist", L"Helps controller-style steering on a wheel. With a proper wheel and Reworked Physics force feedback, Off feels most natural."},
+  };  for (auto& c : g_c) {
+    for (const auto& m : kMore) {
+      if (wcscmp(c.label, m.label) == 0) c.more = m.more;
+    }
+  }
+  // Wheel: Wheel Setup for the controls, then the force feedback.
+  // Three cards, so the page fits beside the game files card without scrolling: the controls, the steering force, the
+  // effects (gain, filter, minimum force, damper are sliders 0, 1, 2 and 6; kerbs, road, slip 3, 4 and 5).
+  g_cards.push_back({L"CONTROLS", {g_wheel_setup, ffb_invert}, 0, kTabDriving,
+                     L"Wheel Setup shows every controller plugged in. Click Map next to a control (steering, pedals, handbrake, buttons, gears), then move it."});
+  g_cards.back().sub = kSubWheel;
+  g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_preset, g_ffb_slider[0], g_ffb_slider[1], g_ffb_slider[2], g_ffb_slider[6], g_ffb_softlock}, 0, kTabDriving});
+  g_cards.back().sub = kSubWheel;
+  g_cards.push_back({L"EFFECTS", {g_ffb_slider[3], g_ffb_slider[4], g_ffb_slider[5], g_ffb_wave}, 0, kTabDriving});
+  g_cards.back().sub = kSubWheel;
 }
 
 // The rows show the chosen track and car by name.
@@ -591,6 +923,12 @@ void LoadSettings() {
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = line.substr(9) == "1";
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("overlays=", 0) == 0) g_allow_overlays = line.substr(9) == "1";
+    for (const auto& d : g_drive) {
+      const size_t n = std::strlen(d.key);
+      if (d.row < 0 || line.compare(0, n, d.key) != 0) continue;
+      const int v = atoi(line.substr(n).c_str());
+      if (v >= 0 && v < int(g_c[d.row].items.size())) g_c[d.row].sel = v;
+    }
     if (line.rfind("auto_play=", 0) == 0) g_auto_play = line.substr(10) == "1";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("vr_dlss=", 0) == 0) vrdlss_saved = atoi(line.substr(8).c_str());  // VR fork
@@ -648,7 +986,7 @@ void LoadSettings() {
       c.sel = vr_experimental ? 1 : 0;
       continue;
     }
-    if (!has_selection || IsBenchRow(c)) continue;  // defaults; the benchmark rows are in launcher.ini
+    if (!has_selection || IsBenchRow(c) || IsWheelRow(c) || IsDriveRow(c)) continue;  // defaults; the benchmark and driving rows are in launcher.ini, the wheel's in default.ini
     c.sel = 0;
     for (size_t i = 0; i < c.patches.size(); ++i) {
       if (c.patches[i].empty()) continue;
@@ -670,6 +1008,13 @@ void LoadSettings() {
   if (g_vrmodel >= 0 && vrmodel_saved >= 1 && vrmodel_saved <= 5) g_c[g_vrmodel].sel = vrmodel_saved;  // VR fork
   if (g_vrsharp >= 0 && vrsharp_saved >= 1 && vrsharp_saved <= 5) g_c[g_vrsharp].sel = vrsharp_saved;  // VR fork  // Unlocked is deltatime without the cap
   DerivePreset();
+  LoadWheel();
+  DeriveDrivePreset();
+  if (g_fov >= 0) {
+    for (const auto& line : ReadLines(CameraIniPath())) {
+      if (line.rfind("fov=", 0) == 0) g_c[g_fov].sel = (std::clamp)(atoi(line.substr(4).c_str()), g_c[g_fov].min, g_c[g_fov].max);
+    }
+  }
 }
 
 // Resolutions above 1080p need more memory: the game's own "Memory for up to ..." patch plus a larger
@@ -761,6 +1106,12 @@ void SaveSettings() {
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
         << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
+    for (const auto& d : g_drive) if (d.row >= 0) ini << d.key << g_c[d.row].sel << "\r\n";
+    if (g_fov >= 0 && (g_c[g_fov].sel != 100 || Exists(CameraIniPath()))) {
+      std::ofstream cam(CameraIniPath().c_str(), std::ios::binary | std::ios::trunc);
+      cam << "fov=" << g_c[g_fov].sel << "\r\n";
+    }
+    ini << SaveWheel();  // into default.ini; before the game has made it, kept here
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -779,6 +1130,7 @@ void SaveSettings() {
   if (VrOn() && VrRender() != VrEye()) out << "VR render " << VrRender() << "x" << VrRender() << "\n";  // VR fork: DLSS
   for (const auto& c : g_c) {
     if (VrReplaces(c)) continue;  // VR fork
+    if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button) continue;  // no patches
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
     } else if (c.sel > 0 && c.patches[c.sel] == "@unlocked") {
@@ -801,6 +1153,7 @@ void SaveSettings() {
 
 void ResetDefaults() {
   for (auto& c : g_c) {
+    if (IsWheelRow(c)) continue;  // the player's wheel tuning stays (its presets are in its card)
     c.sel = c.def;
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") g_skip_gpu_check = c.sel != 0;
   }
@@ -813,7 +1166,12 @@ void ResetDefaults() {
 // ------------------------------------------------------------------------------------------
 // layout
 // ------------------------------------------------------------------------------------------
-float RowHeight(const Ctl& c) { return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : 70.f) + g_row_extra; }
+// full: as if every row were shown (where the cards are placed, so hiding rows does not move them).
+float RowHeight(const Ctl& c, bool full = false) {
+  if (!full && RowHidden(c)) return 0.f;
+  return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : c.kind == Kind::Slider ? 54.f : c.kind == Kind::Button ? 58.f : 70.f) +
+         g_row_extra;
+}
 float FolderRowHeight() { return 74.f; }
 
 int g_cols = 2;  // columns of cards: more when the window is wide
@@ -839,7 +1197,14 @@ void LayoutPass(float bottom_extra) {
   // and the other columns have room, so the folders card goes into one of them instead of taking a full-width strip.
   g_folders_in_flow = g_cols >= 3;
   const float folders_h = kTitleH + 2 * FolderRowHeight() + kPad * 0.4f + 8.f;
-  const float content_top = kHeaderH + kTabH;
+  const float content_top = kHeaderH + kTabH + (HasSubTabs() ? kSubTabH : 0.f);
+  {
+    // a full-width bar of equal halves under the main tabs, so the inner tabs cannot be missed
+    const float bar_w = g_win_w - 2 * kMargin, sw = bar_w / float(kSubCount);
+    for (int s = 0; s < kSubCount; ++s) {
+      g_sub_rect[s] = HasSubTabs() ? RectF(kMargin + sw * float(s), kHeaderH + kTabH + 4.f, sw, 46.f) : RectF(-1e6f, -1e6f, 0.f, 0.f);
+    }
+  }
   // The tab row: as many pills as tabs, each as wide as its label needs.
   {
     float tx = kMargin;
@@ -854,7 +1219,7 @@ void LayoutPass(float bottom_extra) {
   for (auto& c : g_c) c.row = c.ctl = RectF(-10000.f, -10000.f, 0.f, 0.f);  // VR fork: only shown rows get a place
   // Card heights; the tallest cards are placed first, each into the shortest column. Only the cards of the
   // current tab are placed; the others move off the page, so they neither draw nor catch the mouse.
-  std::vector<float> heights(g_cards.size() + 1, 0.f);
+  std::vector<float> heights(g_cards.size() + 1, 0.f), place(g_cards.size() + 1, 0.f);  // as shown; with every row
   std::vector<size_t> order;
   for (size_t k = 0; k < g_cards.size(); ++k) {
     if (!OnPage(g_cards[k])) {
@@ -862,23 +1227,29 @@ void LayoutPass(float bottom_extra) {
       for (int i : g_cards[k].ctls) g_c[i].row = g_c[i].ctl = RectF(-1e6f, -1e6f, 0.f, 0.f);
       continue;
     }
-    float h = kTitleH + kPad * 0.4f;
-    for (int i : g_cards[k].ctls) h += CtlHidden(i) ? 0.f : RowHeight(g_c[i]);
+    float h = kTitleH + kPad * 0.4f, hf = h;
+    for (int i : g_cards[k].ctls) {
+      h += CtlHidden(i) ? 0.f : RowHeight(g_c[i]);
+      hf += CtlHidden(i) ? 0.f : RowHeight(g_c[i], true);
+    }
     h += kPad * 0.6f;
+    hf += kPad * 0.6f;
     if (g_cards[k].note) {
       // The note wraps to as many lines as the column width needs (about 6.3 units per character of the hint font).
       const float per_line = (std::max)(1.f, std::floor((colw - 2 * kPad) / 6.3f));
       const float lines = (std::max)(1.f, std::ceil(float(wcslen(g_cards[k].note)) / per_line));
       g_cards[k].note_h = lines * 17.f + 4.f;
       h += g_cards[k].note_h + 10.f;
+      hf += g_cards[k].note_h + 10.f;
     }
     heights[k] = h;
+    place[k] = hf;
     order.push_back(k);
   }
   // The folders card, when in a column, takes part as index g_cards.size() and goes on top of its column.
   const size_t folders_k = g_cards.size();
   if (g_folders_in_flow) {
-    heights[folders_k] = folders_h;
+    heights[folders_k] = place[folders_k] = folders_h;
     order.push_back(folders_k);
   }
   // VR fork: the page's shown cards take part except the experimental one, which goes right below the VR card (so
@@ -892,7 +1263,7 @@ void LayoutPass(float bottom_extra) {
       part.push_back(k);
     }
   }
-  std::sort(part.begin(), part.end(), [&](size_t a, size_t b) { return heights[a] > heights[b]; });
+  std::sort(part.begin(), part.end(), [&](size_t a, size_t b) { return place[a] > place[b]; });
   if (vr_here) part.insert(part.begin(), size_t(0));
   // Every split of the page's cards into columns is tried and the one with the shortest tallest column is kept, so
   // the page needs the least height. The first card (the VR card, or the tallest) stays in the first column.
@@ -908,7 +1279,7 @@ void LayoutPass(float bottom_extra) {
       const int c = i == 0 ? 0 : int(r % size_t(g_cols));
       if (i) r /= size_t(g_cols);
       col_of[part[i]] = c;
-      fill[c] += heights[part[i]] + kGap;
+      fill[c] += place[part[i]] + kGap;
     }
     const float tallest = *std::max_element(fill, fill + g_cols);
     if (tallest < best_h - 1.f) {
@@ -956,6 +1327,8 @@ void LayoutPass(float bottom_extra) {
       c.row = RectF(card.rect.X + kPad, cy, colw - 2 * kPad, rh);
       c.ctl = c.kind == Kind::Toggle   ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
               : c.kind == Kind::Action ? RectF(c.row.X, cy + 8.f, c.row.Width, 44.f)
+              : c.kind == Kind::Slider ? RectF(c.row.X, cy + 26.f, c.row.Width, 22.f)
+              : c.kind == Kind::Button ? RectF(c.row.X, cy + 8.f, c.row.Width, 42.f)
                                        : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
       cy += rh;
     }
@@ -1068,6 +1441,65 @@ void Text(Graphics& g, const std::wstring& s, const Font& f, const RectF& r, con
 
 RectF Scaled(const RectF& r) { return RectF(r.X * g_scale + g_ox, r.Y * g_scale + g_oy, r.Width * g_scale, r.Height * g_scale); }
 
+// A row's name and, after it, the (i) that opens its details; where the (i) is drawn is kept for the mouse.
+void RowLabel(Graphics& g, Ctl& c, int i, const Font& f, const RectF& r) {
+  Text(g, c.label, f, r, kText);
+  StringFormat mf;
+  mf.SetFormatFlags(StringFormatFlagsNoWrap);
+  RectF box;
+  g.MeasureString(c.label, -1, &f, PointF(0, 0), &mf, &box);
+  const float S = g_scale, d = 15 * S;
+  const float x = (std::min)(r.X + box.Width + 4 * S, r.X + r.Width - d);
+  c.info = RectF(x, r.Y + r.Height / 2 - d / 2, d, d);
+  const bool hot = g_hover_info == i || g_info_open == i;
+  Pen pen(hot ? kWhite : kMuted, 1.2f * S);
+  g.DrawEllipse(&pen, c.info);
+  FontFamily fam(L"Segoe UI");
+  Font fi(&fam, 10.5f * S, FontStyleBold, UnitPixel);
+  Text(g, L"i", fi, RectF(c.info.X, c.info.Y + 0.5f * S, c.info.Width, c.info.Height), hot ? kWhite : kMuted, StringAlignmentCenter);
+}
+
+// A rounded panel of wrapped text at (x, y) at most `width` wide, kept inside the window; returns its rectangle.
+RectF TextPanel(Graphics& g, const std::wstring& title, const std::wstring& body, float x, float y, float width, int w, int h, bool above) {
+  const float S = g_scale, pad = 14 * S;
+  FontFamily fam(L"Segoe UI");
+  Font ft(&fam, 14 * S, FontStyleBold, UnitPixel), fb(&fam, 13 * S, FontStyleRegular, UnitPixel);
+  StringFormat mf;
+  RectF tb{}, bb{};
+  if (!title.empty()) g.MeasureString(title.c_str(), -1, &ft, RectF(0, 0, width - 2 * pad, 0), &mf, &tb);
+  g.MeasureString(body.c_str(), -1, &fb, RectF(0, 0, width - 2 * pad, 0), &mf, &bb);
+  const float ph = pad * 2 + (title.empty() ? 0 : tb.Height + 6 * S) + bb.Height;
+  if (above) y -= ph;
+  x = (std::max)(8 * S, (std::min)(x, float(w) - width - 8 * S));
+  y = (std::max)(8 * S, (std::min)(y, float(h) - ph - 8 * S));
+  const RectF panel(x, y, width, ph);
+  FillRound(g, RectF(panel.X + 2 * S, panel.Y + 3 * S, panel.Width, panel.Height), 10 * S, Color(120, 0, 0, 0));
+  FillRound(g, panel, 10 * S, Color(252, 34, 38, 47));
+  StrokeRound(g, panel, 10 * S, Color(255, 64, 70, 84));
+  float ty = panel.Y + pad;
+  if (!title.empty()) {
+    Text(g, title, ft, RectF(panel.X + pad, ty, width - 2 * pad, tb.Height), kWhite, StringAlignmentNear, StringAlignmentNear, true, false);
+    ty += tb.Height + 6 * S;
+  }
+  Text(g, body, fb, RectF(panel.X + pad, ty, width - 2 * pad, bb.Height + 2 * S), kText, StringAlignmentNear, StringAlignmentNear, true, false);
+  return panel;
+}
+
+// Over everything: the details a click on an (i) opened.
+void PaintHelp(Graphics& g, int w, int h) {
+  const float S = g_scale;
+  if (g_info_open >= 0) {
+    SolidBrush dim(Color(150, 0, 0, 0));
+    g.FillRectangle(&dim, 0.f, 0.f, float(w), float(h));
+    const Ctl& c = g_c[size_t(g_info_open)];
+    std::wstring body = c.hint;
+    if (c.more) body += std::wstring(L"\n\n") + c.more;
+    body += L"\n\nClick anywhere to close.";
+    const float width = (std::min)(560 * S, float(w) - 32 * S);
+    TextPanel(g, c.label, body, (float(w) - width) / 2, float(h) * 0.22f, width, w, h, false);
+  }
+}
+
 bool FoldersOk() { return g_folder[0].ok && g_folder[1].ok; }
 
 void Paint(HDC hdc, int w, int h) {
@@ -1078,6 +1510,7 @@ void Paint(HDC hdc, int w, int h) {
   FontFamily fam(L"Segoe UI");
   const float S = g_scale;
   g_oy = ContentOy();
+  for (auto& c : g_c) c.info = RectF();  // set again for the rows drawn below
   Font fTitle(&fam, 22 * S, FontStyleBold, UnitPixel), fSub(&fam, 13 * S, FontStyleRegular, UnitPixel),
       fCard(&fam, 12 * S, FontStyleBold, UnitPixel), fLabel(&fam, 14 * S, FontStyleRegular, UnitPixel),
       fSegBold(&fam, 13 * S, FontStyleBold, UnitPixel), fHint(&fam, 12.5f * S, FontStyleRegular, UnitPixel),
@@ -1112,6 +1545,22 @@ void Paint(HDC hdc, int w, int h) {
     FillRound(g, tr, tr.Height / 2, sel ? (g_hover_tab == t ? kAccentHover : kAccent)
                                         : (g_hover_tab == t ? kTrackHover : kTrack));
     Text(g, kTabName[t], fSeg, tr, sel ? kWhite : kMuted, StringAlignmentCenter);
+  }
+  // the Driving tab's own tabs: a full-width two-part switch, the chosen part filled
+  if (HasSubTabs()) {
+    const RectF a = Scaled(g_sub_rect[0]), b = Scaled(g_sub_rect[kSubCount - 1]);
+    const RectF bar(a.X, a.Y, b.X + b.Width - a.X, a.Height);
+    FillRound(g, bar, 12 * S, kCard);
+    StrokeRound(g, bar, 12 * S, kCardLine, 1.2f * S);
+    Font fSub(&fam, 15 * S, FontStyleBold, UnitPixel);
+    for (int s = 0; s < kSubCount; ++s) {
+      const RectF sr = Scaled(g_sub_rect[s]);
+      const RectF in(sr.X + 4 * S, sr.Y + 4 * S, sr.Width - 8 * S, sr.Height - 8 * S);
+      const bool sel = s == g_subtab, over = g_hover_tab == kTabCount + s;
+      if (sel) FillRound(g, in, 9 * S, over ? kAccentHover : kAccent);
+      else if (over) FillRound(g, in, 9 * S, kTrackHover);
+      Text(g, kSubName[s], fSub, in, sel ? kWhite : kText, StringAlignmentCenter);
+    }
   }
 
   // game folders card
@@ -1156,17 +1605,37 @@ void Paint(HDC hdc, int w, int h) {
     for (int i : card.ctls) {
       if (CtlHidden(i)) continue;  // VR fork
       Ctl& c = g_c[i];
+      if (RowHidden(c)) continue;
       const RectF row = Scaled(c.row), ct = Scaled(c.ctl);
-      const bool hot = g_hover_ctl == i;
+      const bool hot = g_hover_ctl == i || g_drag == i;
+      if (c.kind == Kind::Slider) {
+        // Label and value above a track with a knob.
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width - 70 * S, 22 * S));
+        Text(g, std::to_wstring(c.sel) + L"%", fSegBold, RectF(row.X + row.Width - 70 * S, row.Y + 2 * S, 70 * S, 22 * S),
+             hot ? kWhite : kText, StringAlignmentFar);
+        const float t = c.max > c.min ? float((std::clamp)(c.sel, c.min, c.max) - c.min) / float(c.max - c.min) : 0.f;
+        const RectF track(ct.X + 8 * S, ct.Y + ct.Height / 2 - 3 * S, ct.Width - 16 * S, 6 * S);
+        FillRound(g, track, 3 * S, hot ? kTrackHover : kTrack);
+        FillRound(g, RectF(track.X, track.Y, (std::max)(track.Height, track.Width * t), track.Height), 3 * S, hot ? kAccentHover : kAccent);
+        SolidBrush knob(kWhite);
+        const float d = 16 * S;
+        g.FillEllipse(&knob, track.X + track.Width * t - d / 2, ct.Y + ct.Height / 2 - d / 2, d, d);
+        continue;
+      }
+      if (c.kind == Kind::Button) {
+        FillRound(g, ct, 10 * S, hot ? Color(255, 66, 73, 88) : Color(255, 50, 56, 68));
+        Text(g, c.items[0], fBtn, ct, kWhite, StringAlignmentCenter);
+        continue;
+      }
       if (c.kind == Kind::Toggle) {
-        Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width - 60 * S, 40 * S), kText);
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width - 60 * S, 40 * S));
         FillRound(g, ct, ct.Height / 2, c.sel ? (hot ? kAccentHover : kAccent) : (hot ? Color(255, 80, 87, 102) : kOff));
         SolidBrush knob(kWhite);
         const float d = ct.Height - 6 * S;
         g.FillEllipse(&knob, c.sel ? ct.X + ct.Width - d - 3 * S : ct.X + 3 * S, ct.Y + 3 * S, d, d);
       } else if (c.kind == Kind::Picker) {
         // A box with the chosen name and a down arrow: a click opens the menu of choices.
-        Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S), kText);
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
         FillRound(g, ct, 9 * S, hot ? kTrackHover : kTrack);
         Text(g, c.items[0], fSegBold, RectF(ct.X + 12 * S, ct.Y, ct.Width - 44 * S, ct.Height), kText);
         SolidBrush arrow(kMuted);
@@ -1175,7 +1644,7 @@ void Paint(HDC hdc, int w, int h) {
         g.FillPolygon(&arrow, tri, 3);
       } else if (c.kind == Kind::Action) {
         // The benchmark: Run, then the last result.
-        Text(g, c.label, fLabel, RectF(row.X, row.Y + 64 * S, row.Width, 22 * S), kText);
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 64 * S, row.Width, 22 * S));
         const RectF res(row.X, row.Y + 88 * S, row.Width, row.Height - 88 * S);
         if (g_bench_running) {
           Text(g, L"Running. The game closes by itself when it is done.", fHint, res, kText,
@@ -1198,7 +1667,7 @@ void Paint(HDC hdc, int w, int h) {
         FillRound(g, ct, 10 * S, disabled ? kOff : hot && g_hover_seg == 0 ? kAccentHover : kAccent);
         Text(g, L"Run benchmark", fBtn, ct, disabled ? kMuted : kWhite, StringAlignmentCenter);
       } else {
-        Text(g, c.label, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S), kText);
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
         FillRound(g, ct, 9 * S, kTrack);
         const float sw = ct.Width / float(c.items.size());
         for (size_t k = 0; k < c.items.size(); ++k) {
@@ -1233,6 +1702,8 @@ void Paint(HDC hdc, int w, int h) {
   if (g_busy) {
     msg = g_progress_text;
     mc = kText;
+  } else if (g_status_sticky) {
+    // the warning stays in front of the hints
   } else if (g_hover_ctl >= 0) {
     msg = g_c[g_hover_ctl].hint;
     mc = kMuted;
@@ -1240,7 +1711,7 @@ void Paint(HDC hdc, int w, int h) {
     msg = g_folder[g_hover_browse].hint;
     mc = kMuted;
   } else if (g_hover_tab >= 0) {
-    msg = kTabHint[g_hover_tab];
+    msg = g_hover_tab < kTabCount ? kTabHint[g_hover_tab] : kSubHint[g_hover_tab - kTabCount];
     mc = kMuted;
   } else if (g_hover_btn == 0) {
     msg = L"Put every patch back to its default.";
@@ -1294,6 +1765,7 @@ void Paint(HDC hdc, int w, int h) {
            RectF(panel.X + pad, panel.Y + pad + line_h * float(i), panel.Width - 2 * pad, line_h), i == 0 ? kWhite : kText);
     }
   }
+  PaintHelp(g, w, h);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1637,6 +2109,9 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   const int tier = MemoryTier();
   SetEnvironmentVariableW(L"BB_DMEM_MB", tier == 3 ? L"17056" : tier == 2 ? L"10056" : tier == 1 ? L"8056" : L"5056");
   SetEnvironmentVariableW(L"BB_CONFIG", (user + L"\\driveclub.ini").c_str());
+  for (const auto& d : g_drive) {
+    if (d.row >= 0 && !UserEnv(d.env)) SetEnvironmentVariableW(d.env, d.values[(std::max)(0, g_c[d.row].sel)]);
+  }
   if (VrOn()) {
     // VR fork: both eyes rendered (multiview); the headset's own thread shows the newest frame at the headset's rate,
     // so the game runs unpaced (the deltatime patch keeps its speed right).
@@ -1990,6 +2465,7 @@ int HitControl(float x, float y, int* seg) {
   *seg = -1;
   for (size_t i = 0; i < g_c.size(); ++i) {
     Ctl& c = g_c[i];
+    if (RowHidden(c)) continue;
     RectF r = Scaled(c.row);
     if (x < r.X || x > r.X + r.Width || y < r.Y || y > r.Y + r.Height) continue;
     if (c.kind == Kind::Action) {
@@ -2012,6 +2488,10 @@ int HitTab(float x, float y) {
   for (int t = 0; t < kTabCount; ++t) {
     RectF r = Scaled(g_tab_rect[t]);
     if (x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height) return t;
+  }
+  for (int s = 0; HasSubTabs() && s < kSubCount; ++s) {
+    RectF r = Scaled(g_sub_rect[s]);
+    if (x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height) return kTabCount + s;
   }
   return -1;
 }
@@ -2036,8 +2516,47 @@ int HitBrowse(float x, float y) {
   return -1;
 }
 
+// The slider value under the pointer.
+int SliderValueAt(const Ctl& c, float x) {
+  const RectF ct = Scaled(c.ctl);
+  const float x0 = ct.X + 8 * g_scale, width = ct.Width - 16 * g_scale;
+  const float t = width > 0 ? (std::clamp)((x - x0) / width, 0.f, 1.f) : 0.f;
+  return c.min + int(std::lround(t * float(c.max - c.min)));
+}
+void SetSlider(int i, int v) {
+  Ctl& c = g_c[size_t(i)];
+  v = (std::clamp)(v, c.min, c.max);
+  if (v == c.sel) return;
+  c.sel = v;
+  DeriveWheelPreset();
+  g_changed = true;
+}
+// Rows shown or hidden (the force feedback model changed): the page laid out again at the same scale, as a tab switch
+// does (a taller page scrolls; fitting it to the window again would shrink everything).
+void Relayout(HWND h) {
+  Layout();
+  g_scroll = (std::min)(g_scroll, MaxScroll());
+  g_oy = ContentOy();
+  InvalidateRect(h, nullptr, FALSE);
+}
+
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
+    case WM_KEYDOWN: {
+      if (w == VK_ESCAPE && g_info_open >= 0) {
+        g_info_open = -1;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+      }
+      // The arrow keys step the slider under the pointer (Shift: by 10).
+      if (g_hover_ctl < 0 || g_c[size_t(g_hover_ctl)].kind != Kind::Slider || g_busy) break;
+      const int step = (GetKeyState(VK_SHIFT) & 0x8000) ? 10 : 1;
+      const int dir = w == VK_RIGHT || w == VK_UP ? 1 : w == VK_LEFT || w == VK_DOWN ? -1 : 0;
+      if (!dir) break;
+      SetSlider(g_hover_ctl, g_c[size_t(g_hover_ctl)].sel + dir * step);
+      InvalidateRect(h, nullptr, FALSE);
+      return 0;
+    }
     case WM_SIZE: {
       // The layout keeps its scale and reflows: wider windows get wider columns, taller ones more room.
       if (w == SIZE_MINIMIZED || g_scale <= 0.f) return 0;
@@ -2074,7 +2593,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const int ncw = (wr.right - wr.left) - cr.right, nch = (wr.bottom - wr.top) - cr.bottom;
       auto* mm = reinterpret_cast<MINMAXINFO*>(l);
       mm->ptMinTrackSize.x = LONG(kWinW * g_dpi * 0.6f) + ncw;
-      mm->ptMinTrackSize.y = LONG((kHeaderH + kTabH + kFooterH + 160.f) * g_dpi * 0.6f) + nch;  // shorter: the content scrolls
+      mm->ptMinTrackSize.y = LONG((kHeaderH + kTabH + kSubTabH + kFooterH + 160.f) * g_dpi * 0.6f) + nch;  // shorter: the content scrolls
       mm->ptMaxTrackSize.x = LONG(kMaxW * g_dpi) + ncw;
       return 0;
     }
@@ -2117,6 +2636,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_MOUSEMOVE: {
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
+      if (g_drag >= 0) {
+        SetSlider(g_drag, SliderValueAt(g_c[size_t(g_drag)], x));
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+      }
       int seg;
       const int c = HitControl(x, y, &seg), b = HitButton(x, y), br = HitBrowse(x, y), tab = HitTab(x, y);
       // Over the benchmark's result (its row below the Run button): the panel of settings the game ran with.
@@ -2127,6 +2651,17 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       }
       if (ran_hover != g_bench_ran_hover) {
         g_bench_ran_hover = ran_hover;
+        InvalidateRect(h, nullptr, FALSE);
+      }
+      // the (i) under the pointer lights up
+      int info = -1;
+      for (size_t i = 0; i < g_c.size(); ++i) {
+        const RectF& r = g_c[i].info;
+        const float m = 3 * g_scale;
+        if (r.Width > 0 && x >= r.X - m && x <= r.X + r.Width + m && y >= r.Y - m && y <= r.Y + r.Height + m) info = int(i);
+      }
+      if (info != g_hover_info) {
+        g_hover_info = info;
         InvalidateRect(h, nullptr, FALSE);
       }
       if (c != g_hover_ctl || seg != g_hover_seg || b != g_hover_btn || br != g_hover_browse || tab != g_hover_tab) {
@@ -2143,6 +2678,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_MOUSELEAVE:
       g_hover_ctl = g_hover_seg = g_hover_btn = g_hover_browse = g_hover_tab = -1;
+      g_hover_info = -1;
       g_bench_ran_hover = false;
       InvalidateRect(h, nullptr, FALSE);
       return 0;
@@ -2150,8 +2686,21 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       if (g_busy) return 0;
       CommitName();
-      if (const int t = HitTab(x, y); t >= 0 && t != g_tab) {
-        g_tab = t;
+      g_status_sticky = false;
+      // the details panel: a click anywhere closes it; a click on an (i) opens it
+      if (g_info_open >= 0) {
+        g_info_open = -1;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+      }
+      if (g_hover_info >= 0) {
+        g_info_open = g_hover_info;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+      }
+      if (const int t = HitTab(x, y); t >= 0 && t != g_tab && t != kTabCount + g_subtab) {
+        if (t < kTabCount) g_tab = t;
+        else g_subtab = t - kTabCount;
         Layout();  // the page has its own height
         g_scroll = (std::min)(g_scroll, MaxScroll());
         g_oy = ContentOy();
@@ -2190,6 +2739,19 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           InvalidateRect(h, nullptr, FALSE);
           return 0;
         }
+        if (ctl.kind == Kind::Slider) {
+          g_drag = c;
+          SetSlider(c, SliderValueAt(ctl, x));
+          SetCapture(h);
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
+        if (ctl.kind == Kind::Button) {
+          const RectF ct = Scaled(ctl.ctl);
+          if (c == g_wheel_setup && y >= ct.Y && y <= ct.Y + ct.Height) OpenWheelSetup();
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
         if (ctl.patches[0] == "@lang") {
           g_lang_id = (g_lang_id + 1) % 21;
           ctl.items[0] = kLangName[g_lang_id];
@@ -2213,6 +2775,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           g_changed = true;
         } else if (seg >= 0) {
           const bool was_vr = VrOn();
+          const bool model_changed = c == g_ffb_model && ctl.sel != seg;
           ctl.sel = seg;
           if (c == g_vr && VrOn() != was_vr) {  // VR fork: VR on or off: the cards that apply change
             RECT cr;
@@ -2220,8 +2783,25 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SendMessageW(h, WM_SIZE, SIZE_RESTORED, MAKELPARAM(cr.right, cr.bottom));
           }
           if (c == g_preset) ApplyPreset(seg);
-          else if (c == g_outres || c == g_inres || c == g_wide) DerivePreset();
+          else if (c == g_outres || c == g_inres || c == g_wide) {
+            // A widescreen size sets the render and output size itself: other sizes there crop the picture.
+            if (c == g_wide && seg > 0 && g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
+              g_c[g_outres].sel = g_c[g_inres].sel = 0;
+              g_status = L"Output and render resolution are back on Default: the widescreen size sets both, and other sizes there crop the picture.";
+              g_status_color = kWarn;
+              g_status_sticky = true;
+            } else if ((c == g_outres || c == g_inres) && seg > 0 && g_wide >= 0 && g_c[g_wide].sel > 0) {
+              g_status = L"With a widescreen size, leave Output and Render resolution on Default, or the picture is cropped.";
+              g_status_color = kWarn;
+              g_status_sticky = true;
+            }
+            DerivePreset();
+          }
+          else if (c == g_ffb_preset) ApplyWheelPreset(seg);
+          else if (c == g_drive_preset) ApplyDrivePreset(seg);
+          if (IsDriveRow(ctl)) DeriveDrivePreset();
           g_changed = true;
+          if (model_changed) Relayout(h);  // the physics settings show or hide
         }
       }
       SetCapture(h);
@@ -2230,6 +2810,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_LBUTTONUP: {
       ReleaseCapture();
+      g_drag = -1;
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       const int b = HitButton(x, y);
       const int pressed = g_press_btn;
@@ -2343,6 +2924,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       ReleaseDC(nullptr, screen);
       if (const char* sw = std::getenv("LAUNCHER_SNAPSHOT_W")) g_win_w = float(std::atoi(sw));
       if (const char* st = std::getenv("LAUNCHER_SNAPSHOT_TAB")) g_tab = std::clamp(std::atoi(st), 0, kTabCount - 1);
+      if (const char* ss = std::getenv("LAUNCHER_SNAPSHOT_SUB")) g_subtab = std::clamp(std::atoi(ss), 0, kSubCount - 1);
+      // LAUNCHER_SNAPSHOT_INFO = a row's name: its details panel
+      if (const char* name = std::getenv("LAUNCHER_SNAPSHOT_INFO")) {
+        for (size_t k = 0; k < g_c.size(); ++k) if (Narrow(g_c[k].label) == name) g_info_open = int(k);
+      }
       Layout();
       const int w = int(g_win_w * g_scale), h = int(TotalHeight() * g_scale);
       {

@@ -92,6 +92,39 @@ struct MotionVectors {
     static inline u64 positions_address = 0;
     static constexpr u32 FlagStore = 1;
     static constexpr u32 FlagLoad = 2;
+    /// VR fork: the shaders embed these placeholders instead of the two addresses, so their SPIR-V does not change
+    /// between sessions and the pipeline cache keeps them (each DLSS session compiled ~140 pipelines again: CPU load
+    /// and 200 ms frames); PatchAddresses puts this session's addresses in before a module is created. A placeholder
+    /// covers [base, base + PlaceholderSpan) (the params' second vector is at +16).
+    static constexpr u64 ParamsPlaceholder = 0x00007e5000000000ull;
+    static constexpr u64 PositionsPlaceholder = 0x00007e6000000000ull;
+    static constexpr u64 PlaceholderSpan = 0x1000;
+    /// Replaces the placeholders' 64-bit OpConstants in `spirv` with the session's addresses; how many it replaced.
+    static int PatchAddresses(std::vector<u32>& spirv) {
+        int changed = 0;
+        for (size_t i = 5; i < spirv.size();) {
+            const u32 words = spirv[i] >> 16, op = spirv[i] & 0xffff;
+            if (words == 0) {
+                break;
+            }
+            if (op == 43 /* OpConstant */ && words == 5 && i + 4 < spirv.size()) {
+                const u64 value = u64(spirv[i + 3]) | (u64(spirv[i + 4]) << 32);
+                u64 real = 0;
+                if (value >= ParamsPlaceholder && value < ParamsPlaceholder + PlaceholderSpan) {
+                    real = params_address + (value - ParamsPlaceholder);
+                } else if (value >= PositionsPlaceholder && value < PositionsPlaceholder + PlaceholderSpan) {
+                    real = positions_address + (value - PositionsPlaceholder);
+                }
+                if (real) {
+                    spirv[i + 3] = u32(real);
+                    spirv[i + 4] = u32(real >> 32);
+                    ++changed;
+                }
+            }
+            i += words;
+        }
+        return changed;
+    }
 };
 
 struct HwLocalRuntimeInfo {

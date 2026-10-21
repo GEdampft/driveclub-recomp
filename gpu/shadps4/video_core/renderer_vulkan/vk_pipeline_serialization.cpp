@@ -121,11 +121,8 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     spec.Deserialize(ar);
     info.Deserialize(ar);
 
-    // Motion vertex shaders embed session-local buffer device addresses. They must be
-    // recompiled for the current allocation, never loaded from a previous process.
-    if (info.hw_stage == Shader::HwStage::Vertex && spec.runtime_info.hw.vs.motion_vectors) {
-        return false;
-    }
+    // VR fork: motion vertex shaders are cached with placeholders for their buffer addresses
+    // (MotionVectors::PatchAddresses); LoadPipelineStage refuses older binaries that hold real ones.
 
     fetch_shader_data = spec.fetch_shader_data;
     return true;
@@ -275,6 +272,13 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
                                        spv);
     if (spv.empty()) {
         return false;
+    }
+    // VR fork: a motion vertex shader's addresses are this session's (MotionVectors::PatchAddresses). One stored
+    // before the placeholders holds a past session's addresses: compiled again at runtime (and stored right).
+    if (program->info.hw_stage == Shader::HwStage::Vertex && spec.runtime_info.hw.vs.motion_vectors) {
+        if (!Shader::MotionVectors::params_address || Shader::MotionVectors::PatchAddresses(spv) == 0) {
+            return false;
+        }
     }
 
     // Permutation hash depends on shader variation index. To prevent collisions, we need insert it

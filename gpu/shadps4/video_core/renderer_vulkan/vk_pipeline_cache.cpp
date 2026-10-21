@@ -356,7 +356,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         profile.lds_barriers_multi_wave = true;
         profile.wave_memory_barriers = true;
     }
-    WarmUp();
+    // VR fork: WarmUp runs from the rasterizer once object motion has its buffers (their addresses go into the
+    // motion vertex shaders the cache now keeps).
 
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
@@ -843,7 +844,10 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
         LOG_INFO(Loader, "Loaded patch for {} shader {:#x}", info.hw_stage, info.pgm_hash);
         module = CompileSPV(*patch, instance.GetDevice());
     } else {
-        module = CompileSPV(spv, instance.GetDevice());
+        // VR fork: motion vertex shaders get this session's buffer addresses; the cache keeps the placeholders.
+        auto session_spv = spv;
+        Shader::MotionVectors::PatchAddresses(session_spv);
+        module = CompileSPV(session_spv, instance.GetDevice());
     }
 
     RegisterShaderBinary(std::move(spv), info.pgm_hash, perm_idx);

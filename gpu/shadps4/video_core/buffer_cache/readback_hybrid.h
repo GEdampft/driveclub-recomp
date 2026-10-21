@@ -58,10 +58,16 @@ constexpr u64 SmallWrite = 1024;
 /// A page is learned as fast after this many guest faults, none of them on GPU bytes.
 constexpr u32 LearnFaults = 32;
 
+// Off by default (BB_READBACK_HYBRID=1 turns it on): a page learned fast while the game was not reading its GPU
+// bytes (the countdown on the grid: the grass flag's page, 0x400220f000, was made exact by a read of the flag after 1
+// own-byte access in one run; 2048 own-byte accesses first and it is fast) reads them a frame late once it does, and
+// the floating grass clumps come back in a full race. The learned pages also take in GPU-written halves the game may
+// read later. Until a fast page can be proven never read for its GPU bytes, precise readbacks (upstream's) are the
+// default again.
 inline bool Enabled() {
     static const bool on = [] {
         const char* v = std::getenv("BB_READBACK_HYBRID");
-        return !(v && v[0] == '0') && EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled;
+        return v && v[0] == '1' && EmulatorSettings.GetReadbacksMode() != GpuReadbacksMode::Disabled;
     }();
     return on;
 }

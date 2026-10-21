@@ -317,7 +317,11 @@ void VideoOutDriver::Flip(const Request& req) {
         static std::vector<double> intervals;
         intervals.push_back(frame_ms);
         last = now;
-        // Stall diagnostics: what happened during a long frame.
+        // Stall diagnostics: what happened during a long frame (VR fork: BB_STALL_MS, default 40, for the 1% lows).
+        static const double stall_ms = [] {
+            const char* v = std::getenv("BB_STALL_MS");
+            return v ? std::max(5.0, std::atof(v)) : 40.0;
+        }();
         static u64 last_gpu_ns, last_images, last_image_bytes, last_buffer_bytes;
         static bool stall_primed; // VR fork: the counters were read once (last_gpu_ns stays 0 on Windows)
         static u64 last_t[6], last_minflt, last_sigf, last_pc, last_pp, last_rc, last_rp;
@@ -330,7 +334,7 @@ void VideoOutDriver::Flip(const Request& req) {
         static u64 last_proc_flt, last_copy_ns, last_copy_bytes, last_rf, last_trf, last_twf;
         const u64 rf = BbStats::read_faults.load(), trf = BbStats::t_read_faults.load(),
                   twf = BbStats::t_write_faults.load();
-        if (frame_ms > 40.0 && stall_primed) {
+        if (frame_ms > stall_ms && stall_primed) {
             std::printf("       fault handlers: %llu read faults %.1f ms, write faults %.1f ms\n",
                         static_cast<unsigned long long>(rf - last_rf), (trf - last_trf) / 1e6,
                         (twf - last_twf) / 1e6);
@@ -362,7 +366,7 @@ void VideoOutDriver::Flip(const Request& req) {
         const u64 images = BbStats::images_registered.load();
         const u64 image_bytes = BbStats::image_upload_bytes.load();
         const u64 buffer_bytes = BbStats::buffer_upload_bytes.load();
-        if (frame_ms > 40.0 && stall_primed) {
+        if (frame_ms > stall_ms && stall_primed) {
             static const Clock::time_point first = now; // VR fork: when, to match other log lines
             std::printf("Stall: %.1f ms frame at %.2f s; GPU thread on CPU %.1f ms; %llu images registered, "
                         "%.1f MB image uploads, %.1f MB buffer uploads\n",
@@ -378,7 +382,7 @@ void VideoOutDriver::Flip(const Request& req) {
                         (sys_us - last_sys) / 1e3, static_cast<unsigned long long>(invol - last_invol),
                         static_cast<unsigned long long>(vol - last_vol));
         }
-        if (frame_ms > 40.0 && stall_primed) {
+        if (frame_ms > stall_ms && stall_primed) {
             std::printf("       ms in: resident %.1f, protect %.1f, image create %.1f, "
                         "image refresh %.1f, staging %.1f, waiting for host copies %.1f\n",
                         (t_now[0] - last_t[0]) / 1e6, (t_now[1] - last_t[1]) / 1e6,
@@ -399,7 +403,7 @@ void VideoOutDriver::Flip(const Request& req) {
         last_rc = rc;
         last_rp = rp;
         last_minflt = minflt;
-        if (frame_ms > 40.0 && stall_primed && copy_ns > last_copy_ns) {
+        if (frame_ms > stall_ms && stall_primed && copy_ns > last_copy_ns) {
             std::printf("       guest copies %.1f MB in %.1f thread-ms, %.1f ms on CPU (kernel %.1f ms, "
                         "%llu page faults in large copies) (%.2f GB/s per thread)\n",
                         (copy_bytes - last_copy_bytes) / 1e6, (copy_ns - last_copy_ns) / 1e6,

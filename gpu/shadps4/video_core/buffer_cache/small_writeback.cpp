@@ -21,6 +21,7 @@
 
 #include "core/emulator_settings.h"
 #include "core/memory.h"
+#include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/buffer_cache/readback_hybrid.h"
@@ -34,7 +35,7 @@ namespace {
 // Development: BB_READBACK_SMALL_MAX=<KB> raises the size limit.
 const u64 MaxSmallWrite = [] {
     const char* env = std::getenv("BB_READBACK_SMALL_MAX");
-    return env ? std::strtoull(env, nullptr, 10) * 1024 : u64(1024);
+    return env ? std::strtoull(env, nullptr, 10) * 1024 : u64(2048);
 }();
 
 struct Range {
@@ -48,11 +49,13 @@ struct Job {
     std::vector<Range> ranges; // guest ranges, in staging order (each at a 16-byte aligned offset)
     std::vector<u64> offsets;
     u64 tick;
+    bool fenced = false; ///< staged with a GDS ring copy (gds_fence.cpp): written back before the ring's label
 };
 
 std::mutex g_mutex;
 std::vector<Range> g_noted;
-std::deque<Job> g_jobs;
+std::deque<Job> g_jobs; // under g_jobs_mutex: the GPU thread and the GDS fence worker (gds_fence.cpp) both pop
+std::mutex g_jobs_mutex;
 
 bool Enabled() {
     static const bool enabled = [] {
@@ -213,24 +216,75 @@ void BufferCache::WriteBackSmallWrites() {
     if (!Enabled()) {
         return;
     }
+    PopFinishedSmallWrites(true);
+    StageSmallWrites();
+}
+
+// Finished copies: their bytes into guest memory. The GPU thread at each submit, and the GDS fence worker
+// (gds_fence.cpp) once the copy's submission is done, before it writes the ring's label: the small ranges staged
+// with that submission (StageSmallWrites from NoteGdsCopy) are then current when the game reads them.
+void BufferCache::PopFinishedSmallWrites(bool gpu_thread) {
+    std::vector<Vulkan::StagingBufferRef> done;
+    {
+        std::scoped_lock lk{g_jobs_mutex};
+        while (!g_jobs.empty() && scheduler.IsFree(g_jobs.front().tick)) {
+            Job& job = g_jobs.front();
+            job.staging.buffer->Invalidate(job.staging.offset, job.staging.size);
+            for (size_t i = 0; i < job.ranges.size(); ++i) {
+                const u8* gpu = job.staging.mapped + job.offsets[i];
+                if (!ReadbackHybrid::Enabled()) {
+                    memory->TryWriteBacking(std::bit_cast<u8*>(job.ranges[i].addr), gpu, job.ranges[i].size);
+                    continue;
+                }
+                static const bool merge = !(std::getenv("BB_SMALL_MERGE") && std::getenv("BB_SMALL_MERGE")[0] == '0');
+                if (job.fenced || !merge) {
+                    // Lands before the ring's label, so before the game acts on this submission's results: the
+                    // GPU's bytes are the newer ones whatever the game wrote to the slot before submitting (a
+                    // counter it zeroes): written as is, and into the fast page's shadow. The merge below kept the
+                    // game's zero when the upload had not refreshed the shadow (the cabin vanished for a frame).
+                    const VAddr addr = job.ranges[i].addr;
+                    const u64 size = job.ranges[i].size;
+                    memory->TryWriteBacking(std::bit_cast<u8*>(addr), gpu, size);
+                    for (u64 k = 0; k < size;) {
+                        const VAddr at = addr + k;
+                        const VAddr page = at & ~VAddr(4095);
+                        const u64 seg = std::min<u64>(size - k, page + 4096 - at);
+                        ReadbackHybrid::WithShadow(page, [&](u8* shadow) { std::memcpy(shadow + (at - page), gpu + k, seg); });
+                        k += seg;
+                    }
+                    continue;
+                }
+                MergeCopyBack(job.ranges[i].addr, gpu, job.ranges[i].size, job.ranges[i].late);
+            }
+            done.push_back(job.staging);
+            g_jobs.pop_front();
+        }
+    }
+    if (done.empty()) {
+        return;
+    }
+    if (gpu_thread) {
+        for (const auto& staging : done) {
+            staging_pool.FreeDeferred(staging);
+        }
+    } else {
+        liverpool->SendCommand([this, done = std::move(done)] {
+            for (const auto& staging : done) {
+                staging_pool.FreeDeferred(staging);
+            }
+        });
+    }
+}
+
+// The ranges noted since the last call: one job, its copies recorded now (the current submission). `fenced`: staged
+// with a GDS ring copy, written back by the fence worker before the ring's label (gds_fence.cpp).
+void BufferCache::StageSmallWrites(bool fenced) {
+    if (!Enabled()) {
+        return;
+    }
     static const bool log = std::getenv("BB_READBACK_SMALL_LOG") != nullptr;
     static u64 log_ranges = 0, log_bytes = 0, log_submits = 0;
     static auto log_start = std::chrono::steady_clock::now();
-    // Finished copies: their bytes into guest memory.
-    while (!g_jobs.empty() && scheduler.IsFree(g_jobs.front().tick)) {
-        Job& job = g_jobs.front();
-        job.staging.buffer->Invalidate(job.staging.offset, job.staging.size);
-        for (size_t i = 0; i < job.ranges.size(); ++i) {
-            const u8* gpu = job.staging.mapped + job.offsets[i];
-            if (!ReadbackHybrid::Enabled()) {
-                memory->TryWriteBacking(std::bit_cast<u8*>(job.ranges[i].addr), gpu, job.ranges[i].size);
-                continue;
-            }
-            MergeCopyBack(job.ranges[i].addr, gpu, job.ranges[i].size, job.ranges[i].late);
-        }
-        staging_pool.FreeDeferred(job.staging);
-        g_jobs.pop_front();
-    }
     std::vector<Range> ranges;
     {
         std::scoped_lock lk{g_mutex};
@@ -281,6 +335,7 @@ void BufferCache::WriteBackSmallWrites() {
         runtime.CopyBuffer(arena, job.staging.buffer, copies);
     }
     job.tick = scheduler.CurrentTick();
+    job.fenced = fenced;
     if (log) {
         log_ranges += job.ranges.size();
         log_bytes += total;
@@ -296,6 +351,7 @@ void BufferCache::WriteBackSmallWrites() {
             log_start = now;
         }
     }
+    std::scoped_lock lk{g_jobs_mutex};
     g_jobs.push_back(std::move(job));
 }
 

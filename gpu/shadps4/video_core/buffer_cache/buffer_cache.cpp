@@ -721,6 +721,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     EnsureResident(arena, first_block, last_block);
     const u64 uploaded_before = BbStats::buffer_upload_bytes.load(std::memory_order_relaxed);
     if (is_written) {
+        ReadbackHybrid::PromoteForSmallWrite(device_addr, size); // VR fork: a small write's pages fast now
         ReadbackHybrid::NoteGpuWritten(device_addr, size, true); // VR fork: before its pages are protected
         ReadbackHybrid::NoteWriter(device_addr, size);           // VR fork: late outputs
     }

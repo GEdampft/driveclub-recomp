@@ -97,6 +97,9 @@ void BufferCache::NoteGdsCopy(const Buffer* dst_buffer, u64 dst_offset, VAddr ds
     if (!GdsFencesEnabled() || size == 0) {
         return;
     }
+    // The small GPU writes noted so far ride in this submission too: the worker writes them back before the label,
+    // so a small list the game reads after it (a 1280-byte cluster list at 0x3000445170, say) is current.
+    StageSmallWrites(true);
     const auto staging = staging_pool.Request(size, MemoryType::HostCached, 0, true);
     const vk::BufferCopy copy = {
         .srcOffset = dst_offset,
@@ -149,6 +152,7 @@ void BufferCache::GdsFenceWorker() {
         }
         for (GdsCopy& copy : fence.copies) {
             scheduler.GetWorkSemaphore()->Wait(copy.tick);
+            PopFinishedSmallWrites(false); // the small writes staged with this submission, before the counts
             copy.staging.Invalidate();
             // The GPU's count is the newer value whatever the game wrote to the slot before (it resets a slot, then
             // submits the copy): written as is, and into a fast page's shadow, which a merge would have kept the

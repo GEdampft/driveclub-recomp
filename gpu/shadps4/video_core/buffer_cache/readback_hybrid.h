@@ -53,8 +53,14 @@
 
 namespace VideoCore::ReadbackHybrid {
 
-/// Written ranges up to this size are fast from the start (counters, flags).
-constexpr u64 SmallWrite = 1024;
+/// Written ranges up to this size are small: fast from the start (counters, flags), copied back by small_writeback.cpp.
+/// BB_READBACK_SMALL_MAX=<KB> (default 2) sets it there too. 2 KB takes in the 1280-byte cluster list whose page
+/// the game hammers (25,000 faults/s when exact); its bytes are current when the ring's label says so
+/// (gds_fence.cpp stages the small writes with the copy's submission and writes them back before the label).
+inline const u64 SmallWrite = [] {
+    const char* env = std::getenv("BB_READBACK_SMALL_MAX");
+    return env ? std::strtoull(env, nullptr, 10) * 1024 : u64(2048);
+}();
 /// A page is learned as fast after this many guest faults, none of them on GPU bytes.
 constexpr u32 LearnFaults = 32;
 
@@ -279,7 +285,8 @@ struct PageLearn {
     u64 steps = 0;
     s64 first_ms = 0;
     u32 exact_steps = 0;
-    bool exact = false;
+    bool exact = false;  ///< learned: a fault hit GPU bytes, or a large write's part landed here
+    bool pinned = false; ///< exact for good: a large write's head or tail (LargePartFast), never fast again
     bool fast = false;
 };
 inline std::mutex g_learn_mutex;
@@ -362,7 +369,10 @@ inline StepAction LearnStep(VAddr address) {
     std::scoped_lock lk{g_learn_mutex};
     PageLearn& p = g_learn[page];
     if (p.exact) {
-        if (++p.exact_steps > ExactStepBudget) {
+        // A pinned page (a list head's, LargePartFast) is rewritten by the GPU every frame, so the budget's readback
+        // (which unprotects the page until the next GPU write) buys little and costs a GPU wait each time: 64 steps
+        // per readback was ~135 readbacks/s (270 ms/s); never reading back was 25,000 steps/s on one page (55 FPS).
+        if (++p.exact_steps > (p.pinned ? ExactStepBudget * 16 : ExactStepBudget)) {
             p.exact_steps = 0;
             return StepAction::ReadBack;
         }
@@ -550,11 +560,70 @@ inline bool LargePartFast(VAddr begin, VAddr end) {
         PageLearn& p = g_learn[page];
         was_fast = p.fast || IsFastPage(page);
         p.exact = true;
+        p.pinned = true;
     }
     if (was_fast) {
         DemoteFastPage(page, begin, end);
     }
     return false;
+}
+
+/// A small GPU write (up to SmallWrite) to [address, address + size): its pages become fast now when they can
+/// (SmallFast), with the guest's bytes as the shadow, so the write is unguarded and its bytes merge in once the GPU
+/// is done (small_writeback.cpp). A page stays as it is when it is exact for good (a list head, LargePartFast), when
+/// other GPU bytes on it are still to be read back (they would be read stale), or when it is fast already. Called
+/// before the write is noted (NoteGpuWritten).
+inline void PromoteForSmallWrite(VAddr address, u64 size) {
+    if (!SmallFast() || !Enabled() || size == 0 || size > SmallWrite) {
+        return;
+    }
+    static const bool log = std::getenv("BB_READBACK_CLASSIFY") != nullptr;
+    static std::mutex log_mutex;
+    static std::map<VAddr, int> logged; // page -> last reason logged
+    const auto why = [&](VAddr page, int reason) {
+        if (!log) {
+            return;
+        }
+        std::scoped_lock lk{log_mutex};
+        if (logged[page] != reason) {
+            logged[page] = reason;
+            static const char* names[] = {"promoted", "fast already", "BB_HYBRID_EXACT", "other GPU bytes pending", "pinned"};
+            std::printf("Readback hybrid: small write %#llx +%llu on page %#llx: %s\n", (unsigned long long)address,
+                        (unsigned long long)size, (unsigned long long)page, names[reason]);
+            std::fflush(stdout);
+        }
+    };
+    for (VAddr page = address & ~VAddr(4095); page < address + size; page += 4096) {
+        if (IsFastPage(page)) {
+            why(page, 1);
+            continue;
+        }
+        if (ExactPage(page)) {
+            why(page, 2);
+            continue;
+        }
+        if (GpuWroteBytes(page, 4096)) {
+            why(page, 3);
+            continue;
+        }
+        {
+            std::scoped_lock lk{g_learn_mutex};
+            PageLearn& p = g_learn[page];
+            if (p.pinned) {
+                why(page, 4);
+                continue;
+            }
+            why(page, 0);
+            // A page learned exact because the game read GPU bytes on it (LearnFault): those are small results now
+            // delivered by copy-back, so it may be fast after all.
+            p.exact = false;
+            p.exact_steps = 0;
+            p.fast = true;
+        }
+        u8 guest[4096];
+        Core::Memory::Instance()->CopySparseMemory(page, guest, 4096);
+        PromoteFastPage(page, guest);
+    }
 }
 
 /// [begin, end) (within one page) is a GPU write the fast page knows; a new one demotes the page.

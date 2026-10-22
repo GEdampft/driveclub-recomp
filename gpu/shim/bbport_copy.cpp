@@ -234,25 +234,20 @@ Pool& GetPool() {
 // commands it records; the GPU command thread submits them after draining it (readbacks, waits) and a fence can be
 // signalled from another thread: copies left in the recording thread's batch then ran after the GPU had read their
 // staging (single frames of exploded geometry or flat grey, mostly while the fly-by streams).
-struct Batch;
-std::mutex g_batches_mutex;
-std::vector<Batch*> g_batches;
-
+// The batches live as long as the process (heap, never freed, ~50 threads a boot): a thread_local object registered
+// with a destructor tied the registry to the threads' exits (a lock on a dead batch: an access violation in
+// RtlAcquireSRWLockExclusive at the intro video, 1 boot in 40).
 struct Batch {
     std::mutex mutex; ///< the owner queues, any thread takes
     std::vector<Item> items;
     unsigned long long bytes = 0;
-    Batch() {
-        std::scoped_lock lk{g_batches_mutex};
-        g_batches.push_back(this);
-    }
-    ~Batch() {
-        std::scoped_lock lk{g_batches_mutex};
-        std::erase(g_batches, this);
-    }
+    std::atomic<std::size_t> count{0}; ///< items.size(), read without the lock to skip empty batches
     /// The queued copies, the batch left empty.
     std::vector<Item> Take() {
         std::vector<Item> taken;
+        if (count.load(std::memory_order_acquire) == 0) {
+            return taken;
+        }
         std::scoped_lock lk{mutex};
         if (items.empty()) {
             return taken;
@@ -260,19 +255,37 @@ struct Batch {
         taken.swap(items);
         items.reserve(256);
         bytes = 0;
+        count.store(0, std::memory_order_release);
         return taken;
     }
 };
-thread_local Batch batch;
+std::mutex& BatchesMutex() {
+    static auto* mutex = new std::mutex; // never destroyed: threads may still exit while the process does
+    return *mutex;
+}
+std::vector<Batch*>& Batches() {
+    static auto* batches = new std::vector<Batch*>;
+    return *batches;
+}
+thread_local Batch* t_batch = nullptr;
+
+/// The calling thread's batch, made and registered on first use.
+Batch& OwnBatch() {
+    if (!t_batch) {
+        t_batch = new Batch;
+        std::scoped_lock lk{BatchesMutex()};
+        Batches().push_back(t_batch);
+    }
+    return *t_batch;
+}
 
 void Start(std::vector<Item>&& taken);
 
 /// Starts the batches of the other threads.
 void StartOthers() {
-    // The caller's batch first: its first use constructs it, which registers it under the lock.
-    const Batch* self = &batch;
-    std::scoped_lock lk{g_batches_mutex};
-    for (Batch* other : g_batches) {
+    const Batch* self = t_batch;
+    std::scoped_lock lk{BatchesMutex()};
+    for (Batch* other : Batches()) {
         if (other != self) {
             if (auto taken = other->Take(); !taken.empty()) {
                 Start(std::move(taken));
@@ -307,7 +320,10 @@ void Start(std::vector<Item>&& taken) {
 } // namespace
 
 void FlushBatch() {
-    if (auto taken = batch.Take(); !taken.empty()) {
+    if (!t_batch) {
+        return;
+    }
+    if (auto taken = t_batch->Take(); !taken.empty()) {
         Start(std::move(taken));
     }
 }
@@ -318,11 +334,13 @@ void QueueCopy(const Item& item) {
         return;
     }
     // Smaller batches (32 items / 64 KiB, done before the next fence) measured slower.
+    Batch& batch = OwnBatch();
     bool full;
     {
         std::scoped_lock lk{batch.mutex};
         batch.items.push_back(item);
         batch.bytes += item.size;
+        batch.count.store(batch.items.size(), std::memory_order_release);
         full = batch.bytes >= 512 * 1024 || batch.items.size() >= 256;
     }
     if (full) {
@@ -339,8 +357,10 @@ void AfterCopies(std::function<void()> callback) {
 void WaitAsync() {
     StartOthers();
     // The caller's own batch runs here: handing it over only to wait for it costs a wakeup.
-    for (const auto& item : batch.Take()) {
-        item.run(item);
+    if (t_batch) {
+        for (const auto& item : t_batch->Take()) {
+            item.run(item);
+        }
     }
     GetPool().WaitAll();
 }

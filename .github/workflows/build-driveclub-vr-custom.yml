@@ -1,4 +1,4 @@
-name: Build DriveClub VR Gamepad Toggle
+name: Build DriveClub VR 1.2 via established runner
 on:
   workflow_dispatch:
   push:
@@ -11,6 +11,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: vr1.2-hud-gamepad
       - uses: msys2/setup-msys2@v2
         with:
           msystem: CLANG64
@@ -41,7 +43,7 @@ jobs:
       - name: Upload runtime executable and settings
         uses: actions/upload-artifact@v4
         with:
-          name: DriveClub-VR-Gamepad-L3-Test
+          name: DriveClub-VR1.2-HUD-Gamepad
           path: |
             out/DriveClubGame.exe
             driveclub_vr.ini

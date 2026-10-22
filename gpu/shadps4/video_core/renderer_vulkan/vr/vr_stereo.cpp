@@ -966,7 +966,7 @@ void OnDisplayBuffer(Runtime& runtime, vk::CommandBuffer command_buffer, VideoCo
 Readback g_flog;
 Image g_flog_thumb;
 
-void FrameLog(VkCommandBuffer cmd, VkImage scene, u32 w, u32 h) {
+void FrameLog(VkCommandBuffer cmd, VkImage scene, VkImageLayout layout, u32 w, u32 h) {
     const VkDeviceSize Bytes = VkDeviceSize(FrameLogSize) * FrameLogSize * 4;
     if (g_flog_write_in > 0 && --g_flog_write_in == 0) {
         void* data = nullptr;
@@ -1007,7 +1007,7 @@ void FrameLog(VkCommandBuffer cmd, VkImage scene, u32 w, u32 h) {
     blit.srcOffsets[1] = {s32(w), s32(h), 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[1] = {s32(FrameLogSize), s32(FrameLogSize), 1};
-    VKD.vkCmdBlitImage(cmd, scene, VK_IMAGE_LAYOUT_GENERAL, g_flog_thumb.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+    VKD.vkCmdBlitImage(cmd, scene, layout, g_flog_thumb.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                        &blit, VK_FILTER_LINEAR);
     Barrier(cmd, g_flog_thumb.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     CopyToReadback(cmd, g_flog_thumb.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_flog, Bytes * g_flog_done,
@@ -1035,7 +1035,7 @@ void RecordEyes(vk::CommandBuffer command_buffer, const Frame& frame, const VkIm
         FreeReadback(g_eye_dump);
         Log("eyes written");
     }
-    FrameLog(cmd, slot.scene.image, w, h);
+    FrameLog(cmd, slot.scene.image, VK_IMAGE_LAYOUT_GENERAL, w, h);
     const bool dump = g_eye_dump_frames == 0 && g_eye_dump_requested.exchange(false) &&
                       MakeReadback(g_eye_dump, VkDeviceSize(w) * h * 4 * 3);
     if (dump) {

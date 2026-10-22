@@ -752,6 +752,7 @@ bool Show(const State::Published& p) {
     copy.extent = {g.width, g.height, 1};
     VULKAN_HPP_DEFAULT_DISPATCHER.vkCmdCopyImage(cmd, g.screen_images[p.screen], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    Stereo::FrameLog(cmd, g.screen_images[p.screen], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.width, g.height); // dev
     Barrier(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
     SubmitCommand(cmd, p);

@@ -85,6 +85,8 @@ void DumpEyes();
 /// width, height, count, the RGBA thumbnails, a u64 steady-clock microsecond time per frame, then each frame's scene
 /// size as u32 width << 16 | height). Every frame, no GPU sync.
 void StartFrameLog(u32 frames);
+/// The headset thread: a shown frame for the frame log (the stereo scene, or the flat screen: menus, videos).
+void FrameLog(VkCommandBuffer cmd, VkImage image, VkImageLayout layout, u32 width, u32 height);
 
 /// Dev hook at the TAA resolve (once per rendered frame, before its scene copy): the camera's world position the GPU
 /// renders this frame with. Picks the head pose that view was made with (Camera::RenderedAt) for the frame's layer.

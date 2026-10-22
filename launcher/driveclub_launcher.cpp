@@ -235,7 +235,7 @@ std::wstring g_name = L"Player";  // in-game player name, from "name=" in launch
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 int g_vr = -1;  // VR fork: the "VR headset" row (Off or a size per eye)
 int g_vrdlss = -1, vrdlss_saved = 0;  // VR fork: the "VR DLSS" row (Off, DLAA, Quality, Balanced, Performance)
-int g_vrsharp = -1, vrsharp_saved = 0;  // VR fork: the "VR DLSS sharpness" row (Off, 20% .. 100%)
+int g_vrsharp = -1, vrsharp_saved = 0;  // VR fork: the "VR sharpening" row (LumaSharpen: Off, Low .. Max)
 int g_vrmodel = -1, vrmodel_saved = 0;  // VR fork: the "VR DLSS model" row (Default, K, J, M, L, F)
 int g_vrtaa = -1;  // VR fork: the "Game anti-aliasing (TAA)" toggle (motion blur patch left out)
 bool vr_taa = false;  // its saved state ("vr_taa=" in launcher.ini)
@@ -248,7 +248,7 @@ int VrEye() {
   return VrOn() ? kEye[g_c[g_vr].sel] : 0;
 }
 // VR fork: the "Experimental options" toggle in the VR card shows the "VR EXPERIMENTAL" card below it (VR DLSS, its
-// sharpness, the game's TAA); off, those settings keep their saved values but do not apply.
+// model, the game's TAA); off, those settings keep their saved values but do not apply.
 int g_vrexp = -1;            // the toggle
 bool vr_experimental = false;  // its saved state ("vr_experimental=" in launcher.ini)
 int g_exp_card = -1;         // the card's index in g_cards
@@ -483,10 +483,10 @@ void BuildModel() {
                  L"render each eye 1.5, 1.7 or 2 times smaller and let DLSS rebuild it at the eye size: much faster at "
                  L"high sizes. Needs a GeForce RTX card.",
                  {L"Off", L"DLAA", L"Quality", L"Balanced", L"Performance"}, {"@vrdlss", "", "", "", ""}, 0);
-  g_vrsharp = seg(L"VR DLSS sharpness",
-                  L"Sharpens each eye after DLSS (AMD's contrast-adaptive sharpening: edges and texture detail, without "
-                  L"halos). DLSS itself no longer sharpens. Only with a VR DLSS mode on.",
-                  {L"Off", L"20%", L"40%", L"60%", L"80%", L"100%"}, {"@vrsharp", "", "", "", "", ""}, 0);
+  g_vrsharp = seg(L"VR sharpening",
+                  L"LumaSharpen on each eye's final picture: sharpens brightness only (no colour fringes) and limits "
+                  L"how far a pixel changes (no hard halos). With or without DLSS. Medium is LumaSharpen's default.",
+                  {L"Off", L"Low", L"Medium", L"High", L"Very high", L"Max"}, {"@vrsharp", "", "", "", "", ""}, 0);
   g_vrmodel = seg(L"VR DLSS model",
                   L"The DLSS preset. Default lets DLSS choose: K (transformer) for DLAA, Quality and Balanced, M for "
                   L"Performance. J is like K with a little less ghosting and more flicker; M and L are the transformer "
@@ -498,15 +498,15 @@ void BuildModel() {
                    L"depth of field\".",
                    "@vrtaa", false);
   g_vrexp = toggle(L"Experimental options",
-                   L"Shows the VR EXPERIMENTAL section below: VR DLSS, its sharpening and the game's TAA. Still in "
+                   L"Shows the VR EXPERIMENTAL section below: VR DLSS, its model and the game's TAA. Still in "
                    L"development: they may have graphical bugs. Off, those settings are not used.",
                    "@vrexp", false);
   // The cards flow into as many columns as the window width allows (see LayoutPass). VR fork: the VR card first, at
   // the top of the first column, the experimental card right below it. With a headset size the VR patch set stands
   // in for the frame rate, resolution and anti-aliasing rows (VrReplaces): those cards show only with VR off.
-  g_cards.push_back({L"VR", {g_vr, g_vrexp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
+  g_cards.push_back({L"VR", {g_vr, g_vrsharp, g_vrexp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
   g_exp_card = int(g_cards.size());
-  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrmodel, g_vrsharp, g_vrtaa}, 0,
+  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrmodel, g_vrtaa}, 0,
                      L"Still in development: may have graphical bugs."});
   g_flat_card = int(g_cards.size());
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
@@ -1584,10 +1584,10 @@ std::wstring StartGame(HANDLE* process = nullptr) {
       const int m = g_vrmodel >= 0 && VrDlss() ? g_c[g_vrmodel].sel : 0;
       SetEnvironmentVariableW(L"BB_DLSS_PRESET", m >= 1 && m <= 5 ? kModel[m] : nullptr);
     }
-    if (GetEnvironmentVariableW(L"BB_VR_DLSS_SHARPNESS", nullptr, 0) == 0) {
-      static const wchar_t* const kSharp[] = {L"0", L"0.2", L"0.4", L"0.6", L"0.8", L"1"};
-      const int s = g_vrsharp >= 0 && VrDlss() ? g_c[g_vrsharp].sel : 0;
-      SetEnvironmentVariableW(L"BB_VR_DLSS_SHARPNESS", kSharp[s >= 0 && s <= 5 ? s : 0]);
+    if (GetEnvironmentVariableW(L"BB_VR_SHARPEN", nullptr, 0) == 0) {  // LumaSharpen strength (game: vr_stereo.cpp)
+      static const wchar_t* const kSharp[] = {L"0", L"0.4", L"0.65", L"1.0", L"1.5", L"2.5"};
+      const int s = g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0;
+      SetEnvironmentVariableW(L"BB_VR_SHARPEN", kSharp[s >= 0 && s <= 5 ? s : 0]);
     }
     SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
     SetEnvironmentVariableW(L"BB_FULLSCREEN", L"0");

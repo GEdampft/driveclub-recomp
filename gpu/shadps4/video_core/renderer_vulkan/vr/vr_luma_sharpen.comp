@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR (dcport-vr): LumaSharpen (after CeeJay.dk's ReShade shader) on one eye's final picture, the bytes the headset
+// gets (gamma-encoded, after the game's tone mapping). The difference from a blurred copy is taken as brightness
+// only (no colour fringes), scaled by the strength and limited to +-limit (no hard halos), and added to the pixel.
+// The blur is LumaSharpen's default pattern, four bilinear taps half a pixel out: a 3x3 [1 2 1] kernel.
+#version 450
+
+layout(local_size_x = 16, local_size_y = 8) in;
+
+layout(push_constant) uniform Constants {
+    ivec2 size;
+    float strength; // LumaSharpen's sharp_strength (0.65 is its default)
+    float limit;    // LumaSharpen's sharp_clamp: the most a pixel changes (0.035)
+    float pad[4];
+};
+
+layout(binding = 0, rgba8) uniform readonly image2D src;
+layout(binding = 1, rgba8) uniform writeonly image2D dst;
+
+vec3 at(ivec2 p) {
+    return imageLoad(src, clamp(p, ivec2(0), size - 1)).rgb;
+}
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+    const vec4 centre = imageLoad(src, p);
+    const vec3 blur = (4.0 * centre.rgb +
+                       2.0 * (at(p + ivec2(1, 0)) + at(p - ivec2(1, 0)) + at(p + ivec2(0, 1)) + at(p - ivec2(0, 1))) +
+                       at(p + ivec2(1, 1)) + at(p + ivec2(-1, 1)) + at(p + ivec2(1, -1)) + at(p - ivec2(1, 1))) /
+                      16.0;
+    // The images hold the display buffer's bytes in BGRA order: the Rec. 709 luma weights reversed.
+    const vec3 luma = vec3(0.0722, 0.7152, 0.2126) * strength;
+    float sharp = clamp(dot(centre.rgb - blur, luma) * (0.5 / limit) + 0.5, 0.0, 1.0);
+    sharp = 2.0 * limit * sharp - limit;
+    imageStore(dst, p, vec4(centre.rgb + sharp, centre.a));
+}

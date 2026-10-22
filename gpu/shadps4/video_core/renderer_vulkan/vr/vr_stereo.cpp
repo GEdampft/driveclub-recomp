@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "video_core/host_shaders/vr_luma_sharpen_comp.h"
 #include "video_core/host_shaders/vr_stereo_mirror_comp.h"
 #include "video_core/host_shaders/vr_stereo_resolve_comp.h"
 #include "video_core/host_shaders/vr_stereo_splat_comp.h"
@@ -88,6 +89,9 @@ struct State {
     VkDescriptorSetLayout splat_layout{}, resolve_layout{}, mirror_layout{};
     VkPipelineLayout splat_pipeline_layout{}, resolve_pipeline_layout{}, mirror_pipeline_layout{};
     VkPipeline splat{}, resolve{}, mirror_pipeline{};
+    VkDescriptorSetLayout sharpen_layout{}; // LumaSharpen on each eye (vr_luma_sharpen.comp)
+    VkPipelineLayout sharpen_pipeline_layout{};
+    VkPipeline sharpen{};
 };
 
 State g;
@@ -211,6 +215,30 @@ bool MakePipeline(std::span<const u32> code, std::initializer_list<VkDescriptorT
     return result == VK_SUCCESS;
 }
 
+// VR fork: LumaSharpen on each eye's final picture (vr_luma_sharpen.comp). BB_VR_SHARPEN=<strength>[,<limit>]:
+// LumaSharpen's sharp_strength (its default 0.65) and sharp_clamp (0.035); none or 0 off. It replaces the RCAS pass
+// after DLSS (vr_sharpen.comp; Matt 2026-10-22: halos and noise at any strength), and works with DLSS off too.
+struct SharpenSettings {
+    float strength = 0.0f;
+    float limit = 0.035f;
+};
+SharpenSettings Sharpening() {
+    static const SharpenSettings settings = [] {
+        SharpenSettings s;
+        if (const char* v = std::getenv("BB_VR_SHARPEN"); v && v[0]) {
+            s.strength = std::max(0.0f, float(std::atof(v)));
+            if (const char* comma = std::strchr(v, ',')) {
+                s.limit = std::clamp(float(std::atof(comma + 1)), 0.001f, 1.0f);
+            }
+        }
+        char text[64];
+        std::snprintf(text, sizeof(text), "LumaSharpen: strength %.2f, limit %.3f", s.strength, s.limit);
+        Log(text);
+        return s;
+    }();
+    return settings;
+}
+
 struct Push {
     s32 width, height, depth_width, depth_height;
     float k;
@@ -240,7 +268,9 @@ void Init(VkPhysicalDevice physical_device, VkDevice device) {
               MakePipeline(VR_STEREO_MIRROR_COMP,
                            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
-                           g.mirror_layout, g.mirror_pipeline_layout, g.mirror_pipeline);
+                           g.mirror_layout, g.mirror_pipeline_layout, g.mirror_pipeline) &&
+              MakePipeline(VR_LUMA_SHARPEN_COMP, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE},
+                           g.sharpen_layout, g.sharpen_pipeline_layout, g.sharpen);
     Log(g.ready ? "ready" : "pipelines failed");
 }
 
@@ -1046,12 +1076,43 @@ void RecordEyes(vk::CommandBuffer command_buffer, const Frame& frame, const VkIm
     }
     if (slot.has_right && !dump) {
         // Multiview: each eye's own scene straight into the headset's image (one copy per eye, bit for bit: the
-        // scene is gamma-encoded already).
+        // scene is gamma-encoded already). With sharpening, LumaSharpen into an eye image first, copied from there.
+        const SharpenSettings sharpen = Sharpening();
         for (int eye = 0; eye < 2; ++eye) {
+            const VkImage scene = eye ? slot.scene_right.image : slot.scene.image;
+            const VkImageLayout scene_layout = eye ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+            VkImage source = scene;
+            VkImageLayout source_layout = scene_layout;
+            if (sharpen.strength > 0.0f && g.sharpen &&
+                Make(g.eyes[eye], VK_FORMAT_R8G8B8A8_UNORM, w, h,
+                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+                Barrier(cmd, scene, scene_layout, VK_IMAGE_LAYOUT_GENERAL);
+                Barrier(cmd, g.eyes[eye].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+                VkDescriptorImageInfo src_info{VK_NULL_HANDLE, eye ? slot.scene_right.view : slot.scene.view,
+                                               VK_IMAGE_LAYOUT_GENERAL};
+                VkDescriptorImageInfo dst_info{VK_NULL_HANDLE, g.eyes[eye].view, VK_IMAGE_LAYOUT_GENERAL};
+                VkWriteDescriptorSet writes[2]{};
+                writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 0, 0, 1,
+                             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &src_info, nullptr, nullptr};
+                writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, VK_NULL_HANDLE, 1, 0, 1,
+                             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &dst_info, nullptr, nullptr};
+                const struct {
+                    s32 width, height;
+                    float strength, limit, pad[4];
+                } push{s32(w), s32(h), sharpen.strength, sharpen.limit, {}};
+                VKD.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.sharpen);
+                VKD.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.sharpen_pipeline_layout, 0, 2,
+                                              writes);
+                VKD.vkCmdPushConstants(cmd, g.sharpen_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push),
+                                       &push);
+                VKD.vkCmdDispatch(cmd, (w + 15) / 16, (h + 7) / 8, 1);
+                Barrier(cmd, scene, VK_IMAGE_LAYOUT_GENERAL, scene_layout);
+                Barrier(cmd, g.eyes[eye].image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                source = g.eyes[eye].image;
+                source_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            }
             Barrier(cmd, eyes[eye], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-            Copy(cmd, eye ? slot.scene_right.image : slot.scene.image,
-                 eye ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL, eyes[eye],
-                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, w, h);
+            Copy(cmd, source, source_layout, eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, w, h);
             Barrier(cmd, eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         }
     }

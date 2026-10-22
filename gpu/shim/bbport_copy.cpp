@@ -229,11 +229,57 @@ Pool& GetPool() {
     return pool;
 }
 
+// Each thread's batch of small copies. VR fork: the batches are registered, and a wait for the copies (WaitAsync,
+// AfterCopies) starts every thread's, not only the caller's. The draw recording thread queues the copies of the
+// commands it records; the GPU command thread submits them after draining it (readbacks, waits) and a fence can be
+// signalled from another thread: copies left in the recording thread's batch then ran after the GPU had read their
+// staging (single frames of exploded geometry or flat grey, mostly while the fly-by streams).
+struct Batch;
+std::mutex g_batches_mutex;
+std::vector<Batch*> g_batches;
+
 struct Batch {
+    std::mutex mutex; ///< the owner queues, any thread takes
     std::vector<Item> items;
     unsigned long long bytes = 0;
+    Batch() {
+        std::scoped_lock lk{g_batches_mutex};
+        g_batches.push_back(this);
+    }
+    ~Batch() {
+        std::scoped_lock lk{g_batches_mutex};
+        std::erase(g_batches, this);
+    }
+    /// The queued copies, the batch left empty.
+    std::vector<Item> Take() {
+        std::vector<Item> taken;
+        std::scoped_lock lk{mutex};
+        if (items.empty()) {
+            return taken;
+        }
+        taken.swap(items);
+        items.reserve(256);
+        bytes = 0;
+        return taken;
+    }
 };
 thread_local Batch batch;
+
+void Start(std::vector<Item>&& taken);
+
+/// Starts the batches of the other threads.
+void StartOthers() {
+    // The caller's batch first: its first use constructs it, which registers it under the lock.
+    const Batch* self = &batch;
+    std::scoped_lock lk{g_batches_mutex};
+    for (Batch* other : g_batches) {
+        if (other != self) {
+            if (auto taken = other->Take(); !taken.empty()) {
+                Start(std::move(taken));
+            }
+        }
+    }
+}
 
 } // namespace
 
@@ -249,19 +295,21 @@ void Async(std::function<void()> task) {
     GetPool().Async(std::move(task));
 }
 
-void FlushBatch() {
-    if (batch.items.empty()) {
-        return;
-    }
-    auto items = std::make_shared<std::vector<Item>>(std::move(batch.items));
-    batch.items = {};
-    batch.items.reserve(256);
-    batch.bytes = 0;
+namespace {
+void Start(std::vector<Item>&& taken) {
+    auto items = std::make_shared<std::vector<Item>>(std::move(taken));
     Async([items] {
         for (const auto& item : *items) {
             item.run(item);
         }
     });
+}
+} // namespace
+
+void FlushBatch() {
+    if (auto taken = batch.Take(); !taken.empty()) {
+        Start(std::move(taken));
+    }
 }
 
 void QueueCopy(const Item& item) {
@@ -270,26 +318,29 @@ void QueueCopy(const Item& item) {
         return;
     }
     // Smaller batches (32 items / 64 KiB, done before the next fence) measured slower.
-    batch.items.push_back(item);
-    batch.bytes += item.size;
-    if (batch.bytes >= 512 * 1024 || batch.items.size() >= 256) {
+    bool full;
+    {
+        std::scoped_lock lk{batch.mutex};
+        batch.items.push_back(item);
+        batch.bytes += item.size;
+        full = batch.bytes >= 512 * 1024 || batch.items.size() >= 256;
+    }
+    if (full) {
         FlushBatch();
     }
 }
 
 void AfterCopies(std::function<void()> callback) {
     FlushBatch();
+    StartOthers();
     GetPool().AfterCopies(std::move(callback));
 }
 
 void WaitAsync() {
+    StartOthers();
     // The caller's own batch runs here: handing it over only to wait for it costs a wakeup.
-    if (!batch.items.empty()) {
-        for (const auto& item : batch.items) {
-            item.run(item);
-        }
-        batch.items.clear();
-        batch.bytes = 0;
+    for (const auto& item : batch.Take()) {
+        item.run(item);
     }
     GetPool().WaitAll();
 }

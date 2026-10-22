@@ -88,6 +88,7 @@ static void touch_click(PadData *d, int right) {
 #define compat_mkdir_p(d) mkdir(d,0755)
 #endif
 #include "runtime_input.inc"
+static bool pad_file_pedal(int which); /* BB_PAD_FILE (below): 0 throttle, 1 brake held, for a wheel in scripted runs */
 #include "runtime_wheel.inc"
 #include "runtime_logiwheel.inc"
 
@@ -404,7 +405,8 @@ static void sample_host(PadData *d) {
  * options touchpad touchpad_left touchpad_right up down left right) are held while listed;
  * touchpad defaults to a left-side click; lx= ly= rx= ry= (0..255) override
  * the sticks. An empty file releases everything. */
-static struct { uint32_t buttons; int stick[4]; int touch_side; } injected={0,{-1,-1,-1,-1},-1};
+static struct { uint32_t buttons; int stick[4]; int touch_side; bool pedal[2]; } injected={0,{-1,-1,-1,-1},-1,{false,false}};
+static bool pad_file_pedal(int which) { return injected.pedal[which]; }
 static int replay_armed;      /* 1 while a BB_PAD_REPLAY recording plays, 2 once it ended */
 static uint64_t replay_start; /* 0: (re)start at the next sample */
 static void read_inject(void) {
@@ -435,10 +437,14 @@ static void read_inject(void) {
     static const char *sticks[]={"lx=","ly=","rx=","ry="};
     injected.buttons=0;
     injected.touch_side=-1;
+    injected.pedal[0]=injected.pedal[1]=false;
     for (int i=0;i<4;++i) injected.stick[i]=-1;
     char token[64];
     while (fscanf(f,"%63s",token)==1) {
         if (!strcmp(token,"replay") && replay_armed!=1) { replay_armed=1; replay_start=0; } /* BB_PAD_REPLAY */
+        /* VR fork: throttle / brake press a connected wheel's pedals, no pad button (r2 on a wheel's port looks back) */
+        if (!strcmp(token,"throttle")) injected.pedal[0]=true;
+        if (!strcmp(token,"brake")) injected.pedal[1]=true;
         if (!strcmp(token,"touchpad_left") || !strcmp(token,"touchpad_right")) {
             injected.buttons|=BTN_TOUCHPAD;
             injected.touch_side=!strcmp(token,"touchpad_right");

@@ -571,6 +571,9 @@ static void wheel_sample(PadData *d, bool neutral) {
             w.throttle=wheel_value(p,WAX_THROTTLE); w.brake=wheel_value(p,WAX_BRAKE);
             w.clutch=wheel_value(p,WAX_CLUTCH);
         }
+        /* VR fork: BB_PAD_FILE's throttle / brake tokens (scripted test runs) press the wheel's pedals. */
+        if (pad_file_pedal(0)) w.throttle=65535;
+        if (pad_file_pedal(1)) w.brake=65535;
         SDL_Joystick *hb=current_handbrake();
         if (hb) w.handbrake=handbrake_button>=0 ? (SDL_GetJoystickButton(hb,handbrake_button) ? 65535 : 0) : wheel_value(hb,WAX_HANDBRAKE);
         /* The game reads the wheel through logiWheel, which has no handbrake: a pulled handbrake is the pad's circle,

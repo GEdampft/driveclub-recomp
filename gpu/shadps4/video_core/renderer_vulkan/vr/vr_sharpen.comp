@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // VR (dcport-vr): sharpening after DLSS, one eye's layer (DLSS 3.1+ ignores its own sharpness). RCAS in HDR as
-// taa_sharpen.comp (a local scale normalises the neighbourhood); strength 0..2 (above 1 the change RCAS makes at its
+// taa_sharpen.comp (a local scale normalises the neighbourhood); strength 0..5 (above 1 the change RCAS makes at its
 // strongest is scaled by it: 2 doubles it; RCAS's own result is not confined to the neighbourhood's range, so neither
 // is this - clamping to it took the sharpening away). The input is the DLSS result
 // (RGBA16F); the output the game's lit scene itself (R11G11B10F, DLAA: it replaces the copy) or a second RGBA16F

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -226,6 +227,11 @@ private:
     AvPlayerQueue<Frame> m_video_frames;
 
     std::optional<Frame> m_current_video_frame;
+    /// VR fork: buffers of frames the game was given before the current one, kept from the decoder for a while (its
+    /// GPU work may not have read them yet: the draw recording thread runs behind the game, and a buffer refilled at
+    /// once put a frame five ahead on screen - the intro flashing to the next shot and back).
+    std::deque<std::pair<std::chrono::steady_clock::time_point, GuestBuffer>> m_returned_video_buffers;
+    void ReleaseReturnedVideoBuffers();
     std::optional<Frame> m_current_audio_frame;
 
     std::optional<s32> m_video_stream_index{};

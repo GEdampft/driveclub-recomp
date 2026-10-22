@@ -7,6 +7,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <deque>
 #include <queue>
 
 #include "core/libraries/avplayer/avplayer.h"
@@ -62,7 +63,7 @@ public:
 
     void Push(T&& value) {
         std::lock_guard guard(m_mutex);
-        m_queue.emplace(std::forward<T>(value));
+        m_queue.emplace_back(std::forward<T>(value));
     }
 
     T& Front() {
@@ -75,18 +76,24 @@ public:
         }
         std::lock_guard guard(m_mutex);
         auto result = std::move(m_queue.front());
-        m_queue.pop();
+        m_queue.pop_front();
         return result;
+    }
+
+    /// VR fork: the element after the front, null when there is none.
+    T* Second() {
+        std::lock_guard guard(m_mutex);
+        return m_queue.size() > 1 ? &m_queue[1] : nullptr;
     }
 
     void Clear() {
         std::lock_guard guard(m_mutex);
-        m_queue = {};
+        m_queue.clear();
     }
 
 private:
     std::mutex m_mutex{};
-    std::queue<T> m_queue{};
+    std::deque<T> m_queue{};
 };
 
 AvPlayerSourceType GetSourceType(std::string_view path);

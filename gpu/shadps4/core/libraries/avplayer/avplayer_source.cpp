@@ -319,6 +319,7 @@ bool AvPlayerSource::Stop() {
 
     m_current_audio_frame.reset();
     m_current_video_frame.reset();
+    m_returned_video_buffers.clear();
 
     m_video_buffers.Clear();
     m_audio_buffers.Clear();
@@ -363,7 +364,29 @@ bool AvPlayerSource::GetVideoData(AvPlayerFrameInfo& video_info) {
     return true;
 }
 
+// VR fork: returned buffers go back to the decoder BB_AVPLAYER_REUSE_MS (default 70, about two frames) after the
+// game let go of them; always when the decoder would otherwise have none.
+void AvPlayerSource::ReleaseReturnedVideoBuffers() {
+    static const auto delay = std::chrono::milliseconds([] {
+        const char* env = std::getenv("BB_AVPLAYER_REUSE_MS");
+        return env ? std::max(0, std::atoi(env)) : 70;
+    }());
+    const auto now = std::chrono::steady_clock::now();
+    bool released = false;
+    while (!m_returned_video_buffers.empty() &&
+           (now - m_returned_video_buffers.front().first >= delay ||
+            (m_video_buffers.Size() == 0 && m_video_frames.Size() == 0))) {
+        m_video_buffers.Push(std::move(m_returned_video_buffers.front().second));
+        m_returned_video_buffers.pop_front();
+        released = true;
+    }
+    if (released) {
+        m_video_buffers_cv.Notify();
+    }
+}
+
 bool AvPlayerSource::GetVideoData(AvPlayerFrameInfoEx& video_info) {
+    ReleaseReturnedVideoBuffers(); // VR fork
     if (!IsActive() || m_is_paused) {
         return false;
     }
@@ -379,11 +402,23 @@ bool AvPlayerSource::GetVideoData(AvPlayerFrameInfoEx& video_info) {
             return false;
         }
     }
+    // VR fork: frames already late are dropped while a later one is due too (BB_AVPLAYER_DROP=0 keeps them). One
+    // frame a call, the game polling slowly while it loaded fell 2-3 s behind the audio clock and then played the
+    // backlog at up to 72 frames a second: the intro's fast-forward and its jumps back.
+    static const bool drop = !(std::getenv("BB_AVPLAYER_DROP") && std::getenv("BB_AVPLAYER_DROP")[0] == '0');
+    if (drop && m_state.GetSyncMode() == AvPlayerAvSyncMode::Default) {
+        for (Frame* next; (next = m_video_frames.Second()) && next->info.timestamp <= current_time;) {
+            auto late = m_video_frames.Pop();
+            m_video_buffers.Push(std::move(late->buffer));
+            m_video_buffers_cv.Notify();
+        }
+    }
 
     if (m_current_video_frame.has_value()) {
-        m_video_buffers.Push(std::move(m_current_video_frame->buffer));
+        m_returned_video_buffers.emplace_back(std::chrono::steady_clock::now(),
+                                              std::move(m_current_video_frame->buffer)); // VR fork
         m_current_video_frame.reset();
-        m_video_buffers_cv.Notify();
+        ReleaseReturnedVideoBuffers();
     }
 
     auto frame = m_video_frames.Pop();

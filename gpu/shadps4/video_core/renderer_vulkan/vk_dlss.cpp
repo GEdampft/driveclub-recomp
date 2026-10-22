@@ -224,6 +224,26 @@ bool Dlss::SelectFeature(u32 slot) {
     return true;
 }
 
+// VR fork: the DLSS model (NVSDK_NGX_DLSS_Hint_Render_Preset): BB_DLSS_PRESET, a letter (J, K, L, M, F...) or the
+// number; none or 0 is the DLL's default (DLSS 310: K for DLAA/Quality/Balanced, M for Performance, L for Ultra
+// Performance).
+static u32 PresetSetting() {
+    static const u32 preset = [] {
+        const char* v = std::getenv("BB_DLSS_PRESET");
+        if (!v || !v[0]) {
+            return 0u;
+        }
+        if (v[0] >= 'A' && v[0] <= 'Z') {
+            return u32(v[0] - 'A' + 1);
+        }
+        if (v[0] >= 'a' && v[0] <= 'z') {
+            return u32(v[0] - 'a' + 1);
+        }
+        return u32(std::strtoul(v, nullptr, 10));
+    }();
+    return preset;
+}
+
 bool Dlss::CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc) {
     if (!impl->available) {
         return false;
@@ -231,7 +251,7 @@ bool Dlss::CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc) {
     impl->features[impl->slot].reset();
     const BbDlssFeature feature{desc.input_width,  desc.input_height, desc.output_width,
                                 desc.output_height, desc.quality,      desc.depth_inverted ? 1 : 0,
-                                0,                  desc.hdr ? 1 : 0};
+                                PresetSetting(),    desc.hdr ? 1 : 0};
     if (!impl->api->CreateFeature(command, &feature)) {
         return false;
     }

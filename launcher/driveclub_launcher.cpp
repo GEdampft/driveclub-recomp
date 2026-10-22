@@ -236,6 +236,7 @@ int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_an
 int g_vr = -1;  // VR fork: the "VR headset" row (Off or a size per eye)
 int g_vrdlss = -1, vrdlss_saved = 0;  // VR fork: the "VR DLSS" row (Off, DLAA, Quality, Balanced, Performance)
 int g_vrsharp = -1, vrsharp_saved = 0;  // VR fork: the "VR DLSS sharpness" row (Off, 20% .. 100%)
+int g_vrmodel = -1, vrmodel_saved = 0;  // VR fork: the "VR DLSS model" row (Default, K, J, M, L, F)
 int g_vrtaa = -1;  // VR fork: the "Game anti-aliasing (TAA)" toggle (motion blur patch left out)
 bool vr_taa = false;  // its saved state ("vr_taa=" in launcher.ini)
 
@@ -486,6 +487,11 @@ void BuildModel() {
                   L"Sharpens each eye after DLSS (AMD's contrast-adaptive sharpening: edges and texture detail, without "
                   L"halos). DLSS itself no longer sharpens. Only with a VR DLSS mode on.",
                   {L"Off", L"20%", L"40%", L"60%", L"80%", L"100%"}, {"@vrsharp", "", "", "", "", ""}, 0);
+  g_vrmodel = seg(L"VR DLSS model",
+                  L"The DLSS preset. Default lets DLSS choose: K (transformer) for DLAA, Quality and Balanced, M for "
+                  L"Performance. J is like K with a little less ghosting and more flicker; M and L are the transformer "
+                  L"presets for the faster modes; F is the older CNN model (deprecated).",
+                  {L"Default", L"K", L"J", L"M", L"L", L"F"}, {"@vrmodel", "", "", "", "", ""}, 0);
   g_vrtaa = toggle(L"Game anti-aliasing (TAA)",
                    L"Keeps the game's own anti-aliasing in VR. It shares one shader with motion blur, so motion blur comes "
                    L"back too (head turns blur). VR DLSS is off while this is on. Also untick \"Disable motion blur and "
@@ -500,7 +506,7 @@ void BuildModel() {
   // in for the frame rate, resolution and anti-aliasing rows (VrReplaces): those cards show only with VR off.
   g_cards.push_back({L"VR", {g_vr, g_vrexp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
   g_exp_card = int(g_cards.size());
-  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrsharp, g_vrtaa}, 0,
+  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrmodel, g_vrsharp, g_vrtaa}, 0,
                      L"Still in development: may have graphical bugs."});
   g_flat_card = int(g_cards.size());
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
@@ -568,6 +574,7 @@ void LoadSettings() {
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("vr_dlss=", 0) == 0) vrdlss_saved = atoi(line.substr(8).c_str());  // VR fork
     if (line.rfind("vr_sharpness=", 0) == 0) vrsharp_saved = atoi(line.substr(13).c_str());  // VR fork
+    if (line.rfind("vr_model=", 0) == 0) vrmodel_saved = atoi(line.substr(9).c_str());  // VR fork
     if (line.rfind("vr_taa=", 0) == 0) vr_taa = line.substr(7) == "1";  // VR fork
     if (line.rfind("vr_experimental=", 0) == 0) vr_experimental = line.substr(16) == "1";  // VR fork
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
@@ -636,6 +643,7 @@ void LoadSettings() {
   if (g_fgen >= 0 && fgen_saved >= 1 && fgen_saved <= 4) g_c[g_fgen].sel = fgen_saved;
   if (g_fps >= 0 && unlocked_saved && g_c[g_fps].sel == 1) g_c[g_fps].sel = 3;
   if (g_vrdlss >= 0 && vrdlss_saved >= 1 && vrdlss_saved <= 4) g_c[g_vrdlss].sel = vrdlss_saved;  // VR fork
+  if (g_vrmodel >= 0 && vrmodel_saved >= 1 && vrmodel_saved <= 5) g_c[g_vrmodel].sel = vrmodel_saved;  // VR fork
   if (g_vrsharp >= 0 && vrsharp_saved >= 1 && vrsharp_saved <= 5) g_c[g_vrsharp].sel = vrsharp_saved;  // VR fork  // Unlocked is deltatime without the cap
   DerivePreset();
 }
@@ -723,7 +731,7 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_taa=" << (g_vrtaa >= 0 ? g_c[g_vrtaa].sel : 0) << "\r\nvr_experimental=" << (ExperimentalOn() ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_model=" << (g_vrmodel >= 0 ? g_c[g_vrmodel].sel : 0) << "\r\nvr_taa=" << (g_vrtaa >= 0 ? g_c[g_vrtaa].sel : 0) << "\r\nvr_experimental=" << (ExperimentalOn() ? 1 : 0) << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
         << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
@@ -1571,6 +1579,11 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     }
     SetEnvironmentVariableW(L"BB_AA_SCALE", kScale[VrDlss()]);
     SetEnvironmentVariableW(L"BB_AA_UPSCALE_DEV", VrDlss() >= 2 ? L"1" : nullptr);
+    if (GetEnvironmentVariableW(L"BB_DLSS_PRESET", nullptr, 0) == 0) {  // the DLSS model (game: vk_dlss.cpp)
+      static const wchar_t* const kModel[] = {L"", L"K", L"J", L"M", L"L", L"F"};
+      const int m = g_vrmodel >= 0 && VrDlss() ? g_c[g_vrmodel].sel : 0;
+      SetEnvironmentVariableW(L"BB_DLSS_PRESET", m >= 1 && m <= 5 ? kModel[m] : nullptr);
+    }
     if (GetEnvironmentVariableW(L"BB_VR_DLSS_SHARPNESS", nullptr, 0) == 0) {
       static const wchar_t* const kSharp[] = {L"0", L"0.2", L"0.4", L"0.6", L"0.8", L"1"};
       const int s = g_vrsharp >= 0 && VrDlss() ? g_c[g_vrsharp].sel : 0;

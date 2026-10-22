@@ -334,7 +334,7 @@ void RunEventWriteEop(Vulkan::Rasterizer& rasterizer, const u8* data) {
         // The draw recording thread does not wait: the Vulkan recording thread signals the
         // fence after the copies queued before it.
         if (!rasterizer.GetBufferCache().DeferGdsFence(fence, after_copies)) {
-            rasterizer.SignalAfterHostCopies([eop] { SignalEop(eop); });
+            rasterizer.SignalFenceAfterHostCopies(fence, [eop] { SignalEop(eop); }); // VR fork
         }
     } else {
         // Labels are written in order: not before the ones deferred to the recording thread.
@@ -423,7 +423,9 @@ void RunEventWriteEos(Vulkan::Rasterizer& rasterizer, const u8* data) {
 
 void Liverpool::NotePendingFences(const auto& event) {
     const u64 position = rasterizer->DrawPipeHead();
-    while (!pending_fences.empty() && rasterizer->DrawPipeReached(pending_fences.front().position)) {
+    // VR fork: a fence the recording thread passed on to the Vulkan recording thread stays until it is written.
+    while (!pending_fences.empty() && rasterizer->DrawPipeReached(pending_fences.front().position) &&
+           (!rasterizer->DeferredFencePending(pending_fences.front().address) || pending_fences.size() > 4096)) {
         pending_fences.pop_front();
     }
     constexpr bool is_eop = requires { event.SignalFence([](void*, u64, u32) {}, [] {}); };
@@ -451,11 +453,20 @@ void Liverpool::NotePendingWrite(const PM4CmdWriteData& write_data, u32 num_byte
 }
 
 bool Liverpool::PendingFenceValue(VAddr address, u32& value) {
+    // VR fork: the recording thread hands a fence after the guest memory copies to the Vulkan recording thread
+    // (SignalFenceAfterHostCopies), which writes it some milliseconds later: until then it is pending too. Counted as
+    // written when the recording thread passed it, a graphics wait on the game's own fence waited for that thread
+    // (7-10 ms, about twice a second at 2560 per eye: the GPU starved, frames of 13-15 ms).
+    const bool deferred = rasterizer->DeferredSignalsPending();
     for (auto it = pending_fences.rbegin(); it != pending_fences.rend(); ++it) {
-        if (rasterizer->DrawPipeReached(it->position)) {
+        const bool reached = rasterizer->DrawPipeReached(it->position);
+        if (reached && !deferred) {
             break; // written already: memory holds it (or a later write)
         }
         if (address >= it->address && address + sizeof(u32) <= it->address + it->num_bytes) {
+            if (reached && !rasterizer->DeferredFencePending(it->address)) {
+                return false; // written already
+            }
             u64 data = it->data;
             value = static_cast<u32>(data >> ((address - it->address) * 8));
             return true;

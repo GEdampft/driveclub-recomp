@@ -833,7 +833,19 @@ public:
     /// bbport: runs `signal` once the guest memory copies issued so far are done, without
     /// waiting here: the recording thread reaches it after the copies queued before it and hands
     /// it to the copy threads' completion (BbCopy::AfterCopies).
-    void SignalAfterHostCopies(std::function<void()> signal);
+    /// Returns the signal's number when deferred (0 when it ran here).
+    u64 SignalAfterHostCopies(std::function<void()> signal);
+
+    /// VR fork: a fence write deferred by SignalAfterHostCopies, by its address: until it runs, a WaitRegMem on it is
+    /// met in stream order (Liverpool::PendingFenceValue) instead of waiting for the Vulkan recording thread.
+    void NoteDeferredFence(VAddr address, u64 signal);
+    /// VR fork: the last fence noted at this address has not been written yet.
+    [[nodiscard]] bool DeferredFencePending(VAddr address);
+    /// VR fork: some deferred signal has not run yet.
+    [[nodiscard]] bool DeferredSignalsPending() const {
+        return deferred_signals_done->load(std::memory_order_acquire) <
+               deferred_signals_issued.load(std::memory_order_acquire);
+    }
 
     /// bbport: before a guest-visible write that is not deferred (WriteData, end-of-shader
     /// fences, flip): waits until every signal handed to SignalAfterHostCopies ran, so that
@@ -966,6 +978,8 @@ private:
     std::atomic<u64> deferred_signals_issued{0}; ///< by the thread recording (A or B)
     std::shared_ptr<std::atomic<u64>> deferred_signals_done =
         std::make_shared<std::atomic<u64>>(0);
+    std::mutex deferred_fences_mutex; ///< VR fork: NoteDeferredFence
+    std::array<std::pair<VAddr, u64>, 256> deferred_fences{};
     // bbport: whether recorder_thread runs, read on every Record(). std::jthread::joinable()
     // compares thread ids, which on Windows (libc++ over winpthreads) costs two system calls.
     bool recording_threaded{false};

@@ -192,14 +192,14 @@ std::unique_ptr<RecordChunk> Scheduler::AcquireChunk() {
     return chunk;
 }
 
-void Scheduler::SignalAfterHostCopies(std::function<void()> signal) {
+u64 Scheduler::SignalAfterHostCopies(std::function<void()> signal) {
     if (!IsRecordingDeferred()) {
         WaitHostCopies();
         signal();
-        return;
+        return 0;
     }
     BbCopy::FlushBatch();
-    deferred_signals_issued.fetch_add(1, std::memory_order_relaxed);
+    const u64 number = deferred_signals_issued.fetch_add(1, std::memory_order_relaxed) + 1;
     Record([signal = std::move(signal), done = deferred_signals_done](vk::CommandBuffer) mutable {
         BbCopy::AfterCopies([signal = std::move(signal), done = std::move(done)] {
             signal();
@@ -207,6 +207,30 @@ void Scheduler::SignalAfterHostCopies(std::function<void()> signal) {
         });
     });
     KickRecording(true);
+    return number;
+}
+
+// The signals run in the order they were issued (BbCopy::AfterCopies keeps it), so a fence's own is done once the count
+// of signals run reaches its number.
+void Scheduler::NoteDeferredFence(VAddr address, u64 signal) {
+    if (signal == 0) {
+        return;
+    }
+    std::scoped_lock lk{deferred_fences_mutex};
+    deferred_fences[(address >> 3) & (deferred_fences.size() - 1)] = {address, signal};
+}
+
+bool Scheduler::DeferredFencePending(VAddr address) {
+    u64 signal = 0;
+    {
+        std::scoped_lock lk{deferred_fences_mutex};
+        const auto& slot = deferred_fences[(address >> 3) & (deferred_fences.size() - 1)];
+        if (slot.first != address) {
+            return false;
+        }
+        signal = slot.second;
+    }
+    return deferred_signals_done->load(std::memory_order_acquire) < signal;
 }
 
 void Scheduler::WaitDeferredSignals() {

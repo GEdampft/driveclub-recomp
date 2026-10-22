@@ -102,6 +102,7 @@ public:
     /// VR fork (pipe_reads.h): before the GPU command thread writes guest memory, drains only when a packet still in
     /// flight reads that memory directly.
     void DrainDrawPipeForWrite(VAddr address, u64 size);
+    void EagerSubmit(); ///< VR fork: stage B, after each packet
     /// Runs `task(rasterizer, copy of data)` in order with the draws: on the draw recording
     /// thread while the draw pipeline is in use (PipelinedTasks), else here after a drain.
     using OrderedTask = void (*)(Rasterizer& rasterizer, const u8* data);
@@ -136,6 +137,22 @@ public:
     /// Runs `signal` after the guest memory copies issued so far, without waiting here.
     void SignalAfterHostCopies(std::function<void()> signal) {
         scheduler.SignalAfterHostCopies(std::move(signal));
+    }
+    /// VR fork: the same for a fence at `address` (Scheduler::NoteDeferredFence).
+    void SignalFenceAfterHostCopies(VAddr address, std::function<void()> signal) {
+        scheduler.NoteDeferredFence(address, scheduler.SignalAfterHostCopies(std::move(signal)));
+    }
+    /// VR fork, stage A: a fence the draw recording thread passed on whose write has not happened yet
+    /// (BB_DEFERRED_FENCE_WAITS=0: treated as written, as before).
+    [[nodiscard]] bool DeferredFencePending(VAddr address) {
+        return DeferredFenceWaits() && scheduler.DeferredFencePending(address);
+    }
+    [[nodiscard]] bool DeferredSignalsPending() const {
+        return DeferredFenceWaits() && scheduler.DeferredSignalsPending();
+    }
+    static bool DeferredFenceWaits() {
+        static const bool on = !(std::getenv("BB_DEFERRED_FENCE_WAITS") && std::getenv("BB_DEFERRED_FENCE_WAITS")[0] == '0');
+        return on;
     }
     /// The GPU command thread or the draw recording thread (fault handling runs inline there).
     bool IsGpuSideThread() const;

@@ -474,6 +474,12 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
                  (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,(LPCSTR)rip,&module) && module==self) ||
                  !module;
         if (ours) return fatal_exception(info);
+        /* BB_NTDLL_FAULTS=1 (diagnostics): an access violation inside ntdll is reported too (a lock on freed
+         * memory ends there; the process otherwise vanished without a report). */
+        static int ntdll_faults=-1;
+        if (ntdll_faults<0) ntdll_faults=getenv("BB_NTDLL_FAULTS")!=NULL;
+        if (ntdll_faults && code==EXCEPTION_ACCESS_VIOLATION && module && module==GetModuleHandleA("ntdll.dll"))
+            return fatal_exception(info);
     }
     /* BB_STRICT_HANDLES=1: a closed or invalid handle used anywhere is reported (diagnostics). */
     if (code==0xC0000008 /* STATUS_INVALID_HANDLE */) return fatal_exception(info);

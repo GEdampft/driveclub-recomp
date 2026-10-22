@@ -485,7 +485,7 @@ void BuildModel() {
                  {L"Off", L"DLAA", L"Quality", L"Balanced", L"Performance"}, {"@vrdlss", "", "", "", ""}, 0);
   g_vrsharp = seg(L"VR sharpening",
                   L"LumaSharpen on each eye's final picture: sharpens brightness only (no colour fringes) and limits "
-                  L"how far a pixel changes (no hard halos). With or without DLSS. Medium is LumaSharpen's default.",
+                  L"how far a pixel changes (no hard halos). With or without DLSS. Each step is twice LumaSharpen's usual strength.",
                   {L"Off", L"Low", L"Medium", L"High", L"Very high", L"Max"}, {"@vrsharp", "", "", "", "", ""}, 0);
   g_vrmodel = seg(L"VR DLSS model",
                   L"The DLSS preset. Default lets DLSS choose: K (transformer) for DLAA, Quality and Balanced, M for "
@@ -1585,7 +1585,9 @@ std::wstring StartGame(HANDLE* process = nullptr) {
       SetEnvironmentVariableW(L"BB_DLSS_PRESET", m >= 1 && m <= 5 ? kModel[m] : nullptr);
     }
     if (GetEnvironmentVariableW(L"BB_VR_SHARPEN", nullptr, 0) == 0) {  // LumaSharpen strength (game: vr_stereo.cpp)
-      static const wchar_t* const kSharp[] = {L"0", L"0.4", L"0.65", L"1.0", L"1.5", L"2.5"};
+      // Matt 2026-10-22: twice LumaSharpen's strength per step, and twice its limit (0.07; at 0.035 the stronger
+      // steps hit the limit and changed little).
+      static const wchar_t* const kSharp[] = {L"0", L"0.8,0.07", L"1.3,0.07", L"2.0,0.07", L"3.0,0.07", L"5.0,0.07"};
       const int s = g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0;
       SetEnvironmentVariableW(L"BB_VR_SHARPEN", kSharp[s >= 0 && s <= 5 ? s : 0]);
     }

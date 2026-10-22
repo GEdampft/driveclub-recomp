@@ -10,7 +10,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread> // VR fork: ReadbackAsync
 #include <magic_enum/magic_enum.hpp>
+#include "common/thread.h"
 #include "bbport_copy.h"
 #include "bbport_toggles.h"
 #include "common/alignment.h"
@@ -388,6 +390,58 @@ struct BufferCache::Readback {
     std::vector<DirectSpan> spans;
 };
 
+// VR fork (readback_hybrid.h): an exact page over its step budget read back only to open the page until the GPU writes
+// it again; the access itself needs no GPU data. Synchronous, each was a wait on a game thread for the whole GPU queue
+// (3-5 ms, ~20 a second at 2560 per eye) with the GPU idle behind it: most of the frames over 11.1 ms. Recorded on the
+// GPU thread without anyone waiting and finished here once the GPU has done the copy; the access is stepped meanwhile.
+// BB_ASYNC_BUDGET_READBACK=0: the synchronous readback.
+bool BufferCache::ReadbackAsync(VAddr device_addr) {
+    static const bool on = !(std::getenv("BB_ASYNC_BUDGET_READBACK") && std::getenv("BB_ASYNC_BUDGET_READBACK")[0] == '0');
+    if (!on || !readback_offload) {
+        return false;
+    }
+    const VAddr window = Common::AlignDown(device_addr, READBACK_WINDOW_SIZE);
+    {
+        std::scoped_lock lk{readback_mutex};
+        if (IsReadbackPending(window, READBACK_WINDOW_SIZE)) {
+            return true; // one is on its way
+        }
+    }
+    liverpool->SendCommand<false>([this, window] {
+        auto job = std::make_shared<Readback>();
+        job->window = window;
+        RecordReadback(*job);
+        if (job->busy || job->copies.empty()) {
+            return; // another readback of the window, or nothing GPU modified (none pending then)
+        }
+        {
+            std::scoped_lock lk{async_readback_mutex};
+            async_readbacks.push_back(std::move(job));
+            if (!async_readback_worker) {
+                async_readback_worker = true;
+                std::thread([this] { AsyncReadbackWorker(); }).detach();
+            }
+        }
+        async_readback_cv.notify_one();
+    });
+    return true;
+}
+
+void BufferCache::AsyncReadbackWorker() {
+    Common::SetCurrentThreadName("AsyncReadbacks");
+    for (;;) {
+        std::shared_ptr<Readback> job;
+        {
+            std::unique_lock lk{async_readback_mutex};
+            async_readback_cv.wait(lk, [this] { return !async_readbacks.empty(); });
+            job = std::move(async_readbacks.front());
+            async_readbacks.pop_front();
+        }
+        scheduler.GetWorkSemaphore()->Wait(job->tick);
+        FinishReadback(*job);
+    }
+}
+
 bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
     const VAddr window = Common::AlignDown(device_addr, READBACK_WINDOW_SIZE);
     if (device_addr + size > window + READBACK_WINDOW_SIZE) {
@@ -449,6 +503,9 @@ void BufferCache::RecordReadback(Readback& job) {
         return;
     }
     job.arena_base = arena->cpu_addr;
+    for (const auto& copy : job.copies) { // VR fork: in flight until FinishReadback (readback_hybrid.h)
+        ReadbackHybrid::NoteInflight(job.arena_base + copy.srcOffset, copy.size, true);
+    }
     job.write_seq = memory_tracker->GpuWriteSeq(job.window, READBACK_WINDOW_SIZE);
     memory_tracker->GpuWriteSeqs(job.window, READBACK_WINDOW_SIZE, job.page_seq); // VR fork
     job.one_recorder = BbToggle::Disabled(BbToggle::DrawPipeline);
@@ -566,6 +623,9 @@ void BufferCache::FinishReadback(const Readback& job) {
             }
         }
     }
+    for (const auto& copy : job.copies) { // VR fork: in guest memory now (readback_hybrid.h)
+        ReadbackHybrid::NoteInflight(job.arena_base + copy.srcOffset, copy.size, false);
+    }
     const bool unmarked = memory_tracker->TryUnmarkRegionAsGpuModified(
         job.window, READBACK_WINDOW_SIZE, job.write_seq);
     // VR fork: the pages the GPU wrote again stay GPU modified, the others are unmarked. With one recording thread
@@ -589,6 +649,9 @@ void BufferCache::FinishReadback(const Readback& job) {
                     const size_t page = (at - job.window) / 4096;
                     if (page >= kept.size() || kept[page]) {
                         readback_returns.emplace_back(at, part_end - at);
+                        if (ReadbackHybrid::InflightTracking()) { // VR fork: GPU bytes again from now, not from the merge
+                            ReadbackHybrid::NoteGpuWritten(at, part_end - at, true);
+                        }
                     }
                     at = part_end;
                 }

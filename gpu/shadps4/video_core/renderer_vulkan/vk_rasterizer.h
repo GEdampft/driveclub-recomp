@@ -160,6 +160,10 @@ public:
     /// A guest write hit a protected page.
     bool OnWriteFault(VAddr addr, bool assume_locks);
     bool ReadMemory(VAddr addr, u64 size, bool assume_locks = false);
+    /// VR fork: BufferCache::ReadbackAsync.
+    bool ReadbackAsync(VAddr addr) {
+        return buffer_cache.ReadbackAsync(addr);
+    }
     void ProcessDownloadImages();
     bool IsMapped(VAddr addr, u64 size);
     void MapMemory(VAddr addr, u64 size);

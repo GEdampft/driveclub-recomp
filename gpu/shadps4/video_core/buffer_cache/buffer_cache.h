@@ -92,6 +92,9 @@ public:
 
     /// Flushes any GPU modified buffer in the logical page range back to CPU memory.
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool assume_locks = false);
+    /// VR fork: starts a readback of the window around `device_addr` that nobody waits for (an exact page's step budget,
+    /// readback_hybrid.h); a worker finishes it once the GPU has done the copy. False when switched off.
+    bool ReadbackAsync(VAddr device_addr);
 
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(VAddr device_addr, u32 size,
@@ -239,6 +242,12 @@ private:
     std::vector<VAddr> pending_readbacks;
     /// Ranges of vetoed readbacks, merged back into gpu_modified_ranges on the GPU thread.
     std::vector<std::pair<VAddr, u64>> readback_returns;
+    /// VR fork: ReadbackAsync's recorded jobs, for its worker.
+    std::mutex async_readback_mutex;
+    std::condition_variable async_readback_cv;
+    std::deque<std::shared_ptr<Readback>> async_readbacks;
+    bool async_readback_worker{false};
+    void AsyncReadbackWorker();
 };
 
 } // namespace VideoCore

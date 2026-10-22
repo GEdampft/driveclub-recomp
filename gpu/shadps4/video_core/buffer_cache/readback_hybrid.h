@@ -150,9 +150,31 @@ inline void NoteGpuWritten(VAddr address, u64 size, bool written) {
     }
 }
 
+// VR fork: bytes a recorded readback is bringing down (BufferCache::RecordReadback takes them out of g_written) until
+// FinishReadback has written them into guest memory. They count as GPU bytes: an access to them waits for that
+// readback, an access to the page's other bytes is stepped. Counted as nothing, every access to a page with a readback
+// in flight took the synchronous path and waited for it (so a readback started without waiting, ReadbackAsync, was
+// waited for by the game's next access to the page anyway). BB_HYBRID_INFLIGHT=0: as before.
+inline RangeSet g_inflight;
+inline bool InflightTracking() {
+    static const bool on = !(std::getenv("BB_HYBRID_INFLIGHT") && std::getenv("BB_HYBRID_INFLIGHT")[0] == '0');
+    return on;
+}
+inline void NoteInflight(VAddr address, u64 size, bool inflight) {
+    if (!size || !Enabled() || !InflightTracking()) {
+        return;
+    }
+    std::scoped_lock lk{g_written_mutex};
+    if (inflight) {
+        g_inflight.Add(address, size);
+    } else {
+        g_inflight.Subtract(address, size);
+    }
+}
+
 inline bool GpuWroteBytes(VAddr address, u64 size) {
     std::scoped_lock lk{g_written_mutex};
-    return g_written.Intersects(address, size);
+    return g_written.Intersects(address, size) || g_inflight.Intersects(address, size);
 }
 
 /// The parts of [address, address + size) without GPU bytes still to be read back. An upload of a CPU modified fast

@@ -130,7 +130,12 @@ struct PageManager::Impl {
         case ReadbackHybrid::StepAction::Step:
             break;
         case ReadbackHybrid::StepAction::ReadBack:
-            return false; // an exact page over its stepping budget: one readback instead
+            // An exact page over its stepping budget: a readback opens it; started without waiting (VR fork), this
+            // access is stepped.
+            if (rasterizer->ReadbackAsync(addr)) {
+                break;
+            }
+            return false;
         case ReadbackHybrid::StepAction::Promote: {
             // Learned fast: read back (guest memory then holds the GPU's bytes), take the shadow, and let this access
             // go the usual way.

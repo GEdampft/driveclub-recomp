@@ -236,8 +236,8 @@ int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_an
 int g_vr = -1;  // VR fork: the "VR headset" row (Off or a size per eye)
 int g_vrdlss = -1, vrdlss_saved = 0;  // VR fork: the "VR DLSS" row (Off, DLAA, Quality, Balanced, Performance)
 int g_vrsharp = -1, vrsharp_saved = 0;  // VR fork: the "VR DLSS sharpness" row (Off, 20% .. 100%)
-int g_vrfast = -1;  // VR fork: the "VR fast mode" toggle (GPU readbacks off)
-bool vr_fast = false;  // its saved state ("vr_fast=" in launcher.ini)
+int g_vrtaa = -1;  // VR fork: the "Game anti-aliasing (TAA)" toggle (motion blur patch left out)
+bool vr_taa = false;  // its saved state ("vr_taa=" in launcher.ini)
 
 // VR fork: the game in stereo on the OpenXR runtime (SteamVR). The VR patch sets a square render and output size per
 // eye, so the resolution, widescreen and upscaling rows are left out; anti-aliasing and frame generation stay off.
@@ -247,7 +247,7 @@ int VrEye() {
   return VrOn() ? kEye[g_c[g_vr].sel] : 0;
 }
 // VR fork: the "Experimental options" toggle in the VR card shows the "VR EXPERIMENTAL" card below it (VR DLSS, its
-// sharpness, VR fast mode); off, those settings keep their saved values but do not apply.
+// sharpness, the game's TAA); off, those settings keep their saved values but do not apply.
 int g_vrexp = -1;            // the toggle
 bool vr_experimental = false;  // its saved state ("vr_experimental=" in launcher.ini)
 int g_exp_card = -1;         // the card's index in g_cards
@@ -256,7 +256,9 @@ int g_flat_card = -1, g_aa_card = -1, g_tex_card = -1;  // VR off: frame rate an
 bool ExperimentalOn() { return g_vrexp >= 0 && g_c[g_vrexp].sel != 0; }
 bool CardHidden(size_t k);
 bool CtlHidden(int i);
-int VrDlss() { return VrOn() && ExperimentalOn() && g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0; }  // 0 off, 1 DLAA, 2.. upscaling
+// VR fork: the game's own TAA kept (the motion blur / DOF patch left out: one shader does both). VR DLSS is off then.
+bool VrTaa() { return VrOn() && ExperimentalOn() && g_vrtaa >= 0 && g_c[g_vrtaa].sel != 0; }
+int VrDlss() { return VrOn() && ExperimentalOn() && !VrTaa() && g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0; }  // 0 off, 1 DLAA, 2.. upscaling
 // The render size per eye: the eye size, or below it by the DLSS mode's factor (a multiple of 16, as the
 // "VR render" patches in DriveClub.xml).
 int VrRender() {
@@ -484,13 +486,13 @@ void BuildModel() {
                   L"Sharpens each eye after DLSS (AMD's contrast-adaptive sharpening: edges and texture detail, without "
                   L"halos). DLSS itself no longer sharpens. Only with a VR DLSS mode on.",
                   {L"Off", L"20%", L"40%", L"60%", L"80%", L"100%"}, {"@vrsharp", "", "", "", "", ""}, 0);
-  g_vrfast = toggle(L"VR fast mode",
-                    L"About 20% more frames per second in VR. The game stops reading results back from the graphics card, "
-                    L"so some effects and scenery can go wrong: rain drops on the windscreen flicker, and some scenery is "
-                    L"misplaced or missing (spectators standing in mid-air).",
-                    "@vrfast", false);
+  g_vrtaa = toggle(L"Game anti-aliasing (TAA)",
+                   L"Keeps the game's own anti-aliasing in VR. It shares one shader with motion blur, so motion blur comes "
+                   L"back too (head turns blur). VR DLSS is off while this is on. Also untick \"Disable motion blur and "
+                   L"depth of field\".",
+                   "@vrtaa", false);
   g_vrexp = toggle(L"Experimental options",
-                   L"Shows the VR EXPERIMENTAL section below: VR DLSS, its sharpening and VR fast mode. Still in "
+                   L"Shows the VR EXPERIMENTAL section below: VR DLSS, its sharpening and the game's TAA. Still in "
                    L"development: they may have graphical bugs. Off, those settings are not used.",
                    "@vrexp", false);
   // The cards flow into as many columns as the window width allows (see LayoutPass). VR fork: the VR card first, at
@@ -498,7 +500,7 @@ void BuildModel() {
   // in for the frame rate, resolution and anti-aliasing rows (VrReplaces): those cards show only with VR off.
   g_cards.push_back({L"VR", {g_vr, g_vrexp}, 0, L"Stereo 3D with head tracking on a PC VR headset."});
   g_exp_card = int(g_cards.size());
-  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrsharp, g_vrfast}, 0,
+  g_cards.push_back({L"VR EXPERIMENTAL", {g_vrdlss, g_vrsharp, g_vrtaa}, 0,
                      L"Still in development: may have graphical bugs."});
   g_flat_card = int(g_cards.size());
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov}, 0});
@@ -566,7 +568,7 @@ void LoadSettings() {
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("vr_dlss=", 0) == 0) vrdlss_saved = atoi(line.substr(8).c_str());  // VR fork
     if (line.rfind("vr_sharpness=", 0) == 0) vrsharp_saved = atoi(line.substr(13).c_str());  // VR fork
-    if (line.rfind("vr_fast=", 0) == 0) vr_fast = line.substr(8) == "1";  // VR fork
+    if (line.rfind("vr_taa=", 0) == 0) vr_taa = line.substr(7) == "1";  // VR fork
     if (line.rfind("vr_experimental=", 0) == 0) vr_experimental = line.substr(16) == "1";  // VR fork
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
     if (line.rfind("bench_track=", 0) == 0) g_bench_track = FindBench(kBenchTracks, kBenchTrackCount, line.substr(12), 0);
@@ -607,8 +609,8 @@ void LoadSettings() {
       c.sel = unlock_dlc ? 1 : 0;
       continue;
     }
-    if (c.kind == Kind::Toggle && c.patches[0] == "@vrfast") {  // VR fork
-      c.sel = vr_fast ? 1 : 0;
+    if (c.kind == Kind::Toggle && c.patches[0] == "@vrtaa") {  // VR fork
+      c.sel = vr_taa ? 1 : 0;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@vrexp") {  // VR fork
@@ -718,7 +720,7 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_fast=" << (g_vrfast >= 0 ? g_c[g_vrfast].sel : 0) << "\r\nvr_experimental=" << (ExperimentalOn() ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nvr_dlss=" << (g_vrdlss >= 0 ? g_c[g_vrdlss].sel : 0) << "\r\nvr_sharpness=" << (g_vrsharp >= 0 ? g_c[g_vrsharp].sel : 0) << "\r\nvr_taa=" << (g_vrtaa >= 0 ? g_c[g_vrtaa].sel : 0) << "\r\nvr_experimental=" << (ExperimentalOn() ? 1 : 0) << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
         << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
@@ -736,7 +738,7 @@ void SaveSettings() {
     game << "show_fps=" << (fps_on ? 1 : 0) << "\r\n";
   }
   std::ofstream out(SelectionPath().c_str(), std::ios::binary | std::ios::trunc);
-  if (VrOn()) out << "60 FPS with deltatime\nDisable motion blur and depth of field\nVR lens dirt off\n";  // VR fork
+  if (VrOn()) out << "60 FPS with deltatime\n" << (VrTaa() ? "" : "Disable motion blur and depth of field\n") << "VR lens dirt off\n";  // VR fork
   if (VrOn() && VrRender() != VrEye()) out << "VR render " << VrRender() << "x" << VrRender() << "\n";  // VR fork: DLSS
   for (const auto& c : g_c) {
     if (VrReplaces(c)) continue;  // VR fork
@@ -1584,11 +1586,8 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     }
     // GPU readbacks stay precise in VR, as flat. Without them (BB_READBACKS=0: 3200 per eye 76 -> 94 game FPS) the
     // game misses GPU results it reads: the crowd stood in mid-air, the windscreen drops flickered, and at dawn the
-    // picture went black (small_writeback.cpp covers that one). "VR fast mode" (or BB_READBACKS=0) selects it.
-    if (ExperimentalOn() && g_vrfast >= 0 && g_c[g_vrfast].sel &&
-        GetEnvironmentVariableW(L"BB_READBACKS", nullptr, 0) == 0) {
-      SetEnvironmentVariableW(L"BB_READBACKS", L"0");
-    }
+    // picture went black (small_writeback.cpp covers that one). BB_READBACKS=0 selects it (development; the
+    // launcher's "VR fast mode" that did is gone: Matt 2026-10-22, confusing).
   }
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;

@@ -26,6 +26,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "bbport_write_log.h"
 #include "video_core/amdgpu/pm4_cmds.h"
+#include "video_core/buffer_cache/readback_hybrid.h" // VR fork
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
@@ -73,8 +74,15 @@ static bool TestWaitRegMem(const PM4CmdWaitRegMem* wait, std::span<const u32> re
         return wait->Test(regs);
     }
     u32 value;
-    if ((++polls & 31) == 0 ||
-        !runtime_memory_read_backing(wait->Address<uintptr_t>(), &value, sizeof(value))) {
+    // VR fork: through the view only when the label's own bytes are GPU writes not yet read back (a shader wrote
+    // it). A page with other GPU data on it was read-protected too, and the async compute queue's polls of a fence
+    // label there were a synchronous download and GPU wait each, a quarter of the GPU command thread's time.
+    // Every 1024th unmet poll reads through the view regardless (a GPU write the tracker does not list).
+    ++polls;
+    const bool view = (polls & 31) == 0 &&
+                      ((polls & 1023) == 0 || !VideoCore::ReadbackHybrid::Enabled() ||
+                       VideoCore::ReadbackHybrid::GpuWroteBytes(wait->Address<VAddr>(), sizeof(value)));
+    if (view || !runtime_memory_read_backing(wait->Address<uintptr_t>(), &value, sizeof(value))) {
         return wait->Test(regs);
     }
     return wait->TestValue(value);

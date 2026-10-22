@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 #include "video_core/renderer_vulkan/motion_history.h"
 
 #include "common/types.h"
@@ -71,6 +72,8 @@ public:
 
 private:
     void EnsureImage(u32 width, u32 height, u32 layers = 1);
+    /// VR fork: makes the kept image of this size current (layers 0: any count); false when there is none.
+    bool SwapIn(u32 width, u32 height, u32 layers);
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -100,6 +103,19 @@ private:
     std::array<vk::UniqueImageView, 2> layer_views; ///< VR fork
     bool written = false; ///< this frame's vectors are in the image
     vk::ImageLayout image_layout = vk::ImageLayout::eUndefined;
+    /// VR fork: the images of the other sizes, kept. With VR DLSS the G-buffer passes alternate between the scene
+    /// (two layers at the render size) and the rear-view mirror (768x512, one layer): the image was recreated at every
+    /// switch, each time after a wait for the GPU to finish everything (a fifth of the GPU command thread's time,
+    /// 30-45 FPS at the race start at 3200 per eye).
+    struct KeptImage {
+        VideoCore::UniqueImage image;
+        vk::UniqueImageView view;
+        u32 width = 0, height = 0, layers = 1;
+        std::array<vk::UniqueImageView, 2> layer_views;
+        bool written = false;
+        vk::ImageLayout layout = vk::ImageLayout::eUndefined;
+    };
+    std::vector<KeptImage> kept_images;
 };
 
 } // namespace Vulkan

@@ -126,6 +126,9 @@ void ObjectMotion::OnFrameStart() {
     }
     params_used = 0;
     written = false;
+    for (auto& kept : kept_images) { // VR fork
+        kept.written = false;
+    }
     scheduler.EndRendering();
     // Last frame's stores must be visible to this frame's loads. Also finish old reads
     // before the ping-pong half they reference is reused for writes.
@@ -165,13 +168,40 @@ u32 ObjectMotion::PrepareDraw(const DrawInfo& draw) {
     return index;
 }
 
+bool ObjectMotion::SwapIn(u32 width, u32 height, u32 layers) {
+    for (auto& kept : kept_images) {
+        if (kept.width == width && kept.height == height && (layers == 0 || kept.layers == layers)) {
+            std::swap(image, kept.image);
+            std::swap(view, kept.view);
+            std::swap(layer_views, kept.layer_views);
+            std::swap(image_width, kept.width);
+            std::swap(image_height, kept.height);
+            std::swap(image_layers, kept.layers);
+            std::swap(written, kept.written);
+            std::swap(image_layout, kept.layout);
+            return true;
+        }
+    }
+    return false;
+}
+
 void ObjectMotion::EnsureImage(u32 width, u32 height, u32 layers) {
     if (image && width == image_width && height == image_height && layers == image_layers) {
         return;
     }
+    if (image && SwapIn(width, height, layers)) { // VR fork: kept (KeptImage)
+        return;
+    }
     const auto device = instance.GetDevice();
     if (image) {
-        scheduler.Finish();
+        // VR fork: the current one is kept for its size; only past four sizes is the oldest freed (after the GPU).
+        if (kept_images.size() >= 3) {
+            scheduler.Finish();
+            kept_images.erase(kept_images.begin());
+        }
+        kept_images.push_back({std::move(image), std::move(view), image_width, image_height, image_layers,
+                               std::move(layer_views), written, image_layout});
+        layer_views = {};
     }
     view.reset();
     for (auto& v : layer_views) {
@@ -246,6 +276,9 @@ void ObjectMotion::Attach(RenderState& state, u32 width, u32 height) {
 
 vk::ImageView ObjectMotion::PrepareRead(vk::CommandBuffer cmdbuf, u32 width, u32 height,
                                         bool& valid) {
+    if (width != image_width || height != image_height) { // VR fork: the kept image of the size read (KeptImage)
+        SwapIn(width, height, 0);
+    }
     EnsureImage(std::max(image_width, 1u), std::max(image_height, 1u), std::max(image_layers, 1u));
     valid = written && width == image_width && height == image_height;
     const vk::ImageMemoryBarrier2 barrier{

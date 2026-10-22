@@ -13,15 +13,16 @@ bash build.sh
 mkdir -p out/launcher
 windres -I launcher launcher/launcher.rc -O coff -o out/launcher/launcher.res.o
 clang++ -O2 -std=c++20 -include gpu/libcxx_compat.h -municode -mwindows -static -o out/launcher/DriveClub.exe   launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp out/launcher/launcher.res.o   -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi
-# The steering wheel tools (as package.sh): console programs, SDL linked in.
+# The steering wheel tools (as package.sh), SDL linked in: WheelSetup is a window; FfbTest a console program.
 sdl_static="$(pkg-config --static --libs sdl3)"
-clang -O2 -o out/WheelSetup.exe tools/wheel_setup.c -static $sdl_static -mconsole
+clang -O2 -o out/WheelSetup.exe tools/wheel_setup.c -static $sdl_static -lgdi32 -mwindows
 clang -O2 -o out/FfbTest.exe tools/ffb_test.c -static $sdl_static -mconsole
 
 # The player's data (launcher.ini, data/, logs/, mods/) stays; the program files are replaced.
 rm -rf "$OUT/runtime"
 mkdir -p "$OUT/runtime/patches"
 cp out/launcher/DriveClub.exe out/WheelSetup.exe out/FfbTest.exe "$OUT/"
+cp "tools/FFB Tuner.ps1" "tools/FFB Tuner.bat" "$OUT/"   # the force feedback sliders, next to DriveClub.exe (as package.sh)
 cp out/DriveClubGame.exe "$OUT/runtime/"
 cp patches/DriveClub.xml "$OUT/runtime/patches/"
 cp "$LOADER" "$OUT/runtime/openxr_loader.dll"

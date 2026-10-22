@@ -689,10 +689,21 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     u32 num_stages = 0;
     // VR fork: what stage B reads from guest memory (pipe_reads.h); special and indirect packets: anything.
     pipe_reads.BeginPacket();
-    if ((!pipeline && !cs) || indirect || !constant_ring || BbToggle::Disabled(BbToggle::ConstantRing)) {
-        pipe_reads.AddAll();
-    } else if (!cs) {
-        NoteDrawInputReads(static_cast<const GraphicsPipeline*>(pipeline), is_indexed, index_offset);
+    // Special packets (fast clear elimination, resolve, depth copy, skipped draws) read images, not guest memory a
+    // constant dump writes; indirect draws read what a draw reads plus their arguments.
+    const bool special = !pipeline && !cs;
+    if (!special && (!constant_ring || BbToggle::Disabled(BbToggle::ConstantRing))) {
+        pipe_reads.AddAll(); // the buffers are not collected
+    } else if (!special) {
+        if (!cs) {
+            NoteDrawInputReads(static_cast<const GraphicsPipeline*>(pipeline), is_indexed, index_offset);
+        }
+        if (indirect) {
+            pipe_reads.Add(indirect->args, u64(std::max<u32>(indirect->stride, 16)) * std::max<u32>(indirect->max_count, 1));
+            if (indirect->count) {
+                pipe_reads.Add(indirect->count, 4);
+            }
+        }
     }
     u32 size = sizeof(DrawPacket) + AlignPacket(num_blocks * sizeof(u16)) +
                num_blocks * AmdGpu::RegDirty::BlockWords * sizeof(u32);
@@ -830,7 +841,8 @@ void Rasterizer::RetireSubmission() {
     }
 }
 
-bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 toggle) {
+bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 toggle,
+                            std::initializer_list<std::pair<VAddr, u64>> touches) {
     if (!UseDrawPipe() || BbToggle::Disabled(toggle)) {
         DrainDrawPipe(DrawPipe::ReasonRasterizer);
         task(*this, static_cast<const u8*>(data));
@@ -841,9 +853,25 @@ bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 to
     *reinterpret_cast<TaskPacket*>(out) = {PacketKind::Task, size, task};
     std::memcpy(out + sizeof(TaskPacket), data, size);
     draw_pipe->Commit(total);
-    pipe_reads.BeginPacket(); // VR fork: a task may read any guest memory
-    pipe_reads.AddAll();
-    pipe_reads.EndPacket(draw_pipe->Head());
+    // VR fork: the memory a task touches; any when not given. Every fence and write was "any": a constant dump then
+    // drained the pipe until stage B had passed the last of them, nearly always (stage A waited 12% of its time).
+    // Each range is an entry of its own (a packet's reads are one box: a DMA's source and destination far apart
+    // would cover everything between). A range of size 0 touches nothing (a GDS end). BB_TASK_TOUCHES=0: any.
+    static const bool precise = !(std::getenv("BB_TASK_TOUCHES") && std::getenv("BB_TASK_TOUCHES")[0] == '0');
+    const u64 head = draw_pipe->Head();
+    if (touches.size() == 0 || !precise) {
+        pipe_reads.BeginPacket();
+        pipe_reads.AddAll();
+        pipe_reads.EndPacket(head);
+    } else {
+        for (const auto& [address, bytes] : touches) {
+            if (bytes != 0) {
+                pipe_reads.BeginPacket();
+                pipe_reads.Add(address, bytes);
+                pipe_reads.EndPacket(head);
+            }
+        }
+    }
     return true;
 }
 

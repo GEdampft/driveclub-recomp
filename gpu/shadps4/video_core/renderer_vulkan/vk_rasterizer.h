@@ -106,8 +106,11 @@ public:
     /// thread while the draw pipeline is in use (PipelinedTasks), else here after a drain.
     using OrderedTask = void (*)(Rasterizer& rasterizer, const u8* data);
     /// Returns true when the task was handed to the recording thread (not run yet).
+    /// VR fork: `touches`, the guest memory the task reads or writes (pipe_reads.h: a constant dump there waits for
+    /// it); none given, any.
     bool RunInOrder(OrderedTask task, const void* data, u32 size,
-                    u64 toggle = BbToggle::PipelinedTasks);
+                    u64 toggle = BbToggle::PipelinedTasks,
+                    std::initializer_list<std::pair<VAddr, u64>> touches = {});
     /// Stage A: the draw pipe position after the last handed-over packet, and whether the
     /// recording thread has run everything before a position.
     [[nodiscard]] u64 DrawPipeHead() const {

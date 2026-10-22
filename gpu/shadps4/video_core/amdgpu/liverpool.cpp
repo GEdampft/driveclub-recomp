@@ -1192,7 +1192,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             case PM4ItOpcode::EventWriteEos: {
                 const auto* event_eos = reinterpret_cast<const PM4CmdEventWriteEos*>(header);
                 if (rasterizer &&
-                    rasterizer->RunInOrder(&RunEventWriteEos, event_eos, sizeof(*event_eos))) {
+                    rasterizer->RunInOrder(&RunEventWriteEos, event_eos, sizeof(*event_eos),
+                                           BbToggle::PipelinedTasks,
+                                           {{event_eos->Address<VAddr>(), 8}})) { // VR fork
                     NotePendingFences(*event_eos);
                 }
                 break;
@@ -1200,7 +1202,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             case PM4ItOpcode::EventWriteEop: {
                 const auto* event_eop = reinterpret_cast<const PM4CmdEventWriteEop*>(header);
                 if (rasterizer) {
-                    if (rasterizer->RunInOrder(&RunEventWriteEop, event_eop, sizeof(*event_eop))) {
+                    if (rasterizer->RunInOrder(&RunEventWriteEop, event_eop, sizeof(*event_eop),
+                                               BbToggle::PipelinedTasks,
+                                               {{reinterpret_cast<VAddr>(event_eop->Address<u8>()), 8}})) { // VR fork
                         NotePendingFences(*event_eop);
                     }
                 } else {
@@ -1213,8 +1217,20 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (dma_data->dst_addr_lo == 0x3022C || !rasterizer) {
                     break;
                 }
+                // VR fork: the memory it touches (pipe_reads.h): GDS ends touch none of the guest's.
+                const bool src_mem = dma_data->src_sel == DmaDataSrc::Memory ||
+                                     dma_data->src_sel == DmaDataSrc::MemoryUsingL2;
+                const bool dst_mem = dma_data->dst_sel == DmaDataDst::Memory ||
+                                     dma_data->dst_sel == DmaDataDst::MemoryUsingL2;
+                const std::pair<VAddr, u64> none{0, 0};
                 if (rasterizer->RunInOrder(&RunDmaData, dma_data, sizeof(PM4DmaData),
-                                           BbToggle::PipelinedMemoryWrites) &&
+                                           BbToggle::PipelinedMemoryWrites,
+                                           {src_mem ? std::pair<VAddr, u64>{dma_data->SrcAddress<VAddr>(),
+                                                                            dma_data->NumBytes()}
+                                                    : none,
+                                            dst_mem ? std::pair<VAddr, u64>{dma_data->DstAddress<VAddr>(),
+                                                                            dma_data->NumBytes()}
+                                                    : none}) &&
                     (dma_data->dst_sel == DmaDataDst::Memory ||
                      dma_data->dst_sel == DmaDataDst::MemoryUsingL2)) {
                     rasterizer->NotePendingGpuWrite(dma_data->DstAddress<VAddr>(),
@@ -1232,7 +1248,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                                            (count - 2) * sizeof(u32),
                                            BbWriteLog::WriteDataIntent);
                     if (rasterizer->RunInOrder(&RunWriteData, header, (count + 1) * sizeof(u32),
-                                               BbToggle::PipelinedMemoryWrites)) {
+                                               BbToggle::PipelinedMemoryWrites,
+                                               {{write_data->Address<VAddr>(), (count - 2) * sizeof(u32)}})) { // VR fork
                         NotePendingWrite(*write_data, (count - 2) * sizeof(u32));
                         rasterizer->NotePendingGpuWrite(write_data->Address<VAddr>(),
                                                         (count - 2) * sizeof(u32));

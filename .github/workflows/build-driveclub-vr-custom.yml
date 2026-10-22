@@ -1,4 +1,4 @@
-name: Build DriveClub VR 1.2 HUD Gamepad
+name: Build DriveClub VR 1.2 HUD and L3
 on:
   workflow_dispatch:
   push:

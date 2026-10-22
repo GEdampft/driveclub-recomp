@@ -661,7 +661,10 @@ bool VrReplaces(const Ctl& c) {  // VR fork: rows the VR patch set stands in for
   for (const Ctl* r : rows) {
     if (r == &c) return true;
   }
-  return c.kind == Kind::Toggle && c.patches[0] == "FOV fix for wide resolutions";
+  // The motion blur / DOF patch: VR adds it itself unless "Game anti-aliasing (TAA)" is on (its shader is the TAA's);
+  // the flat tickbox, still ticked from flat play, put it back over that option.
+  return c.kind == Kind::Toggle && (c.patches[0] == "FOV fix for wide resolutions" ||
+                                    c.patches[0] == "Disable motion blur and depth of field");
 }
 
 void UpscaleSize(int& rw, int& rh, const char*& name) {

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -467,6 +468,22 @@ void OnFrameCamera(const float* position) {
 
 void DumpEyes() {
     g_eye_dump_requested = true;
+}
+
+// FRAMELOG (StartFrameLog): the headset thread blits each shown frame's left eye to a thumbnail and copies it into
+// one readback; written a few frames after the last one (its copies done).
+// The thumbnails' side, 192 (BB_FRAMELOG_SIZE to change it: 512 shows a flash's objects).
+const u32 FrameLogSize = [] {
+    const char* v = std::getenv("BB_FRAMELOG_SIZE");
+    return v ? std::clamp<u32>(u32(std::atoi(v)), 64, 1024) : 192u;
+}();
+std::atomic<u32> g_flog_request{0};
+u32 g_flog_total = 0, g_flog_done = 0, g_flog_write_in = 0;
+std::vector<u64> g_flog_times;
+std::vector<u32> g_flog_sizes; // each frame's scene size (width << 16 | height)
+
+void StartFrameLog(u32 frames) {
+    g_flog_request = std::clamp<u32>(frames, 1, 20000);
 }
 
 void ShootTarget(u64 guest_address) {
@@ -946,6 +963,63 @@ void OnDisplayBuffer(Runtime& runtime, vk::CommandBuffer command_buffer, VideoCo
     slot.has_hud = true;
 }
 
+Readback g_flog;
+Image g_flog_thumb;
+
+void FrameLog(VkCommandBuffer cmd, VkImage scene, u32 w, u32 h) {
+    const VkDeviceSize Bytes = VkDeviceSize(FrameLogSize) * FrameLogSize * 4;
+    if (g_flog_write_in > 0 && --g_flog_write_in == 0) {
+        void* data = nullptr;
+        VKD.vkMapMemory(g.device, g_flog.memory, 0, g_flog.size, 0, &data);
+        const char* temp = std::getenv("TEMP");
+        char path[512];
+        std::snprintf(path, sizeof(path), "%s\\dcvr\\framelog.raw", temp ? temp : ".");
+        if (FILE* f = std::fopen(path, "wb")) {
+            const u32 header[3] = {FrameLogSize, FrameLogSize, g_flog_done};
+            std::fwrite(header, 4, 3, f);
+            std::fwrite(data, 1, size_t(Bytes) * g_flog_done, f);
+            std::fwrite(g_flog_times.data(), 8, g_flog_times.size(), f);
+            std::fwrite(g_flog_sizes.data(), 4, g_flog_sizes.size(), f);
+            std::fclose(f);
+        }
+        VKD.vkUnmapMemory(g.device, g_flog.memory);
+        FreeReadback(g_flog);
+        Log("frame log written");
+        g_flog_total = 0;
+    }
+    if (const u32 request = g_flog_request.exchange(0); request && g_flog_total == 0) {
+        if (MakeReadback(g_flog, Bytes * request) &&
+            Make(g_flog_thumb, VK_FORMAT_R8G8B8A8_UNORM, FrameLogSize, FrameLogSize,
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+            g_flog_total = request;
+            g_flog_done = 0;
+            g_flog_times.clear();
+            g_flog_sizes.clear();
+            Log("frame log started");
+        }
+    }
+    if (g_flog_total == 0 || g_flog_done >= g_flog_total || g_flog_write_in > 0) {
+        return;
+    }
+    Barrier(cmd, g_flog_thumb.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {s32(w), s32(h), 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[1] = {s32(FrameLogSize), s32(FrameLogSize), 1};
+    VKD.vkCmdBlitImage(cmd, scene, VK_IMAGE_LAYOUT_GENERAL, g_flog_thumb.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                       &blit, VK_FILTER_LINEAR);
+    Barrier(cmd, g_flog_thumb.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    CopyToReadback(cmd, g_flog_thumb.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_flog, Bytes * g_flog_done,
+                   FrameLogSize, FrameLogSize);
+    g_flog_times.push_back(u64(std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now().time_since_epoch()).count()));
+    g_flog_sizes.push_back(w << 16 | h);
+    if (++g_flog_done == g_flog_total) {
+        g_flog_write_in = 8; // the last copies are done by then
+    }
+}
+
 void RecordEyes(vk::CommandBuffer command_buffer, const Frame& frame, const VkImage (&eyes)[2], const float (&k)[2],
                 VkImage hud) {
     const VkCommandBuffer cmd = VkCommandBuffer(command_buffer);
@@ -961,6 +1035,7 @@ void RecordEyes(vk::CommandBuffer command_buffer, const Frame& frame, const VkIm
         FreeReadback(g_eye_dump);
         Log("eyes written");
     }
+    FrameLog(cmd, slot.scene.image, w, h);
     const bool dump = g_eye_dump_frames == 0 && g_eye_dump_requested.exchange(false) &&
                       MakeReadback(g_eye_dump, VkDeviceSize(w) * h * 4 * 3);
     if (dump) {

@@ -80,6 +80,11 @@ void ShootTarget(u64 guest_address);
 /// Development (EYES trigger): the next stereo frame's eyes and scene, full size, to %TEMP%\dcvr\eye_<n>.raw (n: 0 left,
 /// 1 right, 2 the centre scene; width, height, then RGBA).
 void DumpEyes();
+/// Development (dev key FRAMELOG, its content the frame count): the left eye of each of the next `frames` frames the
+/// headset shows, as a 192x192 thumbnail (BB_FRAMELOG_SIZE: another side), into %TEMP%\dcvr\framelog.raw (u32
+/// width, height, count, the RGBA thumbnails, a u64 steady-clock microsecond time per frame, then each frame's scene
+/// size as u32 width << 16 | height). Every frame, no GPU sync.
+void StartFrameLog(u32 frames);
 
 /// Dev hook at the TAA resolve (once per rendered frame, before its scene copy): the camera's world position the GPU
 /// renders this frame with. Picks the head pose that view was made with (Camera::RenderedAt) for the frame's layer.

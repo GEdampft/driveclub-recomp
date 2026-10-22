@@ -263,6 +263,10 @@ void Poll() {
     if (Take("DRAWLOG")) {
         Stereo::LogDraws();
     }
+    std::string frame_log;
+    if (Take("FRAMELOG", &frame_log)) {
+        Stereo::StartFrameLog(frame_log.empty() ? 600u : u32(std::strtoul(frame_log.c_str(), nullptr, 10)));
+    }
     std::string eye_lights;
     if (Take("EYELIGHTS", &eye_lights)) {
         Multiview::SetEyeLights(eye_lights.empty() ? 1 : eye_lights[0] - '0');

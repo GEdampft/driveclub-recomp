@@ -7,16 +7,81 @@
 #include "core/libraries/avplayer/avplayer_impl.h"
 #include "core/libraries/libs.h"
 
+#include <mutex>
 #include <string_view>
+#include <unordered_map>
 
 namespace Libraries::AvPlayer {
+
+namespace {
+// VR fork: the open players. A call holds a reference for its duration and a closed handle is refused: the game called
+// sceAvPlayerGetStreamInfo on a player sceAvPlayerClose had deleted (the intro video skipped at once, benchmark mode):
+// a lock at 0x148 in freed memory, the process gone without a report (1 boot in 20-60). The last reference deletes.
+std::mutex g_players_mutex;
+struct PlayerRefs {
+    int refs;    ///< the open reference plus calls in flight
+    bool closed; ///< sceAvPlayerClose ran: no new calls
+};
+std::unordered_map<AvPlayer*, PlayerRefs> g_player_refs;
+
+void Release(AvPlayer* player) {
+    bool last;
+    {
+        std::scoped_lock lk{g_players_mutex};
+        last = --g_player_refs[player].refs == 0;
+        if (last) {
+            g_player_refs.erase(player);
+        }
+    }
+    if (last) {
+        delete player;
+    }
+}
+
+class Ref {
+public:
+    explicit Ref(AvPlayerHandle handle) {
+        std::scoped_lock lk{g_players_mutex};
+        if (const auto it = g_player_refs.find(handle); it != g_player_refs.end() && !it->second.closed) {
+            ++it->second.refs;
+            player = handle;
+        }
+    }
+    ~Ref() {
+        if (player) {
+            Release(player);
+        }
+    }
+    Ref(const Ref&) = delete;
+    Ref& operator=(const Ref&) = delete;
+    explicit operator bool() const {
+        return player != nullptr;
+    }
+    AvPlayer* operator->() const {
+        return player;
+    }
+
+private:
+    AvPlayer* player = nullptr;
+};
+
+AvPlayer* Open(AvPlayer* player) {
+    std::scoped_lock lk{g_players_mutex};
+    g_player_refs[player] = {1, false};
+    return player;
+}
+} // namespace
 
 s32 PS4_SYSV_ABI sceAvPlayerAddSource(AvPlayerHandle handle, const char* filename) {
     LOG_TRACE(Lib_AvPlayer, "filename = {}", filename);
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->AddSource(filename);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->AddSource(filename);
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerAddSourceEx(AvPlayerHandle handle, AvPlayerUriType uri_type,
@@ -25,8 +90,12 @@ s32 PS4_SYSV_ABI sceAvPlayerAddSourceEx(AvPlayerHandle handle, AvPlayerUriType u
     if (handle == nullptr || uri_type != AvPlayerUriType::Source || source_details == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
     const auto path = std::string_view(source_details->uri.name, source_details->uri.length);
-    return handle->AddSourceEx(path, source_details->source_type);
+    return player->AddSourceEx(path, source_details->source_type);
 }
 
 int PS4_SYSV_ABI sceAvPlayerChangeStream() {
@@ -39,7 +108,15 @@ s32 PS4_SYSV_ABI sceAvPlayerClose(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    delete handle;
+    {
+        std::scoped_lock lk{g_players_mutex};
+        const auto it = g_player_refs.find(handle);
+        if (it == g_player_refs.end() || it->second.closed) {
+            return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS; // closed already
+        }
+        it->second.closed = true;
+    }
+    Release(handle); // VR fork: deleted once no call holds it
     return ORBIS_OK;
 }
 
@@ -48,7 +125,11 @@ u64 PS4_SYSV_ABI sceAvPlayerCurrentTime(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->CurrentTime();
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return 0;
+    }
+    return player->CurrentTime();
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerDisableStream(AvPlayerHandle handle, u32 stream_id) {
@@ -64,7 +145,11 @@ s32 PS4_SYSV_ABI sceAvPlayerEnableStream(AvPlayerHandle handle, u32 stream_id) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->EnableStream(stream_id);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->EnableStream(stream_id);
 }
 
 bool PS4_SYSV_ABI sceAvPlayerGetAudioData(AvPlayerHandle handle, AvPlayerFrameInfo* p_info) {
@@ -72,7 +157,11 @@ bool PS4_SYSV_ABI sceAvPlayerGetAudioData(AvPlayerHandle handle, AvPlayerFrameIn
     if (handle == nullptr || p_info == nullptr) {
         return false;
     }
-    return handle->GetAudioData(*p_info);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return false;
+    }
+    return player->GetAudioData(*p_info);
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerGetStreamInfo(AvPlayerHandle handle, u32 stream_id,
@@ -81,7 +170,11 @@ s32 PS4_SYSV_ABI sceAvPlayerGetStreamInfo(AvPlayerHandle handle, u32 stream_id,
     if (handle == nullptr || p_info == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->GetStreamInfo(stream_id, *p_info);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->GetStreamInfo(stream_id, *p_info);
 }
 
 bool PS4_SYSV_ABI sceAvPlayerGetVideoData(AvPlayerHandle handle, AvPlayerFrameInfo* video_info) {
@@ -89,7 +182,11 @@ bool PS4_SYSV_ABI sceAvPlayerGetVideoData(AvPlayerHandle handle, AvPlayerFrameIn
     if (handle == nullptr || video_info == nullptr) {
         return false;
     }
-    return handle->GetVideoData(*video_info);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return false;
+    }
+    return player->GetVideoData(*video_info);
 }
 
 bool PS4_SYSV_ABI sceAvPlayerGetVideoDataEx(AvPlayerHandle handle,
@@ -98,7 +195,11 @@ bool PS4_SYSV_ABI sceAvPlayerGetVideoDataEx(AvPlayerHandle handle,
     if (handle == nullptr || video_info == nullptr) {
         return false;
     }
-    return handle->GetVideoData(*video_info);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return false;
+    }
+    return player->GetVideoData(*video_info);
 }
 
 AvPlayerHandle PS4_SYSV_ABI sceAvPlayerInit(AvPlayerInitData* data) {
@@ -115,7 +216,7 @@ AvPlayerHandle PS4_SYSV_ABI sceAvPlayerInit(AvPlayerInitData* data) {
         return nullptr;
     }
 
-    return new AvPlayer(*data);
+    return Open(new AvPlayer(*data));
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerInitEx(const AvPlayerInitDataEx* p_data, AvPlayerHandle* p_player) {
@@ -140,7 +241,7 @@ s32 PS4_SYSV_ABI sceAvPlayerInitEx(const AvPlayerInitDataEx* p_data, AvPlayerHan
     data.num_output_video_framebuffers = p_data->num_output_video_framebuffers;
     data.auto_start = p_data->auto_start;
 
-    *p_player = new AvPlayer(data);
+    *p_player = Open(new AvPlayer(data));
     return ORBIS_OK;
 }
 
@@ -149,7 +250,11 @@ bool PS4_SYSV_ABI sceAvPlayerIsActive(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return false;
     }
-    return handle->IsActive();
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return false;
+    }
+    return player->IsActive();
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerJumpToTime(AvPlayerHandle handle, uint64_t time) {
@@ -165,7 +270,11 @@ s32 PS4_SYSV_ABI sceAvPlayerPause(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->Pause();
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->Pause();
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerPostInit(AvPlayerHandle handle, AvPlayerPostInitData* data) {
@@ -173,7 +282,11 @@ s32 PS4_SYSV_ABI sceAvPlayerPostInit(AvPlayerHandle handle, AvPlayerPostInitData
     if (handle == nullptr || data == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->PostInit(*data);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->PostInit(*data);
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerPrintf(const char* format, ...) {
@@ -186,7 +299,11 @@ s32 PS4_SYSV_ABI sceAvPlayerResume(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->Resume();
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->Resume();
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerSetAvSyncMode(AvPlayerHandle handle, AvPlayerAvSyncMode sync_mode) {
@@ -194,7 +311,11 @@ s32 PS4_SYSV_ABI sceAvPlayerSetAvSyncMode(AvPlayerHandle handle, AvPlayerAvSyncM
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->SetAvSyncMode(sync_mode);
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->SetAvSyncMode(sync_mode);
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerSetLogCallback(AvPlayerLogCallback log_cb, void* user_data) {
@@ -207,7 +328,11 @@ s32 PS4_SYSV_ABI sceAvPlayerSetLooping(AvPlayerHandle handle, bool loop_flag) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    if (!handle->SetLooping(loop_flag)) {
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    if (!player->SetLooping(loop_flag)) {
         return ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;
     }
     return ORBIS_OK;
@@ -226,7 +351,11 @@ s32 PS4_SYSV_ABI sceAvPlayerStart(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->Start();
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->Start();
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerStop(AvPlayerHandle handle) {
@@ -234,9 +363,13 @@ s32 PS4_SYSV_ABI sceAvPlayerStop(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
     // bbport: guest code calls this and cannot unwind a C++ exception.
     try {
-        return handle->Stop();
+        return player->Stop();
     } catch (const std::exception& error) {
         LOG_ERROR(Lib_AvPlayer, "Stop failed: {}", error.what());
         return ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;
@@ -248,7 +381,11 @@ s32 PS4_SYSV_ABI sceAvPlayerStreamCount(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->GetStreamCount();
+    const Ref player{handle}; // VR fork: a closed handle is refused
+    if (!player) {
+        return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
+    }
+    return player->GetStreamCount();
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerVprintf(const char* format, va_list args) {

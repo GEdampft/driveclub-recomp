@@ -69,7 +69,12 @@ extern "C" int runtime_memory_read_backing(uintptr_t address, void* data, uint64
 // page the GPU has written is read-protected, and each read of it was a synchronous GPU download. A
 // label the CPU or the fence handlers wrote is already in the backing; one written by a shader is
 // not, so every 32nd unmet poll reads through the view, which brings it up to date.
-static bool TestWaitRegMem(const PM4CmdWaitRegMem* wait, std::span<const u32> regs, u32& polls) {
+struct LabelPolls {
+    u32 count = 0;
+    std::chrono::steady_clock::time_point start{};
+};
+
+static bool TestWaitRegMem(const PM4CmdWaitRegMem* wait, std::span<const u32> regs, LabelPolls& polls) {
     if (wait->mem_space.Value() != PM4CmdWaitRegMem::MemSpace::Memory) {
         return wait->Test(regs);
     }
@@ -77,11 +82,20 @@ static bool TestWaitRegMem(const PM4CmdWaitRegMem* wait, std::span<const u32> re
     // VR fork: through the view only when the label's own bytes are GPU writes not yet read back (a shader wrote
     // it). A page with other GPU data on it was read-protected too, and the async compute queue's polls of a fence
     // label there were a synchronous download and GPU wait each, a quarter of the GPU command thread's time.
-    // Every 1024th unmet poll reads through the view regardless (a GPU write the tracker does not list).
-    ++polls;
-    const bool view = (polls & 31) == 0 &&
-                      ((polls & 1023) == 0 || !VideoCore::ReadbackHybrid::Enabled() ||
-                       VideoCore::ReadbackHybrid::GpuWroteBytes(wait->Address<VAddr>(), sizeof(value)));
+    // A wait still unmet after 250 ms (BB_LABEL_VIEW_MS; 0: every 1024th poll, as before) reads through the view
+    // every 1024th poll regardless (a GPU write the tracker does not list). Every 1024th poll, the game's long label
+    // waits reached it ~2 times a second at 2560 per eye with DLSS off, never met by it, but ~70 times a second with
+    // VR DLSS upscaling (3200 per eye, Performance): each a whole-arena download and GPU wait, 570 ms a second.
+    static const s64 view_ms = std::getenv("BB_LABEL_VIEW_MS") ? std::atoll(std::getenv("BB_LABEL_VIEW_MS")) : 250;
+    if (++polls.count == 1 && view_ms > 0) {
+        polls.start = std::chrono::steady_clock::now();
+    }
+    const bool view =
+        (polls.count & 31) == 0 &&
+        (!VideoCore::ReadbackHybrid::Enabled() ||
+         VideoCore::ReadbackHybrid::GpuWroteBytes(wait->Address<VAddr>(), sizeof(value)) ||
+         ((polls.count & 1023) == 0 &&
+          (view_ms <= 0 || std::chrono::steady_clock::now() - polls.start > std::chrono::milliseconds{view_ms})));
     if (view || !runtime_memory_read_backing(wait->Address<uintptr_t>(), &value, sizeof(value))) {
         return wait->Test(regs);
     }
@@ -1341,7 +1355,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 // Else the value may come from a fence that thread has yet to write: let it
                 // catch up before yielding to other queues.
-                u32 polls = 0;
+                LabelPolls polls;
                 while (!TestWaitRegMem(wait_reg_mem, regs.reg_array, polls)) {
                     if (rasterizer && !rasterizer->DrawPipeIdle()) {
                         rasterizer->DrainDrawPipe(static_cast<u32>(opcode));
@@ -1690,7 +1704,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
         case PM4ItOpcode::WaitRegMem: {
             const auto* wait_reg_mem = reinterpret_cast<const PM4CmdWaitRegMem*>(header);
             ASSERT(wait_reg_mem->engine.Value() == PM4CmdWaitRegMem::Engine::Me);
-            u32 polls = 0;
+            LabelPolls polls;
             while (!TestWaitRegMem(wait_reg_mem, regs.reg_array, polls)) {
                 YIELD_ASC(vqid);
             }

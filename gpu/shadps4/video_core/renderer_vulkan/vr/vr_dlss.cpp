@@ -234,8 +234,9 @@ void CreateCopyPipeline(const Instance& instance) {
 
 float Sharpness() {
     static const float value = [] {
+        // Matt 2026-10-22: twice the sharpening of each launcher step (100% is 2: past RCAS's strongest, vr_sharpen.comp).
         const char* v = std::getenv("BB_VR_DLSS_SHARPNESS");
-        return v ? std::clamp(float(std::atof(v)), 0.0f, 1.0f) : 0.0f;
+        return v ? std::clamp(2.0f * float(std::atof(v)), 0.0f, 2.0f) : 0.0f;
     }();
     return value;
 }

@@ -782,6 +782,46 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     pthread_mutex_lock(&lock);
     sample(data); ++reads;
     if (is_wheel_port(handle)) { wheel_sample(data,bbgpu_overlay_captures_input()); wheel_last_read=*data; }
+    /* DriveClub 0.2.5 has wheel ports: never intercept their input.
+       The chosen gamepad button is consumed only in VR, never in flat mode. */
+    if (!is_wheel_port(handle) && getenv("BB_VR") && getenv("BB_VR")[0] == '1') {
+        static int was_down;
+        static int long_press_fired;
+        static uint64_t pressed_at_us;
+        uint32_t toggle_button = 0;
+        switch (bbgpu_vr_camera_button()) {
+            case 1: toggle_button = BTN_L3; break;
+            case 2: toggle_button = BTN_UP; break;
+            case 3: toggle_button = BTN_DOWN; break;
+            case 4: toggle_button = BTN_LEFT; break;
+            case 5: toggle_button = BTN_RIGHT; break;
+        }
+        const int is_down = toggle_button && !!(data->buttons & toggle_button);
+        const uint64_t now = now_us();
+        const uint64_t hold_us = (uint64_t)bbgpu_vr_camera_hold_ms() * 1000u;
+        if (bbgpu_overlay_captures_input() || !toggle_button) {
+            // Do not interpret the overlay's neutral pad state as a button release.
+            was_down = 0;
+            long_press_fired = 1;
+        } else {
+            if (is_down && !was_down) {
+                pressed_at_us = now;
+                long_press_fired = 0;
+            }
+            if (is_down && !long_press_fired && now - pressed_at_us >= hold_us) {
+                bbgpu_vr_camera_recenter();  // long press: same implementation as F8
+                long_press_fired = 1;
+            }
+            if (!is_down && was_down && !long_press_fired) {
+                if (now - pressed_at_us >= hold_us)
+                    bbgpu_vr_camera_recenter(); // long hold ended between polls
+                else
+                    bbgpu_vr_camera_toggle();   // short press: only on release
+            }
+            was_down = is_down;
+        }
+        if (toggle_button) data->buttons &= ~toggle_button;
+    }
 #ifdef _WIN32
     { static int armed; if (data->buttons && !armed && getenv("DR_WATCH")) { armed=1; watch_install(data); } }
 #endif

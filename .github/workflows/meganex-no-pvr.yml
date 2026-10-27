@@ -1,0 +1,82 @@
+name: MegaNeX custom driver (PVR disabled)
+
+on:
+  push:
+    branches:
+      - experimental/meganex-no-pvr-build
+    paths:
+      - .github/workflows/meganex-no-pvr.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build custom OpenVR driver (x64, no PVR)
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - name: Checkout sboys3 sources (24 Oct 2026)
+        uses: actions/checkout@v4
+        with:
+          repository: sboys3/CustomHeadsetOpenVR
+          ref: e47f7a8e70aded4da95a05d5bc517a9f1ec6a118
+          path: custom-headset
+          submodules: false
+          persist-credentials: false
+
+      - name: Fetch required dependencies but NOT the Pimax PVR SDK
+        shell: pwsh
+        working-directory: custom-headset
+        run: |
+          git submodule update --init --depth 1 ThirdParty/openvr ThirdParty/minhook ThirdParty/json ThirdParty/easywsclient ThirdParty/zlib ThirdParty/hidapi ThirdParty/LightHook
+          if ($LASTEXITCODE -ne 0) { throw "Submodule setup failed" }
+          if (Test-Path 'ThirdParty/pvr/PVR.h') { throw "Unexpected PVR SDK checkout" }
+
+      - name: Disable PVR via compilation gate (leave shader intact)
+        shell: pwsh
+        working-directory: custom-headset
+        run: |
+          $path = 'CustomHeadsetOpenVR/src/Config/Config.h'
+          $content = [System.IO.File]::ReadAllText((Resolve-Path $path))
+          $needle = '#if __has_include("PVR.h")'
+          if (-not $content.Contains($needle)) { throw "PVR gate moved upstream; no patch applied" }
+          $content = $content.Replace($needle, '#if 0 // MegaNeX build: never enable the Pimax PVR SDK')
+          [System.IO.File]::WriteAllText((Resolve-Path $path), $content)
+          if (-not $content.Contains('#if 0 // MegaNeX build')) { throw "Patch verification failed" }
+          "PVR compile gate disabled; all other source files unchanged."
+
+      - name: Build x64 driver only
+        shell: pwsh
+        working-directory: custom-headset
+        run: |
+          node build.js --no-gui --vendor neutral --vendor-ui neutral
+          if ($LASTEXITCODE -ne 0) { throw "Windows driver build failed" }
+
+      - name: Package driver for manual test (do not auto-install)
+        shell: pwsh
+        run: |
+          $staging = Get-ChildItem 'custom-headset/output' -Directory -Filter 'CustomHeadset-STAGING-*-Windows' | Select-Object -First 1
+          if (-not $staging) { throw "No staging output found" }
+          $driver = Join-Path $staging.FullName 'CustomHeadsetOpenVR'
+          $dll = Join-Path $driver 'bin/win64/driver_CustomHeadsetOpenVR.dll'
+          if (-not (Test-Path $dll)) { throw "No driver DLL found: $dll" }
+          New-Item -ItemType Directory -Force 'release' | Out-Null
+          Copy-Item $driver 'release/CustomHeadsetOpenVR' -Recurse
+          @'
+          EXPERIMENTAL DRIVER - MegaNeX only, PVR SDK disabled
+          Base: sboys3/CustomHeadsetOpenVR commit e47f7a8e70aded4da95a05d5bc517a9f1ec6a118 (24 Oct 2026).
+          The PVR compile gate in src/Config/Config.h was disabled. No shader source was modified.
+          NOT tested on hardware. BACK UP the existing 1.2.0 driver and config before manual installation.
+          Keep SteamVR shut down while changing driver files. Do not touch DLLs under Windows/System32.
+          '@ | Set-Content -Encoding utf8 'release/README-MEGANEX-EXPERIMENTAL.txt'
+          Compress-Archive -Path 'release/CustomHeadsetOpenVR','release/README-MEGANEX-EXPERIMENTAL.txt' -DestinationPath 'release/MegaNeX-CustomHeadset-noPVR-test.zip'
+
+      - name: Upload ZIP for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: MegaNeX-noPVR-test
+          path: release/MegaNeX-CustomHeadset-noPVR-test.zip
+          if-no-files-found: error
+          retention-days: 14
